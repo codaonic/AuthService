@@ -1,7 +1,7 @@
 [project]
 name = "auth-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "Custom Python OAuth 2.1 / OIDC authorization server shared across the website, MCP servers, and other services"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
