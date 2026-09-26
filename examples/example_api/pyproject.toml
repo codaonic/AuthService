@@ -1,0 +1,15 @@
+[project]
+name = "example-api"
+version = "0.1.0"
+description = "Example protected API resource server, using auth-service-sdk to validate tokens"
+requires-python = ">=3.12"
+dependencies = [
+    "auth-service-sdk[fastapi]",
+    "uvicorn[standard]>=0.30",
+]
+
+[tool.uv.sources]
+auth-service-sdk = { path = "../../sdk/python", editable = true }
+
+[tool.uv]
+package = false
