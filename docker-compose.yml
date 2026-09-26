@@ -52,6 +52,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    volumes: ["./data/redis:/data"]
     networks:
       - nginx-proxy-net
 
