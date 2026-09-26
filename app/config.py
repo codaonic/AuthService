@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     rate_limit_token: str = "20/minute"
     rate_limit_authorize: str = "30/minute"
     rate_limit_admin_login: str = "10/minute"
+    rate_limit_forgot_password: str = "5/hour"
+
+    smtp_host: str = "localhost"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    email_from_address: str = "no-reply@localhost"
+    email_from_name: str = "Auth Service"
+
+    password_reset_ttl_seconds: int = 30 * 60
+    email_verification_ttl_seconds: int = 60 * 60 * 24
 
 
 @lru_cache

@@ -1,4 +1,5 @@
 import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
@@ -8,11 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.auth import get_current_admin
+from app.auth.password_reset import create_password_reset_token
 from app.auth.passwords import hash_password, verify_password
 from app.db.models import AdminUser, Client, Resource, User, UserPool
 from app.db.pools import get_or_create_pool
 from app.db.redis_client import get_redis
 from app.db.session import get_db
+from app.email import send_password_reset_email
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -271,6 +274,25 @@ async def create_user_route(
 
     db.add(User(user_pool_id=pool.id, email=email, password_hash=hash_password(password)))
     await db.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.post("/admin/users/{user_id}/send-reset")
+async def send_password_reset(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    admin = await get_current_admin(request, db, redis)
+    if admin is None:
+        return NOT_LOGGED_IN
+
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is not None:
+        token = await create_password_reset_token(redis, str(user.id))
+        await send_password_reset_email(user.email, token)
+
     return RedirectResponse("/admin/users", status_code=303)
 
 

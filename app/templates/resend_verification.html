@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Resend verification email{% endblock %}
+
+{% block icon %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="5.5" width="17" height="13" rx="2"/>
+  <path d="M4 7l8 6 8-6"/>
+</svg>
+{% endblock %}
+
+{% block heading %}Resend verification email{% endblock %}
+
+{% block subheading %}
+{% if client_id %}
+<p class="card__subtitle">for <strong>{{ client_id }}</strong></p>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if sent %}
+<div class="alert" role="status">
+  <span>If that email needs verifying, we've sent a new link.</span>
+</div>
+<p class="form-switch"><a href="/login?flow_id={{ flow_id }}">Back to sign in</a></p>
+{% else %}
+<form method="post" action="/resend-verification" class="form" novalidate>
+  <input type="hidden" name="flow_id" value="{{ flow_id }}">
+  <div class="field">
+    <label for="email">Email</label>
+    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="you@example.com">
+  </div>
+  <button type="submit" class="btn btn--primary btn--block">Resend verification email</button>
+</form>
+<p class="form-switch"><a href="/login?flow_id={{ flow_id }}">Back to sign in</a></p>
+{% endif %}
+{% endblock %}

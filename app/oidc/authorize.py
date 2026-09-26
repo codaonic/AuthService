@@ -10,12 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.mfa import verify_totp
+from app.auth.password_reset import create_email_verification_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, get_session_user
 from app.config import get_settings
 from app.db.models import Client, Consent, User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
+from app.email import send_verification_email
 from app.middleware.rate_limit import limiter
 from app.oidc.scope import resolve_scope
 
@@ -236,6 +238,11 @@ async def signup(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    # Verification is informational, not a login gate -- a failed send
+    # shouldn't block account creation. See plan/password-recovery-mcp-passkeys-plan.md §5.2.
+    token = await create_email_verification_token(redis, str(user.id))
+    await send_verification_email(user.email, token)
 
     session_id = await create_session(redis, str(user.id))
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))

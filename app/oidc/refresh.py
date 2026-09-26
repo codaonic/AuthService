@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -93,3 +94,20 @@ async def revoke_refresh_token(db: AsyncSession, redis: Redis, refresh_token: st
         if row is not None:
             row.revoked_at = datetime.now(timezone.utc)
             await db.commit()
+
+
+async def revoke_all_refresh_tokens_for_user(db: AsyncSession, redis: Redis, user_id: str) -> None:
+    """Kill every outstanding refresh token for a user -- used after a password reset."""
+    result = await db.execute(
+        select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+    )
+    rows = result.scalars().all()
+    if not rows:
+        return
+
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        row.revoked_at = now
+    await db.commit()
+
+    await redis.delete(*(f"{REFRESH_KEY_PREFIX}{row.token_hash}" for row in rows))

@@ -14,12 +14,24 @@
 </form>
 
 <table class="admin-table">
-  <thead><tr><th>Email</th><th>Login group</th><th>Status</th></tr></thead>
+  <thead><tr><th>Email</th><th>Login group</th><th>Status</th><th>Email verified</th><th></th></tr></thead>
   <tbody>
     {% for u, pool_name in users %}
-    <tr><td>{{ u.email }}</td><td>{{ pool_name }}</td><td>{{ u.status }}</td></tr>
+    <tr>
+      <td>{{ u.email }}</td>
+      <td>{{ pool_name }}</td>
+      <td>{{ u.status }}</td>
+      <td>
+        {% if u.email_verified %}<span class="badge badge--on">Verified</span>{% else %}<span class="badge badge--off">Unverified</span>{% endif %}
+      </td>
+      <td>
+        <form method="post" action="/admin/users/{{ u.id }}/send-reset">
+          <button type="submit" class="btn btn--secondary">Send password reset</button>
+        </form>
+      </td>
+    </tr>
     {% else %}
-    <tr><td colspan="3">No users yet.</td></tr>
+    <tr><td colspan="5">No users yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

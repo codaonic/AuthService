@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models import Client, Resource, User, UserPool
-from tests.helpers import create_admin, create_client
+from tests.helpers import create_admin, create_client, create_user
 
 
 @pytest.mark.asyncio
@@ -202,3 +202,21 @@ async def test_signup_disabled_for_admin_only_client(client, db_session):
     flow_id = extract_hidden_value(resp.text, "flow_id")
     signup_resp = await client.get("/signup", params={"flow_id": flow_id})
     assert signup_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_send_password_reset(client, db_session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr("app.email.send_email", send_mock)
+
+    await _login_admin(client, db_session)
+    user = await create_user(db_session, email="alice@example.com")
+
+    resp = await client.post(f"/admin/users/{user.id}/send-reset")
+    assert resp.status_code == 303
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args.args[0] == "alice@example.com"
+    assert "reset-password?token=" in send_mock.await_args.args[2]

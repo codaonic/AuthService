@@ -39,7 +39,10 @@
   </div>
 
   <div class="field">
-    <label for="password">Password</label>
+    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+      <label for="password">Password</label>
+      <a href="/forgot-password?flow_id={{ flow_id }}" class="field__hint" style="font-weight:600;">Forgot password?</a>
+    </div>
     <div class="input-group">
       <input id="password" type="password" name="password" required autocomplete="current-password" placeholder="••••••••">
       <button type="button" class="toggle-visibility" data-target="password" aria-label="Show password" aria-pressed="false">

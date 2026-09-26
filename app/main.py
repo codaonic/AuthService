@@ -11,7 +11,7 @@ from app.admin import routes as admin_routes
 from app.admin.seed import ensure_default_admin
 from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
-from app.oidc import authorize, discovery, jwks, prm, register, revoke, token, userinfo
+from app.oidc import authorize, discovery, jwks, password_reset, prm, register, revoke, token, userinfo
 
 
 @asynccontextmanager
@@ -34,6 +34,7 @@ app.include_router(discovery.router)
 app.include_router(prm.router)
 app.include_router(jwks.router)
 app.include_router(authorize.router)
+app.include_router(password_reset.router)
 app.include_router(token.router)
 app.include_router(register.router)
 app.include_router(revoke.router)

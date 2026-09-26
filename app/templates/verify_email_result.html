@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "Email verified" if success else "Verification failed" }}{% endblock %}
+
+{% block icon %}
+{% if success %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/>
+  <path d="M8 12.5l2.5 2.5L16 9.5"/>
+</svg>
+{% else %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/>
+  <path d="M12 8v5"/>
+  <circle cx="12" cy="16.3" r="1" fill="currentColor" stroke="none"/>
+</svg>
+{% endif %}
+{% endblock %}
+
+{% block heading %}{{ "Email verified" if success else "Verification link invalid" }}{% endblock %}
+
+{% block content %}
+{% if success %}
+<div class="alert" role="status">
+  <span>Your email address has been verified. You can close this tab.</span>
+</div>
+{% else %}
+<div class="alert alert--error" role="alert">
+  <span>This verification link is invalid or has expired. Request a new one from the app you're signing into.</span>
+</div>
+{% endif %}
+{% endblock %}
