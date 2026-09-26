@@ -19,6 +19,7 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 - [Database migrations](#database-migrations)
 - [API surface](#api-surface)
 - [Core flows](#core-flows)
+- [Integrating your applications and MCP servers](#integrating-your-applications-and-mcp-servers)
 - [Security](#security)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
@@ -83,6 +84,7 @@ auth_service/
 ├── app/
 │   ├── main.py                  # FastAPI app entrypoint, router + middleware wiring
 │   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
+│   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
 │   ├── db/
 │   │   ├── models.py            # SQLAlchemy models: User, Client, Resource, Consent, RefreshToken
 │   │   ├── session.py           # async engine + session factory
@@ -111,6 +113,11 @@ auth_service/
 │   └── static/                    # CSS/JS for the login/consent UI
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
+├── sdk/python/                     # auth-service-sdk: TokenValidator + FastAPI helpers for resource servers
+│   └── auth_service_sdk/           # standalone package, its own pyproject.toml/uv.lock, zero app.* dependency
+├── examples/
+│   ├── example_api/                # runnable protected API built on the SDK
+│   └── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml / uv.lock
@@ -158,6 +165,7 @@ All configuration is environment-driven (`app/config.py`, loaded from `.env`). C
 | `SESSION_TTL_SECONDS` | `604800` (7d) | Login session cookie lifetime |
 | `RATE_LIMIT_TOKEN` / `RATE_LIMIT_AUTHORIZE` | `20/minute` / `30/minute` | Per-IP rate limits on the two most sensitive endpoints |
 | `COMPOSE_DB_HOST` / `COMPOSE_REDIS_HOST` | `postgres` / `redis` | **Compose-only**: not read by the app — used purely for `docker-compose.yml` variable interpolation so container-network hostnames aren't hardcoded in the compose file |
+| `HOST_PORT` (shell env, not `.env`) | `8000` | **Compose-only**: which host port `docker compose up` publishes the service on, e.g. `HOST_PORT=8080 docker compose up -d` if `8000` is already taken locally |
 
 `.env` is gitignored; `.env.example` documents every variable with safe local-dev defaults.
 
@@ -197,6 +205,41 @@ Full request/response schemas: `/docs` (Swagger UI) once the service is running.
 
 **Token validation (every consumer, every language).** Fetch `/jwks.json` once, cache it, verify signature + `exp` + `aud` + `iss` locally. No call back to this service required — that's the cross-language guarantee.
 
+## Integrating your applications and MCP servers
+
+Two things have to happen before a new app or MCP server can use this service: **register it**, then **validate tokens** in it. Nothing else — every resource server is stateless with respect to the auth service; it just needs a cached JWKS.
+
+### 1. Register a resource and a client
+
+Every protected app/API/MCP server is a **resource** (its identity as a token audience); every thing that requests tokens *on behalf of* a user or itself is a **client**. A website's BFF is usually both registered separately for its login flow (client) and the API it fronts (resource); an MCP server is typically just a resource, since MCP *clients* register themselves via DCR.
+
+```bash
+# From this repo, against a running instance:
+uv run python -m app.cli register-resource --resource-id "https://mcp.yourdomain.com" --name "Your MCP Server"
+uv run python -m app.cli register-client --client-id your-app --type public --redirect-uri "https://yourapp.com/callback"
+# (in Docker: docker compose exec auth-service uv run python -m app.cli ...)
+```
+
+MCP clients don't need manual registration — they self-register at connect time via `POST /register` (Dynamic Client Registration), which is exactly what `/.well-known/oauth-protected-resource` + `/.well-known/openid-configuration` exist to point them at.
+
+### 2. Validate tokens in the resource server
+
+This is the part every app/MCP server has to do, and it's the same three steps in any language (fetch JWKS → cache it → verify signature/`exp`/`aud`/`iss` locally, no call back to this service per-request). Two ways to do it:
+
+- **Python**: use [`sdk/python`](sdk/python) (`auth-service-sdk`) — a `TokenValidator` plus FastAPI dependency helpers (`make_auth_dependency`, `make_scope_dependency`) and a router that serves your resource's own RFC 9728 metadata. See [`sdk/python/README.md`](sdk/python/README.md).
+- **Any other language**: reimplement the same ~20-line pattern — there's a mature JWT + JWKS library in every mainstream language (`jose`/`jwks-rsa` in Node, `github.com/coreos/go-oidc` in Go, `jose4j` in Java). No dependency on this being a Python service.
+
+Two runnable, tested examples built on the SDK:
+
+- [`examples/example_api`](examples/example_api) — a plain protected API (`/me`, a scope-gated `/profile`)
+- [`examples/mcp_server`](examples/mcp_server) — the same pattern shaped for an MCP server's auth hook (401 challenge + PRM + per-call validation); swap the FastAPI routes for your actual MCP SDK's request handling, the `TokenValidator` plugs into whatever transport you use
+
+```bash
+cd examples/example_api
+uv sync
+uv run uvicorn main:app --reload --port 9001
+```
+
 ## Security
 
 - PKCE (S256) mandatory on every authorization code exchange
@@ -224,6 +267,7 @@ Following the build order this service was planned against:
 - [x] Client credentials grant (service-to-service)
 - [x] Dynamic Client Registration, refresh rotation, revocation denylist
 - [x] Polished login/consent UI
+- [x] Admin CLI for registering resources/clients/users; resource-server SDK + example integrations
 - [ ] Website integration: BFF pattern, end-to-end session cookie test against a real frontend
 - [ ] MCP support: validated against a real MCP client
 - [ ] CIMD support (once MCP client ecosystem expects it)
