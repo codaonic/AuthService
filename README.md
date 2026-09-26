@@ -147,7 +147,7 @@ cp .env.example .env   # adjust values if needed; defaults match docker-compose
 docker compose up -d --build
 ```
 
-That's it — no separate migration step. The container's entrypoint (`docker-entrypoint.sh`) runs `alembic upgrade head` automatically before the server starts, every time the container starts, including the very first boot. It's a no-op if the schema's already current, so it's safe on every restart and every redeploy, not just the first one.
+That's it — no separate migration step. The `Dockerfile`'s `CMD` runs `alembic upgrade head` automatically before the server starts, every time the container starts, including the very first boot. It's a no-op if the schema's already current, so it's safe on every restart and every redeploy, not just the first one.
 
 The service is now on `http://localhost:8000` — the standard OAuth surface at root, the setup UI under `/admin`, interactive API docs at `/docs`.
 
