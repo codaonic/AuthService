@@ -2,7 +2,7 @@
 
 A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces Keycloak: one service owns identity and tokens, while every consumer — regardless of language — talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server.
 
-> Status: **Core AS implemented** — users, clients, `/authorize` + PKCE, `/token`, `/jwks.json`, discovery, dynamic client registration, refresh rotation, revocation. See [Roadmap](#roadmap) for what's next.
+> Status: **Core AS implemented** — users, clients, `/authorize` + PKCE, `/token`, `/jwks.json`, discovery, dynamic client registration, refresh rotation, revocation, an `/admin` setup UI. See [Roadmap](#roadmap) for what's next.
 
 ---
 
@@ -20,6 +20,7 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 - [API surface](#api-surface)
 - [Core flows](#core-flows)
 - [User pools](#user-pools)
+- [Admin UI](#admin-ui)
 - [Integrating your applications and MCP servers](#integrating-your-applications-and-mcp-servers)
 - [Security](#security)
 - [Testing](#testing)
@@ -37,10 +38,12 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
                          ┌─────────────────────────────────────────┐
                          │        AUTH SERVICE (Python/FastAPI)      │
                          │  /authorize  /token  /register  /revoke   │
+                         │  /login  /signup  /consent  /userinfo     │
                          │  /.well-known/openid-configuration        │
                          │  /.well-known/oauth-protected-resource    │
-                         │  /jwks.json  /userinfo                    │
-                         │  Login UI, MFA, consent screen            │
+                         │  /jwks.json                                │
+                         │  /admin/*  -- operator setup UI: pools,   │
+                         │    clients, resources, users, own login   │
                          └───────────────┬─────────────────────────┘
                                          │
                      ┌───────────────────┼───────────────────┐
@@ -87,16 +90,18 @@ auth_service/
 │   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
 │   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
 │   ├── db/
-│   │   ├── models.py            # SQLAlchemy models: UserPool, User, Client, Resource, Consent, RefreshToken
+│   │   ├── models.py            # SQLAlchemy models: UserPool, User, AdminUser, Client, Resource, Consent, RefreshToken
+│   │   ├── pools.py              # get_or_create_pool() -- pools are created implicitly by name
 │   │   ├── session.py           # async engine + session factory
 │   │   └── redis_client.py      # Redis connection
-│   ├── oidc/
+│   ├── oidc/                     # standard OAuth/OIDC surface, all at root
 │   │   ├── discovery.py         # GET /.well-known/openid-configuration
 │   │   ├── prm.py                # GET /.well-known/oauth-protected-resource
 │   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow)
 │   │   ├── token.py              # POST /token (auth code, refresh, client_credentials)
 │   │   ├── refresh.py            # refresh-token issuance/rotation/revocation (Redis + Postgres audit)
 │   │   ├── clients.py            # client authentication (confidential/public)
+│   │   ├── scope.py              # scope resolution against a client's allowed_scope
 │   │   ├── pkce.py               # PKCE S256 verification
 │   │   ├── keys.py               # RSA key generation/rotation, JWKS
 │   │   ├── tokens.py             # JWT minting
@@ -104,14 +109,18 @@ auth_service/
 │   │   ├── register.py           # POST /register (Dynamic Client Registration, RFC 7591)
 │   │   ├── revoke.py             # POST /revoke
 │   │   └── userinfo.py           # GET /userinfo
+│   ├── admin/                     # mounted under /admin -- operator setup UI
+│   │   ├── auth.py                # admin login/logout, session handling
+│   │   ├── seed.py                # seeds the default admin account on startup
+│   │   └── routes.py              # dashboard, pools, clients, resources, users, account
 │   ├── auth/
 │   │   ├── passwords.py          # argon2 hashing
 │   │   ├── mfa.py                 # TOTP generate/verify
-│   │   └── sessions.py            # Redis-backed login sessions
+│   │   └── sessions.py            # Redis-backed login sessions (shared by end-user and admin sessions)
 │   ├── middleware/
 │   │   └── rate_limit.py          # slowapi limiter
-│   ├── templates/                 # Jinja2 login/consent pages (base.html + login.html + consent.html)
-│   └── static/                    # CSS/JS for the login/consent UI
+│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, admin/*
+│   └── static/                    # CSS/JS for both the login/consent UI and the admin UI
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
 ├── sdk/python/                     # auth-service-sdk: TokenValidator + FastAPI helpers for resource servers
@@ -138,7 +147,7 @@ docker compose up -d --build
 docker compose exec auth-service uv run alembic upgrade head
 ```
 
-The service is now on `http://localhost:8000`. Interactive API docs: `http://localhost:8000/docs`.
+The service is now on `http://localhost:8000` — the standard OAuth surface at root, the setup UI under `/admin`, interactive API docs at `/docs`.
 
 ### Option B — Local dev with uv
 
@@ -164,6 +173,7 @@ All configuration is environment-driven (`app/config.py`, loaded from `.env`). C
 | `ACCESS_TOKEN_TTL_SECONDS` | `600` | Access token lifetime |
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` (30d) | Refresh token lifetime |
 | `SESSION_TTL_SECONDS` | `604800` (7d) | Login session cookie lifetime |
+| `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | `admin@localhost` / `admin123!` | Seeded admin credentials, used only if no admin account exists yet. Change the password via `/admin/account` after first login; overriding these before first boot avoids the default ever existing at all |
 | `RATE_LIMIT_TOKEN` / `RATE_LIMIT_AUTHORIZE` | `20/minute` / `30/minute` | Per-IP rate limits on the two most sensitive endpoints |
 | `COMPOSE_DB_HOST` / `COMPOSE_REDIS_HOST` | `postgres` / `redis` | **Compose-only**: not read by the app — used purely for `docker-compose.yml` variable interpolation so container-network hostnames aren't hardcoded in the compose file |
 | `HOST_PORT` (shell env, not `.env`) | `8000` | **Compose-only**: which host port `docker compose up` publishes the service on, e.g. `HOST_PORT=8080 docker compose up -d` if `8000` is already taken locally |
@@ -230,6 +240,19 @@ uv run python -m app.cli register-client --client-id acme-admin --type confident
 
 `--user-pool` defaults to `default` if omitted (including for DCR/`/register` self-registration), so the common "one company, one shared identity" case needs zero pool configuration at all.
 
+## Admin UI
+
+Everything the CLI can do is also available as a web UI at `/admin`, for operators who'd rather click than run commands:
+
+- **Dashboard** — counts of pools/clients/resources/users.
+- **User pools** — create pools by name.
+- **Clients** — register clients (public or confidential), pick their user pool, and toggle **"allow signup"** per client — turn it off for a client where only admins should be able to add users (end users can still log in, just not self-register).
+- **Resources** — register protected APIs/MCP servers.
+- **Users** — the manual add-a-user path, for clients with signup disabled; lists/filters existing users by pool.
+- **Account** — change the admin password.
+
+A default admin account is seeded automatically on first startup (`admin@localhost` / `admin123!` unless overridden via `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD`), logged clearly at startup. Sign in at `/admin/login` and change it immediately — the UI shows a banner reminding you until you do. Admin sessions are a separate cookie from end-user sessions, so being signed into `/admin` never grants access to any client's login.
+
 ## Integrating your applications and MCP servers
 
 Two things have to happen before a new app or MCP server can use this service: **register it**, then **validate tokens** in it. Nothing else — every resource server is stateless with respect to the auth service; it just needs a cached JWKS.
@@ -274,9 +297,10 @@ uv run uvicorn main:app --reload --port 9001
 - Refresh token validity lives in Redis (fast revocation check); Postgres keeps the full audit trail (`rotated_from`, `revoked_at`)
 - Passwords hashed with Argon2; TOTP MFA supported per-user
 - Access tokens are short-lived JWTs (default 10 min), scoped to a single `resource` (RFC 8707) — no ambient all-access tokens
-- Rate limiting on `/token` and `/authorize`
-- Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever served over HTTPS
+- Rate limiting on `/token`, `/authorize`, and `/admin/login`
+- Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever served over HTTPS; admin sessions use a separate cookie from end-user sessions
 - No credentials or connection strings are hardcoded anywhere — `docker-compose.yml` sources them from `.env` via variable interpolation, and the app itself composes URLs from discrete env vars at runtime
+- A default admin account is seeded on first run and flagged `must_change_password` until you change it via `/admin/account` — override `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` before first boot if you don't want the default to exist even briefly
 
 ## Testing
 
@@ -284,7 +308,7 @@ uv run uvicorn main:app --reload --port 9001
 uv run pytest
 ```
 
-The suite uses `httpx`'s ASGI transport (no running server needed), `fakeredis` in place of Redis, and an in-memory SQLite database — so it runs with zero external dependencies. It covers discovery/JWKS, dynamic client registration, and the full authorize → login → consent → token → refresh-rotation → revoke lifecycle for both authorization-code and client-credentials grants.
+The suite uses `httpx`'s ASGI transport (no running server needed), `fakeredis` in place of Redis, and an in-memory SQLite database — so it runs with zero external dependencies. It covers discovery/JWKS, dynamic client registration, the full authorize → login/signup → consent → token → refresh-rotation → revoke lifecycle for both authorization-code and client-credentials grants, user-pool sharing/isolation, and the admin UI (login, seeding, pools/clients/resources/users CRUD, the signup toggle).
 
 ## Roadmap
 
@@ -296,6 +320,7 @@ Following the build order this service was planned against:
 - [x] Polished login/consent UI
 - [x] Admin CLI for registering resources/clients/users; resource-server SDK + example integrations
 - [x] Self-service user signup, and user pools (shared vs. isolated identity across clients on one deployment)
+- [x] `/admin` setup UI (pools, clients, resources, users, per-client signup toggle) with a seeded default admin account
 - [ ] Website integration: BFF pattern, end-to-end session cookie test against a real frontend
 - [ ] MCP support: validated against a real MCP client
 - [ ] CIMD support (once MCP client ecosystem expects it)

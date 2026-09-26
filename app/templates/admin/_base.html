@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}Admin{% endblock %} · Auth Admin</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234f46e5'%3E%3Cpath d='M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 0 1 6 0v3H9z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}">
+</head>
+<body>
+  <div class="admin-shell">
+    <nav class="admin-nav">
+      <div class="admin-nav__brand">Auth Admin</div>
+      <a href="/admin" class="{{ 'active' if active == 'dashboard' else '' }}">Dashboard</a>
+      <a href="/admin/pools" class="{{ 'active' if active == 'pools' else '' }}">User pools</a>
+      <a href="/admin/clients" class="{{ 'active' if active == 'clients' else '' }}">Clients</a>
+      <a href="/admin/resources" class="{{ 'active' if active == 'resources' else '' }}">Resources</a>
+      <a href="/admin/users" class="{{ 'active' if active == 'users' else '' }}">Users</a>
+      <a href="/admin/account" class="{{ 'active' if active == 'account' else '' }}">Account</a>
+      <form method="post" action="/admin/logout">
+        <button type="submit" class="btn btn--secondary btn--block">Sign out</button>
+      </form>
+    </nav>
+    <main class="admin-main">
+      {% if must_change_password and active != 'account' %}
+      <div class="alert alert--error" role="alert" style="margin-bottom:24px;">
+        <span>You're signed in with the default admin password. <a href="/admin/account">Change it now</a>.</span>
+      </div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <script src="{{ url_for('static', path='js/auth.js') }}" defer></script>
+</body>
+</html>

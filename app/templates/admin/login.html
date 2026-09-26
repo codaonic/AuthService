@@ -1,22 +1,17 @@
 {% extends "base.html" %}
 
-{% block title %}Sign in{% endblock %}
+{% block title %}Admin sign in{% endblock %}
 
 {% block icon %}
 <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/>
-  <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
-  <circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/>
+  <circle cx="8" cy="15" r="4"/>
+  <path d="M11 12l8.5-8.5M17 6l2 2M19.5 3.5l2 2"/>
 </svg>
 {% endblock %}
 
-{% block heading %}Sign in{% endblock %}
+{% block heading %}Admin sign in{% endblock %}
 
-{% block subheading %}
-{% if client_id %}
-<p class="card__subtitle">to continue to <strong>{{ client_id }}</strong></p>
-{% endif %}
-{% endblock %}
+{% block subheading %}<p class="card__subtitle">manage this deployment's pools, clients, resources, and users</p>{% endblock %}
 
 {% block content %}
 {% if error %}
@@ -30,18 +25,16 @@
 </div>
 {% endif %}
 
-<form method="post" action="/login" class="form" novalidate>
-  <input type="hidden" name="flow_id" value="{{ flow_id }}">
-
+<form method="post" action="/admin/login" class="form" novalidate>
   <div class="field">
     <label for="email">Email</label>
-    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="you@example.com">
+    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="admin@localhost">
   </div>
 
   <div class="field">
     <label for="password">Password</label>
     <div class="input-group">
-      <input id="password" type="password" name="password" required autocomplete="current-password" placeholder="••••••••">
+      <input id="password" type="password" name="password" required autocomplete="current-password">
       <button type="button" class="toggle-visibility" data-target="password" aria-label="Show password" aria-pressed="false">
         <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
@@ -56,17 +49,8 @@
     </div>
   </div>
 
-  <div class="field">
-    <label for="totp_code">Authentication code <span class="field__hint">(if MFA is enabled)</span></label>
-    <input id="totp_code" class="input--otp" type="text" name="totp_code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000">
-  </div>
-
   <button type="submit" class="btn btn--primary btn--block">Sign in</button>
 </form>
-
-{% if allow_signup %}
-<p class="form-switch">Don't have an account? <a href="/signup?flow_id={{ flow_id }}">Sign up</a></p>
-{% endif %}
 {% endblock %}
 
-{% block footer %}Your credentials are sent directly to this service and are never shared with {{ client_id or "the requesting application" }}.{% endblock %}
+{% block footer %}A default admin account is seeded on first run -- see your deployment logs.{% endblock %}

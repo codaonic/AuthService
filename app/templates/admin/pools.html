@@ -1,0 +1,29 @@
+{% extends "admin/_base.html" %}
+{% block title %}User pools{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">User pools</h1></div>
+
+{% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
+
+<table class="admin-table">
+  <thead><tr><th>Name</th><th>Pool ID</th></tr></thead>
+  <tbody>
+    {% for pool in pools %}
+    <tr><td>{{ pool.name }}</td><td>{{ pool.id }}</td></tr>
+    {% else %}
+    <tr><td colspan="2">No pools yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="admin-card">
+  <h2>Create a pool</h2>
+  <form method="post" action="/admin/pools" class="form">
+    <div class="field">
+      <label for="name">Name</label>
+      <input id="name" type="text" name="name" required placeholder="e.g. acme, acme-admin-only">
+    </div>
+    <button type="submit" class="btn btn--primary btn--block">Create pool</button>
+  </form>
+</div>
+{% endblock %}

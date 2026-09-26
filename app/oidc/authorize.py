@@ -103,7 +103,9 @@ async def authorize(
 
     if user_id is None:
         return templates.TemplateResponse(
-            request, "login.html", {"flow_id": flow_id, "client_id": client_id, "error": None}
+            request,
+            "login.html",
+            {"flow_id": flow_id, "client_id": client_id, "allow_signup": client.allow_signup, "error": None},
         )
 
     return await _continue_flow(request, db, redis, flow_id, user_id)
@@ -118,7 +120,9 @@ async def login_page(
 ):
     client = await _get_flow_client(db, redis, flow_id)
     return templates.TemplateResponse(
-        request, "login.html", {"flow_id": flow_id, "client_id": client.client_id, "error": None}
+        request,
+        "login.html",
+        {"flow_id": flow_id, "client_id": client.client_id, "allow_signup": client.allow_signup, "error": None},
     )
 
 
@@ -144,7 +148,12 @@ async def login(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "client_id": client.client_id, "error": "Invalid email or password"},
+            {
+                "flow_id": flow_id,
+                "client_id": client.client_id,
+                "allow_signup": client.allow_signup,
+                "error": "Invalid email or password",
+            },
             status_code=401,
         )
 
@@ -152,7 +161,12 @@ async def login(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "client_id": client.client_id, "error": "Invalid or missing MFA code"},
+            {
+                "flow_id": flow_id,
+                "client_id": client.client_id,
+                "allow_signup": client.allow_signup,
+                "error": "Invalid or missing MFA code",
+            },
             status_code=401,
         )
 
@@ -177,6 +191,8 @@ async def signup_page(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
+    if not client.allow_signup:
+        raise HTTPException(403, "signup_disabled")
     return templates.TemplateResponse(
         request, "signup.html", {"flow_id": flow_id, "client_id": client.client_id, "error": None}
     )
@@ -194,6 +210,8 @@ async def signup(
 ):
     settings = get_settings()
     client = await _get_flow_client(db, redis, flow_id)
+    if not client.allow_signup:
+        raise HTTPException(403, "signup_disabled")
 
     def error(message: str, status_code: int = 400):
         return templates.TemplateResponse(

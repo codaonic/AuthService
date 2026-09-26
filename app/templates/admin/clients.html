@@ -1,0 +1,91 @@
+{% extends "admin/_base.html" %}
+{% block title %}Clients{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">Clients</h1></div>
+
+{% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
+
+<table class="admin-table">
+  <thead><tr><th>Client ID</th><th>Type</th><th>Pool</th><th>Signup</th><th></th></tr></thead>
+  <tbody>
+    {% for c, pool_name in clients %}
+    <tr>
+      <td>{{ c.client_id }}</td>
+      <td>{{ c.client_type }}</td>
+      <td>{{ pool_name }}</td>
+      <td>
+        {% if c.allow_signup %}<span class="badge badge--on">Allowed</span>{% else %}<span class="badge badge--off">Admin-only</span>{% endif %}
+      </td>
+      <td>
+        <form method="post" action="/admin/clients/{{ c.client_id }}/toggle-signup">
+          <button type="submit" class="btn btn--secondary">{{ "Disable signup" if c.allow_signup else "Enable signup" }}</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No clients yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="admin-card">
+  <h2>Register a client</h2>
+  <form method="post" action="/admin/clients" class="form">
+    <div class="field">
+      <label for="client_id">Client ID</label>
+      <input id="client_id" type="text" name="client_id" required placeholder="your-app">
+    </div>
+
+    <div class="field">
+      <label for="client_type">Type</label>
+      <select id="client_type" name="client_type">
+        <option value="public">Public (browser/mobile app, no secret)</option>
+        <option value="confidential">Confidential (server-side, gets a secret)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="redirect_uris">Redirect URIs <span class="field__hint">(one per line)</span></label>
+      <textarea id="redirect_uris" name="redirect_uris" rows="2" placeholder="https://yourapp.com/callback" style="font: inherit; padding: 11px 14px; border-radius: var(--radius-sm); border: 1px solid var(--color-border-strong); background: var(--color-surface); color: var(--color-text);"></textarea>
+    </div>
+
+    <div class="field">
+      <label>Grant types</label>
+      <div class="checkbox-group">
+        {% for gt in grant_types %}
+        <label class="checkbox-row"><input type="checkbox" name="grant_types" value="{{ gt }}" {% if gt != "client_credentials" %}checked{% endif %}> {{ gt }}</label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="scope">Allowed scopes <span class="field__hint">(space-separated)</span></label>
+      <input id="scope" type="text" name="scope" placeholder="openid profile email">
+    </div>
+
+    <div class="field">
+      <label for="application_type">Application type</label>
+      <select id="application_type" name="application_type">
+        <option value="web">Web</option>
+        <option value="native">Native / mobile / CLI</option>
+        <option value="service">Service</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="user_pool">User pool</label>
+      <input id="user_pool" type="text" name="user_pool" value="default" required list="pool-options">
+      <datalist id="pool-options">
+        {% for pool in pools %}<option value="{{ pool.name }}">{% endfor %}
+      </datalist>
+    </div>
+
+    <label class="checkbox-row">
+      <input type="checkbox" name="allow_signup" value="true" checked>
+      Allow self-service signup for this client (uncheck if only admins should add users)
+    </label>
+
+    <button type="submit" class="btn btn--primary btn--block">Register client</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "admin/_base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">Users</h1></div>
+
+{% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
+
+<form method="get" action="/admin/users" class="form" style="flex-direction: row; gap: 8px; margin-bottom: 16px; max-width: 360px;">
+  <input type="text" name="pool" value="{{ selected_pool }}" placeholder="Filter by pool name" list="pool-options">
+  <datalist id="pool-options">
+    {% for pool in pools %}<option value="{{ pool.name }}">{% endfor %}
+  </datalist>
+  <button type="submit" class="btn btn--secondary">Filter</button>
+</form>
+
+<table class="admin-table">
+  <thead><tr><th>Email</th><th>Pool</th><th>Status</th></tr></thead>
+  <tbody>
+    {% for u, pool_name in users %}
+    <tr><td>{{ u.email }}</td><td>{{ pool_name }}</td><td>{{ u.status }}</td></tr>
+    {% else %}
+    <tr><td colspan="3">No users yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="admin-card">
+  <h2>Add a user</h2>
+  <p style="font-size:13px;color:var(--color-text-secondary);margin-top:-8px;">
+    For clients where you've disabled self-service signup, this is how users get added.
+  </p>
+  <form method="post" action="/admin/users" class="form">
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" type="email" name="email" required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password" required minlength="8">
+    </div>
+    <div class="field">
+      <label for="user_pool">User pool</label>
+      <input id="user_pool" type="text" name="user_pool" value="default" required list="pool-options-add">
+      <datalist id="pool-options-add">
+        {% for pool in pools %}<option value="{{ pool.name }}">{% endfor %}
+      </datalist>
+    </div>
+    <button type="submit" class="btn btn--primary btn--block">Add user</button>
+  </form>
+</div>
+{% endblock %}

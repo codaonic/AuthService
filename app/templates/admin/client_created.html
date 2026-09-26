@@ -1,0 +1,14 @@
+{% extends "admin/_base.html" %}
+{% block title %}Client created{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">Client created</h1></div>
+
+<div class="admin-card">
+  <p><strong>{{ client_id }}</strong> has been registered in user pool <strong>{{ user_pool }}</strong>.</p>
+  {% if client_secret %}
+  <p style="margin-top:16px;">Client secret (shown once — store it now, it can't be retrieved again):</p>
+  <code style="display:block;padding:12px;background:var(--color-bg);border-radius:8px;word-break:break-all;font-size:13px;">{{ client_secret }}</code>
+  {% endif %}
+  <p style="margin-top:20px;"><a href="/admin/clients" class="btn btn--primary">Back to clients</a></p>
+</div>
+{% endblock %}

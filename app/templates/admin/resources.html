@@ -1,0 +1,37 @@
+{% extends "admin/_base.html" %}
+{% block title %}Resources{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">Resources</h1></div>
+
+{% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
+
+<table class="admin-table">
+  <thead><tr><th>Resource ID</th><th>Name</th></tr></thead>
+  <tbody>
+    {% for resource in resources %}
+    <tr><td>{{ resource.resource_id }}</td><td>{{ resource.name }}</td></tr>
+    {% else %}
+    <tr><td colspan="2">No resources yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="admin-card">
+  <h2>Register a resource</h2>
+  <form method="post" action="/admin/resources" class="form">
+    <div class="field">
+      <label for="resource_id">Resource ID</label>
+      <input id="resource_id" type="text" name="resource_id" required placeholder="https://api.yourdomain.com">
+    </div>
+    <div class="field">
+      <label for="name">Name</label>
+      <input id="name" type="text" name="name" required placeholder="Your API">
+    </div>
+    <div class="field">
+      <label for="metadata_url">Metadata URL <span class="field__hint">(optional)</span></label>
+      <input id="metadata_url" type="text" name="metadata_url" placeholder="https://api.yourdomain.com/.well-known/oauth-protected-resource">
+    </div>
+    <button type="submit" class="btn btn--primary btn--block">Register resource</button>
+  </form>
+</div>
+{% endblock %}

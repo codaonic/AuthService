@@ -1,0 +1,204 @@
+import pytest
+from sqlalchemy import select
+
+from app.db.models import Client, Resource, User, UserPool
+from tests.helpers import create_admin, create_client
+
+
+@pytest.mark.asyncio
+async def test_admin_login_page_renders(client):
+    resp = await client.get("/admin/login")
+    assert resp.status_code == 200
+    assert "Admin sign in" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_requires_login(client):
+    resp = await client.get("/admin")
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin/login"
+
+
+@pytest.mark.asyncio
+async def test_admin_login_wrong_password_rejected(client, db_session):
+    await create_admin(db_session, email="admin@example.com", password="correct-password!")
+
+    resp = await client.post(
+        "/admin/login", data={"email": "admin@example.com", "password": "wrong-password"}
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_admin_login_and_dashboard(client, db_session):
+    await create_admin(db_session, email="admin@example.com", password="correct-password!")
+
+    login_resp = await client.post(
+        "/admin/login", data={"email": "admin@example.com", "password": "correct-password!"}
+    )
+    assert login_resp.status_code == 303
+    assert login_resp.headers["location"] == "/admin"
+
+    dashboard_resp = await client.get("/admin")
+    assert dashboard_resp.status_code == 200
+    assert "Dashboard" in dashboard_resp.text
+
+
+async def _login_admin(client, db_session, **kwargs):
+    admin = await create_admin(db_session, **kwargs)
+    await client.post(
+        "/admin/login", data={"email": admin.email, "password": kwargs.get("password", "admin-password!")}
+    )
+    return admin
+
+
+@pytest.mark.asyncio
+async def test_create_pool_via_admin(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post("/admin/pools", data={"name": "acme"})
+    assert resp.status_code == 303
+
+    result = await db_session.execute(select(UserPool).where(UserPool.name == "acme"))
+    assert result.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_create_resource_via_admin(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post(
+        "/admin/resources", data={"resource_id": "https://api.example.com", "name": "API"}
+    )
+    assert resp.status_code == 303
+
+    result = await db_session.execute(select(Resource).where(Resource.resource_id == "https://api.example.com"))
+    assert result.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_create_public_client_via_admin(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post(
+        "/admin/clients",
+        data={
+            "client_id": "acme-web",
+            "client_type": "public",
+            "redirect_uris": "https://acme.example.com/cb",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "scope": "profile email",
+            "application_type": "web",
+            "user_pool": "acme",
+            "allow_signup": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert "has been registered" in resp.text
+    assert "Client secret" not in resp.text
+
+    result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
+    saved = result.scalar_one()
+    assert saved.client_type == "public"
+    assert saved.allow_signup is True
+
+
+@pytest.mark.asyncio
+async def test_create_confidential_client_shows_secret_once(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post(
+        "/admin/clients",
+        data={
+            "client_id": "acme-service",
+            "client_type": "confidential",
+            "grant_types": ["client_credentials"],
+            "user_pool": "default",
+        },
+    )
+    assert resp.status_code == 200
+    assert "Client secret" in resp.text
+
+    result = await db_session.execute(select(Client).where(Client.client_id == "acme-service"))
+    saved = result.scalar_one()
+    assert saved.client_secret_hash is not None
+
+
+@pytest.mark.asyncio
+async def test_toggle_client_signup(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="default", allow_signup=True)
+
+    resp = await client.post("/admin/clients/acme-web/toggle-signup")
+    assert resp.status_code == 303
+
+    result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
+    assert result.scalar_one().allow_signup is False
+
+
+@pytest.mark.asyncio
+async def test_create_user_via_admin(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post(
+        "/admin/users", data={"email": "newuser@example.com", "password": "s3cret-password!", "user_pool": "default"}
+    )
+    assert resp.status_code == 303
+
+    result = await db_session.execute(select(User).where(User.email == "newuser@example.com"))
+    assert result.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_change_admin_password(client, db_session):
+    admin = await _login_admin(client, db_session, email="admin@example.com", password="old-password!")
+
+    wrong = await client.post(
+        "/admin/account",
+        data={"current_password": "not-the-password", "new_password": "new-password!", "confirm_password": "new-password!"},
+    )
+    assert wrong.status_code == 400
+    assert "incorrect" in wrong.text
+
+    resp = await client.post(
+        "/admin/account",
+        data={"current_password": "old-password!", "new_password": "new-password!", "confirm_password": "new-password!"},
+    )
+    assert resp.status_code == 200
+    assert "Password updated" in resp.text
+
+    await db_session.refresh(admin)
+    assert admin.must_change_password is False
+
+
+@pytest.mark.asyncio
+async def test_signup_disabled_for_admin_only_client(client, db_session):
+    await create_client(
+        db_session,
+        client_id="admin-only-app",
+        redirect_uris=("https://app.example.com/cb",),
+        pool_name="default",
+        allow_signup=False,
+    )
+    from tests.helpers import make_pkce_pair
+
+    _, challenge = make_pkce_pair()
+    resp = await client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "admin-only-app",
+            "redirect_uri": "https://app.example.com/cb",
+            "resource": "https://api.example.com",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        },
+    )
+    assert resp.status_code == 200
+    assert "Sign up" not in resp.text
+
+    from tests.helpers import extract_hidden_value
+
+    flow_id = extract_hidden_value(resp.text, "flow_id")
+    signup_resp = await client.get("/signup", params={"flow_id": flow_id})
+    assert signup_resp.status_code == 403

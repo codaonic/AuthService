@@ -44,8 +44,14 @@ class Settings(BaseSettings):
     session_cookie_name: str = "auth_session"
     session_ttl_seconds: int = 60 * 60 * 24 * 7
 
+    admin_session_cookie_name: str = "admin_session"
+    admin_session_ttl_seconds: int = 60 * 60 * 12
+    default_admin_email: str = "admin@localhost"
+    default_admin_password: str = "admin123!"
+
     rate_limit_token: str = "20/minute"
     rate_limit_authorize: str = "30/minute"
+    rate_limit_admin_login: str = "10/minute"
 
 
 @lru_cache

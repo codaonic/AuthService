@@ -3,7 +3,7 @@ import hashlib
 import secrets
 
 from app.auth.passwords import hash_password
-from app.db.models import Client, Resource, User
+from app.db.models import AdminUser, Client, Resource, User
 from app.db.pools import get_or_create_pool
 
 
@@ -33,6 +33,7 @@ async def create_client(
     grant_types=("authorization_code", "refresh_token"),
     client_secret=None,
     pool_name="default",
+    allow_signup=True,
 ):
     pool = await get_or_create_pool(db_session, pool_name)
     client = Client(
@@ -43,6 +44,7 @@ async def create_client(
         redirect_uris=list(redirect_uris),
         grant_types=list(grant_types),
         allowed_scope="profile email",
+        allow_signup=allow_signup,
     )
     db_session.add(client)
     await db_session.commit()
@@ -54,6 +56,14 @@ async def create_resource(db_session, resource_id="https://api.example.com", nam
     db_session.add(resource)
     await db_session.commit()
     return resource
+
+
+async def create_admin(db_session, email="admin@example.com", password="admin-password!"):
+    admin = AdminUser(email=email, password_hash=hash_password(password))
+    db_session.add(admin)
+    await db_session.commit()
+    await db_session.refresh(admin)
+    return admin
 
 
 def extract_hidden_value(html: str, field_name: str) -> str:

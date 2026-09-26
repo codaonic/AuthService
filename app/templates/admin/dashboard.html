@@ -1,0 +1,18 @@
+{% extends "admin/_base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">Dashboard</h1></div>
+
+<div class="admin-stats">
+  <a href="/admin/pools" class="admin-stat"><p class="admin-stat__value">{{ counts.pools }}</p><p class="admin-stat__label">User pools</p></a>
+  <a href="/admin/clients" class="admin-stat"><p class="admin-stat__value">{{ counts.clients }}</p><p class="admin-stat__label">Clients</p></a>
+  <a href="/admin/resources" class="admin-stat"><p class="admin-stat__value">{{ counts.resources }}</p><p class="admin-stat__label">Resources</p></a>
+  <a href="/admin/users" class="admin-stat"><p class="admin-stat__value">{{ counts.users }}</p><p class="admin-stat__label">Users</p></a>
+</div>
+
+<p class="section-gap" style="color:var(--color-text-secondary);font-size:14px;">
+  New here? Register a <a href="/admin/resources">resource</a> for each API/MCP server, then a
+  <a href="/admin/clients">client</a> for each app that logs users in. Clients sharing a user pool name
+  share one set of users; give a client its own pool name to isolate it.
+</p>
+{% endblock %}
