@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Authorize {{ client_id }}</title>
+</head>
+<body>
+  <h1>{{ client_id }} is requesting access</h1>
+  <ul>
+    {% for scope in scopes %}<li>{{ scope }}</li>{% endfor %}
+  </ul>
+  <form method="post" action="/consent">
+    <input type="hidden" name="flow_id" value="{{ flow_id }}">
+    <button type="submit" name="approve" value="true">Allow</button>
+    <button type="submit" name="approve" value="false">Deny</button>
+  </form>
+</body>
+</html>
