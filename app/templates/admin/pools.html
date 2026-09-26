@@ -1,29 +1,36 @@
 {% extends "admin/_base.html" %}
-{% block title %}User pools{% endblock %}
+{% block title %}Login groups{% endblock %}
 {% block content %}
-<div class="admin-header"><h1 class="admin-title">User pools</h1></div>
+<div class="admin-header"><h1 class="admin-title">Login groups</h1></div>
+
+<p class="admin-lead">
+  A <strong>login group</strong> is a set of user accounts. Applications in the same group
+  share logins (one account works across all of them). You'll usually set this per-application
+  when you add it, on the <a href="/admin/clients">Applications</a> page — this page is just for
+  seeing what groups exist, or creating one ahead of time with a custom name.
+</p>
 
 {% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
 
 <table class="admin-table">
-  <thead><tr><th>Name</th><th>Pool ID</th></tr></thead>
+  <thead><tr><th>Name</th><th>Group ID</th></tr></thead>
   <tbody>
     {% for pool in pools %}
     <tr><td>{{ pool.name }}</td><td>{{ pool.id }}</td></tr>
     {% else %}
-    <tr><td colspan="2">No pools yet.</td></tr>
+    <tr><td colspan="2">No login groups yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>
 
 <div class="admin-card">
-  <h2>Create a pool</h2>
+  <h2>Create a login group</h2>
   <form method="post" action="/admin/pools" class="form">
     <div class="field">
       <label for="name">Name</label>
-      <input id="name" type="text" name="name" required placeholder="e.g. acme, acme-admin-only">
+      <input id="name" type="text" name="name" required placeholder="e.g. acme-staff">
     </div>
-    <button type="submit" class="btn btn--primary btn--block">Create pool</button>
+    <button type="submit" class="btn btn--primary btn--block">Create group</button>
   </form>
 </div>
 {% endblock %}

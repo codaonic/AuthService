@@ -1,12 +1,18 @@
 {% extends "admin/_base.html" %}
-{% block title %}Clients{% endblock %}
+{% block title %}Applications{% endblock %}
 {% block content %}
-<div class="admin-header"><h1 class="admin-title">Clients</h1></div>
+<div class="admin-header"><h1 class="admin-title">Applications</h1></div>
+
+<p class="admin-lead">
+  An <strong>application</strong> is anything that lets people log in — a website, a
+  mobile app, or an AI assistant like ChatGPT or Claude connecting to your service.
+  Add one below for every app you want to connect.
+</p>
 
 {% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
 
 <table class="admin-table">
-  <thead><tr><th>Client ID</th><th>Type</th><th>Pool</th><th>Signup</th><th></th></tr></thead>
+  <thead><tr><th>Application</th><th>Type</th><th>Login group</th><th>Signup</th><th></th></tr></thead>
   <tbody>
     {% for c, pool_name in clients %}
     <tr>
@@ -23,69 +29,198 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="5">No clients yet.</td></tr>
+    <tr><td colspan="5">No applications yet — add your first one below.</td></tr>
     {% endfor %}
   </tbody>
 </table>
 
-<div class="admin-card">
-  <h2>Register a client</h2>
-  <form method="post" action="/admin/clients" class="form">
-    <div class="field">
-      <label for="client_id">Client ID</label>
-      <input id="client_id" type="text" name="client_id" required placeholder="your-app">
-    </div>
+<div class="admin-card admin-card--wide">
+  <h2>Add an application</h2>
+  <form method="post" action="/admin/clients" class="wizard" id="client-form">
 
-    <div class="field">
-      <label for="client_type">Type</label>
-      <select id="client_type" name="client_type">
-        <option value="public">Public (browser/mobile app, no secret)</option>
-        <option value="confidential">Confidential (server-side, gets a secret)</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="redirect_uris">Redirect URIs <span class="field__hint">(one per line)</span></label>
-      <textarea id="redirect_uris" name="redirect_uris" rows="2" placeholder="https://yourapp.com/callback" style="font: inherit; padding: 11px 14px; border-radius: var(--radius-sm); border: 1px solid var(--color-border-strong); background: var(--color-surface); color: var(--color-text);"></textarea>
-    </div>
-
-    <div class="field">
-      <label>Grant types</label>
-      <div class="checkbox-group">
-        {% for gt in grant_types %}
-        <label class="checkbox-row"><input type="checkbox" name="grant_types" value="{{ gt }}" {% if gt != "client_credentials" %}checked{% endif %}> {{ gt }}</label>
-        {% endfor %}
+    <div class="wizard-step">
+      <div class="wizard-step__num">1</div>
+      <div class="wizard-step__body">
+        <label for="preset">What are you connecting?</label>
+        <select id="preset">
+          <option value="website" selected>Website or backend app</option>
+          <option value="native">Mobile app, CLI tool, or AI assistant (e.g. ChatGPT, an MCP client)</option>
+          <option value="service">Machine-to-machine service — no human ever logs in</option>
+        </select>
       </div>
     </div>
 
-    <div class="field">
-      <label for="scope">Allowed scopes <span class="field__hint">(space-separated)</span></label>
-      <input id="scope" type="text" name="scope" placeholder="openid profile email">
+    <div class="wizard-step">
+      <div class="wizard-step__num">2</div>
+      <div class="wizard-step__body">
+        <label for="client_id">Give it a name</label>
+        <input id="client_id" type="text" name="client_id" required placeholder="e.g. marketing-site, support-bot">
+        <span class="field__hint">Just an internal label so you can recognize it later.</span>
+      </div>
     </div>
 
-    <div class="field">
-      <label for="application_type">Application type</label>
-      <select id="application_type" name="application_type">
-        <option value="web">Web</option>
-        <option value="native">Native / mobile / CLI</option>
-        <option value="service">Service</option>
-      </select>
+    <div class="wizard-step" id="redirect-step">
+      <div class="wizard-step__num">3</div>
+      <div class="wizard-step__body">
+        <label for="redirect_uris">Where should we send people back to after login? <span class="field__hint">(one per line)</span></label>
+        <textarea id="redirect_uris" name="redirect_uris" rows="2" placeholder="https://yourapp.com/callback" style="font: inherit; padding: 11px 14px; border-radius: var(--radius-sm); border: 1px solid var(--color-border-strong); background: var(--color-surface); color: var(--color-text); width: 100%;"></textarea>
+      </div>
     </div>
 
-    <div class="field">
-      <label for="user_pool">User pool</label>
-      <input id="user_pool" type="text" name="user_pool" value="default" required list="pool-options">
-      <datalist id="pool-options">
-        {% for pool in pools %}<option value="{{ pool.name }}">{% endfor %}
-      </datalist>
+    <div class="wizard-step" id="sharing-step">
+      <div class="wizard-step__num">4</div>
+      <div class="wizard-step__body">
+        <label>Who should be able to log in?</label>
+        <div class="choice-group">
+          <label class="choice-card">
+            <input type="radio" name="sharing" value="shared" checked>
+            <span class="choice-card__title">Share logins with my other apps</span>
+            <span class="choice-card__desc">One account works everywhere — recommended for most apps in the same company. Also covers AI assistants that connect automatically.</span>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="sharing" value="isolated">
+            <span class="choice-card__title">Keep this app's users separate</span>
+            <span class="choice-card__desc">Its own private list of accounts — good for an internal admin tool or a client-specific deployment.</span>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="sharing" value="custom">
+            <span class="choice-card__title">Use a specific existing group</span>
+            <span class="choice-card__desc">Pick this if you've already set up a named login group for a subset of your apps.</span>
+          </label>
+        </div>
+        <div class="field" id="custom-pool-field" style="display:none; margin-top:10px;">
+          <input id="user_pool_custom" type="text" placeholder="group name" list="pool-options">
+          <datalist id="pool-options">
+            {% for pool in pools %}<option value="{{ pool.name }}">{% endfor %}
+          </datalist>
+        </div>
+        <input type="hidden" id="user_pool" name="user_pool" value="default">
+      </div>
     </div>
 
-    <label class="checkbox-row">
-      <input type="checkbox" name="allow_signup" value="true" checked>
-      Allow self-service signup for this client (uncheck if only admins should add users)
-    </label>
+    <div class="wizard-step" id="signup-step">
+      <div class="wizard-step__num">5</div>
+      <div class="wizard-step__body">
+        <label class="checkbox-row">
+          <input type="checkbox" name="allow_signup" value="true" checked>
+          Let new users sign themselves up (turn off if only you should add users, in Users)
+        </label>
+      </div>
+    </div>
 
-    <button type="submit" class="btn btn--primary btn--block">Register client</button>
+    <details class="advanced">
+      <summary>Advanced settings (rarely needed)</summary>
+
+      <div class="field">
+        <label for="client_type">Can this app keep a secret safely?</label>
+        <select id="client_type" name="client_type">
+          <option value="public">No — it's public (browser, mobile app, or AI assistant)</option>
+          <option value="confidential">Yes — it runs on my own server</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>What is it allowed to do</label>
+        <div class="checkbox-group checkbox-group--stacked">
+          {% for gt in grant_types %}
+          <label class="checkbox-row">
+            <input type="checkbox" name="grant_types" value="{{ gt }}" {% if gt != "client_credentials" %}checked{% endif %}>
+            {% if gt == "authorization_code" %}Let a person log in
+            {% elif gt == "refresh_token" %}Keep them signed in without repeating login
+            {% else %}Talk directly to the server with no person involved{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="scope">Allowed scopes <span class="field__hint">(space-separated — leave blank for the default access level)</span></label>
+        <input id="scope" type="text" name="scope" placeholder="openid profile email">
+      </div>
+    </details>
+
+    <input type="hidden" id="application_type" name="application_type" value="web">
+
+    <button type="submit" class="btn btn--primary btn--block">Add application</button>
   </form>
 </div>
+
+<script>
+(function () {
+  const preset = document.getElementById("preset");
+  const clientType = document.getElementById("client_type");
+  const applicationType = document.getElementById("application_type");
+  const redirectStep = document.getElementById("redirect-step");
+  const redirectInput = document.getElementById("redirect_uris");
+  const signupStep = document.getElementById("signup-step");
+  const signupCheckbox = signupStep.querySelector("input");
+  const grantBoxes = document.querySelectorAll('input[name="grant_types"]');
+
+  function setGrants(values) {
+    grantBoxes.forEach((box) => { box.checked = values.includes(box.value); });
+  }
+
+  const presets = {
+    website: () => {
+      clientType.value = "confidential";
+      applicationType.value = "web";
+      setGrants(["authorization_code", "refresh_token"]);
+      redirectStep.style.display = "";
+      redirectInput.required = true;
+      signupStep.style.display = "";
+      signupCheckbox.disabled = false;
+    },
+    native: () => {
+      clientType.value = "public";
+      applicationType.value = "native";
+      setGrants(["authorization_code", "refresh_token"]);
+      redirectStep.style.display = "";
+      redirectInput.required = true;
+      signupStep.style.display = "";
+      signupCheckbox.disabled = false;
+    },
+    service: () => {
+      clientType.value = "confidential";
+      applicationType.value = "service";
+      setGrants(["client_credentials"]);
+      redirectStep.style.display = "none";
+      redirectInput.required = false;
+      redirectInput.value = "";
+      signupCheckbox.checked = false;
+      signupCheckbox.disabled = true;
+      signupStep.style.display = "none";
+    },
+  };
+
+  preset.addEventListener("change", () => {
+    const fn = presets[preset.value];
+    if (fn) fn();
+  });
+  presets[preset.value]();
+
+  const sharingRadios = document.querySelectorAll('input[name="sharing"]');
+  const customField = document.getElementById("custom-pool-field");
+  const customInput = document.getElementById("user_pool_custom");
+  const userPool = document.getElementById("user_pool");
+  const clientId = document.getElementById("client_id");
+
+  function updatePool() {
+    const choice = document.querySelector('input[name="sharing"]:checked').value;
+    if (choice === "shared") {
+      userPool.value = "default";
+    } else if (choice === "isolated") {
+      userPool.value = clientId.value.trim() || "default";
+    } else {
+      userPool.value = customInput.value.trim() || "default";
+    }
+    customField.style.display = choice === "custom" ? "" : "none";
+  }
+
+  sharingRadios.forEach((r) => r.addEventListener("change", updatePool));
+  customInput.addEventListener("input", updatePool);
+  clientId.addEventListener("input", updatePool);
+  document.getElementById("client-form").addEventListener("submit", updatePool);
+  updatePool();
+})();
+</script>
 {% endblock %}

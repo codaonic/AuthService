@@ -94,8 +94,8 @@ async def test_create_public_client_via_admin(client, db_session):
         },
     )
     assert resp.status_code == 200
-    assert "has been registered" in resp.text
-    assert "Client secret" not in resp.text
+    assert "is ready to go" in resp.text
+    assert "Its secret key" not in resp.text
 
     result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
     saved = result.scalar_one()
@@ -117,7 +117,7 @@ async def test_create_confidential_client_shows_secret_once(client, db_session):
         },
     )
     assert resp.status_code == 200
-    assert "Client secret" in resp.text
+    assert "Its secret key" in resp.text
 
     result = await db_session.execute(select(Client).where(Client.client_id == "acme-service"))
     saved = result.scalar_one()

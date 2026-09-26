@@ -3,6 +3,12 @@
 {% block content %}
 <div class="admin-header"><h1 class="admin-title">Resources</h1></div>
 
+<p class="admin-lead">
+  A <strong>resource</strong> is an API or MCP server that <em>accepts</em> tokens from this
+  auth server, rather than one that logs users in. Register your MCP server or API here so it
+  shows up in discovery metadata — no secret is issued, since resources only verify tokens.
+</p>
+
 {% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
 
 <table class="admin-table">

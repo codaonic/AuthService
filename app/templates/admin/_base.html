@@ -15,10 +15,10 @@
     <nav class="admin-nav">
       <div class="admin-nav__brand">Auth Admin</div>
       <a href="/admin" class="{{ 'active' if active == 'dashboard' else '' }}">Dashboard</a>
-      <a href="/admin/pools" class="{{ 'active' if active == 'pools' else '' }}">User pools</a>
-      <a href="/admin/clients" class="{{ 'active' if active == 'clients' else '' }}">Clients</a>
-      <a href="/admin/resources" class="{{ 'active' if active == 'resources' else '' }}">Resources</a>
+      <a href="/admin/clients" class="{{ 'active' if active == 'clients' else '' }}">Applications</a>
+      <a href="/admin/resources" class="{{ 'active' if active == 'resources' else '' }}">APIs &amp; MCP servers</a>
       <a href="/admin/users" class="{{ 'active' if active == 'users' else '' }}">Users</a>
+      <a href="/admin/pools" class="{{ 'active' if active == 'pools' else '' }}">Login groups</a>
       <a href="/admin/account" class="{{ 'active' if active == 'account' else '' }}">Account</a>
       <form method="post" action="/admin/logout">
         <button type="submit" class="btn btn--secondary btn--block">Sign out</button>
