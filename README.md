@@ -2,9 +2,10 @@
 
 A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces Keycloak: one service owns identity and tokens, while every consumer — regardless of language — talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server.
 
+![Test](https://github.com/codaonic/AuthService/actions/workflows/test.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688)
-![License](https://img.shields.io/badge/license-Proprietary-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 > Status: **Core AS implemented** — users, clients, `/authorize` + PKCE, `/token`, `/jwks.json`, discovery, dynamic client registration, refresh rotation, revocation, an `/admin` setup UI. See [Roadmap](#roadmap) for what's next.
 
@@ -30,6 +31,7 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 - [Security](#security)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -341,6 +343,8 @@ auth_service/
 
 ## Security
 
+Found a vulnerability? See [SECURITY.md](SECURITY.md) for how to report it privately instead of opening a public issue.
+
 - PKCE (S256) mandatory on every authorization code exchange
 - Refresh tokens are one-time-use: each refresh rotates the token and invalidates the previous one; reuse is rejected
 - Refresh token validity lives in Redis (fast revocation check); Postgres keeps the full audit trail (`rotated_from`, `revoked_at`)
@@ -379,6 +383,10 @@ Following the build order this service was planned against:
 - [ ] Observability: structured audit logs, anomalous-issuance alerting
 - [ ] Pen test before production traffic
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, running the test suite, and the PR process. Please also read the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
-Proprietary — internal use only. Not licensed for external distribution.
+MIT — see [LICENSE](LICENSE).
