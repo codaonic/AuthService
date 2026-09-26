@@ -150,6 +150,19 @@ docker compose exec auth-service uv run alembic upgrade head
 
 The service is now on `http://localhost:8000` — the standard OAuth surface at root, the setup UI under `/admin`, interactive API docs at `/docs`.
 
+> **Changed `DB_USER`/`DB_PASSWORD` in `.env` after the first `docker compose up`?** Postgres's official image only applies `POSTGRES_USER`/`POSTGRES_PASSWORD` the *first* time it initializes an empty data directory — editing `.env` afterward does nothing on its own, because `./data/postgres` already has a role/password baked in from that first run. You'll see `password authentication failed` from the app even though `.env` looks correct. Fix it by either wiping the volume for a truly fresh start (only if `./data/postgres` has nothing you need):
+> ```bash
+> docker compose down
+> rm -rf ./data/postgres
+> docker compose up -d
+> ```
+> or, to keep existing data, re-sync Postgres to whatever `.env` currently says (sourcing the file avoids any copy-paste mistakes with the password):
+> ```bash
+> set -a; source .env; set +a
+> docker exec -it auth_pgsql psql -U "$DB_USER" -d "$DB_NAME" -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASSWORD';"
+> ```
+> Either way, if you just wiped the volume, `alembic upgrade head` needs to run again (see below) before the app has any tables.
+
 ### Option B — Local dev with uv
 
 Runs the app directly on the host (faster iteration), pointing at Postgres/Redis however you have them available (e.g. `docker compose up -d postgres redis` published to host ports, or local installs).
