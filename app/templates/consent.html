@@ -1,18 +1,41 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Authorize {{ client_id }}</title>
-</head>
-<body>
-  <h1>{{ client_id }} is requesting access</h1>
-  <ul>
-    {% for scope in scopes %}<li>{{ scope }}</li>{% endfor %}
-  </ul>
-  <form method="post" action="/consent">
-    <input type="hidden" name="flow_id" value="{{ flow_id }}">
-    <button type="submit" name="approve" value="true">Allow</button>
-    <button type="submit" name="approve" value="false">Deny</button>
-  </form>
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block title %}Authorize access{% endblock %}
+
+{% block icon %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3l7 3v5c0 4.6-3 8.4-7 10-4-1.6-7-5.4-7-10V6l7-3z"/>
+  <path d="M9 12.2l2 2 4-4.2"/>
+</svg>
+{% endblock %}
+
+{% block heading %}Authorize access{% endblock %}
+
+{% block subheading %}
+<p class="card__subtitle"><strong>{{ client_id }}</strong> is requesting access to your account</p>
+{% endblock %}
+
+{% block content %}
+<ul class="scope-list">
+  {% for scope in scopes %}
+  <li class="scope-list__item">
+    <span class="scope-list__icon">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 12.5l5 5L20 7"/>
+      </svg>
+    </span>
+    <span>{{ scope_descriptions.get(scope, scope) if scope_descriptions else scope }}</span>
+  </li>
+  {% endfor %}
+</ul>
+
+<form method="post" action="/consent" class="form">
+  <input type="hidden" name="flow_id" value="{{ flow_id }}">
+  <div class="button-row">
+    <button type="submit" name="approve" value="false" class="btn btn--secondary">Deny</button>
+    <button type="submit" name="approve" value="true" class="btn btn--primary">Allow</button>
+  </div>
+</form>
+{% endblock %}
+
+{% block footer %}You can revoke this access at any time.{% endblock %}

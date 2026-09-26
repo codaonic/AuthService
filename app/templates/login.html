@@ -1,18 +1,68 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Sign in</title>
-</head>
-<body>
-  <h1>Sign in</h1>
-  {% if error %}<p style="color:red">{{ error }}</p>{% endif %}
-  <form method="post" action="/login">
-    <input type="hidden" name="flow_id" value="{{ flow_id }}">
-    <label>Email <input type="email" name="email" required autofocus></label><br>
-    <label>Password <input type="password" name="password" required></label><br>
-    <label>MFA code (if enabled) <input type="text" name="totp_code" inputmode="numeric" autocomplete="one-time-code"></label><br>
-    <button type="submit">Sign in</button>
-  </form>
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block title %}Sign in{% endblock %}
+
+{% block icon %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/>
+  <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
+  <circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/>
+</svg>
+{% endblock %}
+
+{% block heading %}Sign in{% endblock %}
+
+{% block subheading %}
+{% if client_id %}
+<p class="card__subtitle">to continue to <strong>{{ client_id }}</strong></p>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if error %}
+<div class="alert alert--error" role="alert">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 8v5"/>
+    <circle cx="12" cy="16.3" r="1" fill="currentColor" stroke="none"/>
+  </svg>
+  <span>{{ error }}</span>
+</div>
+{% endif %}
+
+<form method="post" action="/login" class="form" novalidate>
+  <input type="hidden" name="flow_id" value="{{ flow_id }}">
+
+  <div class="field">
+    <label for="email">Email</label>
+    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="you@example.com">
+  </div>
+
+  <div class="field">
+    <label for="password">Password</label>
+    <div class="input-group">
+      <input id="password" type="password" name="password" required autocomplete="current-password" placeholder="••••••••">
+      <button type="button" class="toggle-visibility" data-target="password" aria-label="Show password" aria-pressed="false">
+        <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+        <svg class="icon-eye-off" hidden viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3l18 18"/>
+          <path d="M10.6 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a15.6 15.6 0 0 1-3.4 4.3M6.6 6.6C4 8.3 2 12 2 12s3.5 7 10 7c1.4 0 2.7-.3 3.9-.8"/>
+          <path d="M9.5 9.5a3 3 0 0 0 4.2 4.2"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="totp_code">Authentication code <span class="field__hint">(if MFA is enabled)</span></label>
+    <input id="totp_code" class="input--otp" type="text" name="totp_code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+  </div>
+
+  <button type="submit" class="btn btn--primary btn--block">Sign in</button>
+</form>
+{% endblock %}
+
+{% block footer %}Your credentials are sent directly to this service and are never shared with {{ client_id or "the requesting application" }}.{% endblock %}

@@ -25,6 +25,13 @@ FLOW_KEY_PREFIX = "flow:"
 CODE_KEY_PREFIX = "code:"
 SUPPORTED_CHALLENGE_METHODS = {"S256"}
 
+SCOPE_DESCRIPTIONS = {
+    "openid": "Confirm your identity",
+    "profile": "View your basic profile information",
+    "email": "View your email address",
+    "offline_access": "Maintain access when you're not present",
+}
+
 
 async def _load_client(db: AsyncSession, client_id: str) -> Client:
     result = await db.execute(select(Client).where(Client.client_id == client_id))
@@ -78,7 +85,7 @@ async def authorize(
 
     if user_id is None:
         return templates.TemplateResponse(
-            request, "login.html", {"flow_id": flow_id, "error": None}
+            request, "login.html", {"flow_id": flow_id, "client_id": client_id, "error": None}
         )
 
     return await _continue_flow(request, db, redis, flow_id, user_id)
@@ -95,6 +102,8 @@ async def login(
     redis: Redis = Depends(get_redis),
 ):
     settings = get_settings()
+    client_id = await redis.hget(f"{FLOW_KEY_PREFIX}{flow_id}", "client_id")
+
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
@@ -102,7 +111,7 @@ async def login(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "error": "Invalid email or password"},
+            {"flow_id": flow_id, "client_id": client_id, "error": "Invalid email or password"},
             status_code=401,
         )
 
@@ -110,7 +119,7 @@ async def login(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "error": "Invalid or missing MFA code"},
+            {"flow_id": flow_id, "client_id": client_id, "error": "Invalid or missing MFA code"},
             status_code=401,
         )
 
@@ -151,6 +160,7 @@ async def _continue_flow(
                 "flow_id": flow_id,
                 "client_id": client.client_id,
                 "scopes": sorted(requested_scopes),
+                "scope_descriptions": SCOPE_DESCRIPTIONS,
             },
         )
 
