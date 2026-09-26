@@ -1,10 +1,28 @@
-# auth-service-sdk
+# authservice-client
 
 Token validation and FastAPI integration helpers for any service that sits behind the shared auth service — a website's API, an MCP server, or any other resource server. Nothing here talks to the auth service except to fetch and cache its JWKS; every request is verified locally.
 
+Not published to PyPI — install it straight from this GitHub repo (see below).
+
 ## Install
 
-From another project, either add it as a local/editable dependency, or copy the `auth_service_sdk/` package directly — it has exactly two runtime dependencies (`python-jose[cryptography]`, `httpx`), plus `fastapi` if you use the FastAPI helpers.
+### From another repo (the normal case)
+
+This isn't on PyPI, so install it directly from GitHub. Pin a branch, tag, or commit for anything beyond local experimentation.
+
+```bash
+# uv
+uv add "authservice-client @ git+https://github.com/codaonic/AuthService.git@main#subdirectory=sdk/python"
+# with the FastAPI helpers:
+uv add "authservice-client[fastapi] @ git+https://github.com/codaonic/AuthService.git@main#subdirectory=sdk/python"
+
+# pip
+pip install "authservice-client[fastapi] @ git+https://github.com/codaonic/AuthService.git@main#subdirectory=sdk/python"
+```
+
+If the repo is private, whoever installs it needs GitHub access already set up (SSH key or a credential helper) — swap the URL for the `git+ssh://git@github.com/codaonic/AuthService.git@main#subdirectory=sdk/python` form if that's how you authenticate.
+
+### From within this monorepo (examples, local dev)
 
 ```bash
 uv add --editable ../auth_service/sdk/python
@@ -15,7 +33,7 @@ uv add --editable ../auth_service/sdk/python[fastapi]
 ## Framework-agnostic validation
 
 ```python
-from auth_service_sdk import TokenValidator, TokenValidationError
+from authservice_client import TokenValidator, TokenValidationError
 
 validator = TokenValidator(
     issuer="https://auth.yourdomain.com",
@@ -33,9 +51,9 @@ except TokenValidationError:
 ```python
 from fastapi import Depends, FastAPI
 
-from auth_service_sdk import TokenValidator
-from auth_service_sdk.fastapi import make_auth_dependency, make_scope_dependency
-from auth_service_sdk.protected_resource import protected_resource_router
+from authservice_client import TokenValidator
+from authservice_client.fastapi import make_auth_dependency, make_scope_dependency
+from authservice_client.protected_resource import protected_resource_router
 
 ISSUER = "https://auth.yourdomain.com"
 RESOURCE_ID = "https://api.yourdomain.com"
@@ -75,7 +93,7 @@ Equivalent libraries: `jose` or `jsonwebtoken` + `jwks-rsa` in Node, `github.com
 
 ## Registering your service
 
-Before any of this works, the auth service needs to know about your resource and your client. From the auth service's repo:
+Before any of this works, the auth service needs to know about your resource and your client — either via the [`/admin` UI](../../README.md#admin-ui) or the CLI, from the auth service's own repo:
 
 ```bash
 uv run python -m app.cli register-resource --resource-id "https://api.yourdomain.com" --name "Your API"

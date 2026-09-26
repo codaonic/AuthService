@@ -1,15 +1,15 @@
 [project]
 name = "example-mcp-server"
 version = "0.1.0"
-description = "Example MCP server auth integration, using auth-service-sdk to validate tokens"
+description = "Example MCP server auth integration, using authservice-client to validate tokens"
 requires-python = ">=3.12"
 dependencies = [
-    "auth-service-sdk[fastapi]",
+    "authservice-client[fastapi]",
     "uvicorn[standard]>=0.30",
 ]
 
 [tool.uv.sources]
-auth-service-sdk = { path = "../../sdk/python", editable = true }
+authservice-client = { path = "../../sdk/python", editable = true }
 
 [tool.uv]
 package = false

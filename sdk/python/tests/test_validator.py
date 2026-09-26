@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from auth_service_sdk import TokenValidationError, TokenValidator
+from authservice_client import TokenValidationError, TokenValidator
 from tests.helpers import ISSUER, RESOURCE_ID, make_token
 
 

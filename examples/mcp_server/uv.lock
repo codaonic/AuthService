@@ -34,7 +34,7 @@ wheels = [
 ]
 
 [[package]]
-name = "auth-service-sdk"
+name = "authservice-client"
 version = "0.1.0"
 source = { editable = "../../sdk/python" }
 dependencies = [
@@ -233,13 +233,13 @@ name = "example-mcp-server"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "auth-service-sdk", extra = ["fastapi"] },
+    { name = "authservice-client", extra = ["fastapi"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "auth-service-sdk", extras = ["fastapi"], editable = "../../sdk/python" },
+    { name = "authservice-client", extras = ["fastapi"], editable = "../../sdk/python" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 

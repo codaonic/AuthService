@@ -1,6 +1,6 @@
 """Illustrates the auth integration point for an MCP server: a 401 challenge
 pointing at this server's own Protected Resource Metadata, and per-request
-token validation via auth-service-sdk.
+token validation via authservice-client.
 
 This is deliberately transport-agnostic (plain FastAPI routes standing in for
 MCP tool calls). Real MCP servers built on the official Python/TypeScript SDKs
@@ -14,9 +14,9 @@ Run it with:
 
 from fastapi import Depends, FastAPI
 
-from auth_service_sdk import TokenValidator
-from auth_service_sdk.fastapi import make_auth_dependency
-from auth_service_sdk.protected_resource import protected_resource_router
+from authservice_client import TokenValidator
+from authservice_client.fastapi import make_auth_dependency
+from authservice_client.protected_resource import protected_resource_router
 
 ISSUER = "http://localhost:8000"
 RESOURCE_ID = "https://mcp.example.com"

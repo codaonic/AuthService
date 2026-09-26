@@ -2,9 +2,9 @@ import httpx
 import pytest
 from fastapi import Depends, FastAPI
 
-from auth_service_sdk import TokenValidator
-from auth_service_sdk.fastapi import make_auth_dependency, make_scope_dependency
-from auth_service_sdk.protected_resource import protected_resource_router
+from authservice_client import TokenValidator
+from authservice_client.fastapi import make_auth_dependency, make_scope_dependency
+from authservice_client.protected_resource import protected_resource_router
 from tests.helpers import ISSUER, RESOURCE_ID, make_token
 
 

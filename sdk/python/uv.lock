@@ -77,7 +77,7 @@ wheels = [
 ]
 
 [[package]]
-name = "auth-service-sdk"
+name = "authservice-client"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

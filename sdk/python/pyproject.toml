@@ -1,5 +1,5 @@
 [project]
-name = "auth-service-sdk"
+name = "authservice-client"
 version = "0.1.0"
 description = "Token validation and framework helpers for services behind the shared auth service"
 requires-python = ">=3.9"

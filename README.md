@@ -123,8 +123,9 @@ auth_service/
 │   └── static/                    # CSS/JS for both the login/consent UI and the admin UI
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
-├── sdk/python/                     # auth-service-sdk: TokenValidator + FastAPI helpers for resource servers
-│   └── auth_service_sdk/           # standalone package, its own pyproject.toml/uv.lock, zero app.* dependency
+├── sdk/python/                     # authservice-client: TokenValidator + FastAPI helpers for resource servers
+│   └── authservice_client/          # standalone package, its own pyproject.toml/uv.lock, zero app.* dependency
+│                                    # not on PyPI -- installed via git, see sdk/python/README.md
 ├── examples/
 │   ├── example_api/                # runnable protected API built on the SDK
 │   └── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
@@ -276,7 +277,11 @@ MCP clients don't need manual registration — they self-register at connect tim
 
 This is the part every app/MCP server has to do, and it's the same three steps in any language (fetch JWKS → cache it → verify signature/`exp`/`aud`/`iss` locally, no call back to this service per-request). Two ways to do it:
 
-- **Python**: use [`sdk/python`](sdk/python) (`auth-service-sdk`) — a `TokenValidator` plus FastAPI dependency helpers (`make_auth_dependency`, `make_scope_dependency`) and a router that serves your resource's own RFC 9728 metadata. See [`sdk/python/README.md`](sdk/python/README.md).
+- **Python**: use [`sdk/python`](sdk/python) (`authservice-client`) — a `TokenValidator` plus FastAPI dependency helpers (`make_auth_dependency`, `make_scope_dependency`) and a router that serves your resource's own RFC 9728 metadata. Not on PyPI — install straight from this repo:
+  ```bash
+  uv add "authservice-client @ git+https://github.com/codaonic/AuthService.git@main#subdirectory=sdk/python"
+  ```
+  Full usage: [`sdk/python/README.md`](sdk/python/README.md).
 - **Any other language**: reimplement the same ~20-line pattern — there's a mature JWT + JWKS library in every mainstream language (`jose`/`jwks-rsa` in Node, `github.com/coreos/go-oidc` in Go, `jose4j` in Java). No dependency on this being a Python service.
 
 Two runnable, tested examples built on the SDK:
