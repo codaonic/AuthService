@@ -2,6 +2,10 @@
 
 A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces Keycloak: one service owns identity and tokens, while every consumer — regardless of language — talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server.
 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688)
+![License](https://img.shields.io/badge/license-Proprietary-lightgrey)
+
 > Status: **Core AS implemented** — users, clients, `/authorize` + PKCE, `/token`, `/jwks.json`, discovery, dynamic client registration, refresh rotation, revocation, an `/admin` setup UI. See [Roadmap](#roadmap) for what's next.
 
 ---
@@ -9,12 +13,10 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 ## Table of contents
 
 - [Why a custom service](#why-a-custom-service)
-- [Architecture](#architecture)
-- [Tech stack](#tech-stack)
-- [Project structure](#project-structure)
+- [Features](#features)
 - [Getting started](#getting-started)
-  - [Option A — Docker Compose](#option-a--docker-compose-recommended)
-  - [Option B — Local dev with uv](#option-b--local-dev-with-uv)
+  - [Local development](#local-development)
+  - [Server / production deployment](#server--production-deployment-docker-compose)
 - [Configuration](#configuration)
 - [Database migrations](#database-migrations)
 - [API surface](#api-surface)
@@ -22,9 +24,13 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 - [User pools](#user-pools)
 - [Admin UI](#admin-ui)
 - [Integrating your applications and MCP servers](#integrating-your-applications-and-mcp-servers)
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
 - [Security](#security)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
@@ -32,109 +38,15 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 
 OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A client written in JavaScript, Go, Swift, Kotlin, Rust, or another Python service all talk to this service the exact same way. Nothing about the server being Python limits who can *use* it — you're not shipping an SDK, you're running a standards-compliant service that any OAuth/OIDC client (including MCP clients) works against with zero custom glue.
 
-## Architecture
+## Features
 
-```
-                         ┌─────────────────────────────────────────┐
-                         │        AUTH SERVICE (Python/FastAPI)      │
-                         │  /authorize  /token  /register  /revoke   │
-                         │  /login  /signup  /consent  /userinfo     │
-                         │  /.well-known/openid-configuration        │
-                         │  /.well-known/oauth-protected-resource    │
-                         │  /jwks.json                                │
-                         │  /admin/*  -- operator setup UI: pools,   │
-                         │    clients, resources, users, own login   │
-                         └───────────────┬─────────────────────────┘
-                                         │
-                     ┌───────────────────┼───────────────────┐
-                     ▼                   ▼                   ▼
-              PostgreSQL           Redis                  Signing keys
-          (users, clients,     (sessions, auth codes,     (rotating RSA
-           resources, consents, refresh tokens,            keypairs on disk,
-           refresh-token audit) revocation)                 kid-tagged)
-
-                     ▲  JWKS + OIDC discovery, fetched & cached locally
-                     │
-      ┌──────────────┼──────────────────┬──────────────────────┐
-      ▼                                  ▼                       ▼
-┌──────────────┐                 ┌──────────────┐        ┌───────────────────┐
-│   Website     │                 │  MCP servers  │        │  Other apps/APIs   │
-│ (any language) │                 │ (Python, Go,  │        │ (mobile, partner    │
-│                │                 │  Node, etc.)  │        │  services, any lang)│
-└──────────────┘                 └──────────────┘        └───────────────────┘
-```
-
-Every consumer is a **resource server**: it never issues tokens, it only fetches this service's JWKS once, caches it, and verifies JWTs locally — no network call back to the auth service on the hot path.
-
-## Tech stack
-
-| Component | Choice | Why |
-|---|---|---|
-| Web framework | FastAPI | Async, native OpenAPI docs |
-| Database | PostgreSQL via SQLAlchemy (async) + asyncpg | Users, clients, resources, consents, refresh-token audit trail |
-| Cache / sessions / codes | Redis | Login sessions, authorization codes, active refresh tokens, one-time-use enforcement |
-| JWT signing | `python-jose` + `cryptography` | RS256, `kid`-based key rotation |
-| Password hashing | `argon2-cffi` | Memory-hard, current best practice |
-| MFA | `pyotp` (TOTP) | Standard authenticator-app codes |
-| Rate limiting | `slowapi` | Brute-force protection on `/token` and `/authorize` |
-| Migrations | Alembic | Schema versioning |
-| Package/dependency manager | `uv` | Fast, lockfile-based, single source of truth (`pyproject.toml` / `uv.lock`) |
-| Templates | Jinja2 | Server-rendered login/consent pages |
-
-## Project structure
-
-```
-auth_service/
-├── app/
-│   ├── main.py                  # FastAPI app entrypoint, router + middleware wiring
-│   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
-│   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
-│   ├── db/
-│   │   ├── models.py            # SQLAlchemy models: UserPool, User, AdminUser, Client, Resource, Consent, RefreshToken
-│   │   ├── pools.py              # get_or_create_pool() -- pools are created implicitly by name
-│   │   ├── session.py           # async engine + session factory
-│   │   └── redis_client.py      # Redis connection
-│   ├── oidc/                     # standard OAuth/OIDC surface, all at root
-│   │   ├── discovery.py         # GET /.well-known/openid-configuration
-│   │   ├── prm.py                # GET /.well-known/oauth-protected-resource
-│   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow)
-│   │   ├── token.py              # POST /token (auth code, refresh, client_credentials)
-│   │   ├── refresh.py            # refresh-token issuance/rotation/revocation (Redis + Postgres audit)
-│   │   ├── clients.py            # client authentication (confidential/public)
-│   │   ├── scope.py              # scope resolution against a client's allowed_scope
-│   │   ├── pkce.py               # PKCE S256 verification
-│   │   ├── keys.py               # RSA key generation/rotation, JWKS
-│   │   ├── tokens.py             # JWT minting
-│   │   ├── jwks.py               # GET /jwks.json
-│   │   ├── register.py           # POST /register (Dynamic Client Registration, RFC 7591)
-│   │   ├── revoke.py             # POST /revoke
-│   │   └── userinfo.py           # GET /userinfo
-│   ├── admin/                     # mounted under /admin -- operator setup UI
-│   │   ├── auth.py                # admin login/logout, session handling
-│   │   ├── seed.py                # seeds the default admin account on startup
-│   │   └── routes.py              # dashboard, pools, clients, resources, users, account
-│   ├── auth/
-│   │   ├── passwords.py          # argon2 hashing
-│   │   ├── mfa.py                 # TOTP generate/verify
-│   │   └── sessions.py            # Redis-backed login sessions (shared by end-user and admin sessions)
-│   ├── middleware/
-│   │   └── rate_limit.py          # slowapi limiter
-│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, admin/*
-│   └── static/                    # CSS/JS for both the login/consent UI and the admin UI
-├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
-├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
-├── sdk/python/                     # authservice-client: TokenValidator + FastAPI helpers for resource servers
-│   └── authservice_client/          # standalone package, its own pyproject.toml/uv.lock, zero app.* dependency
-│                                    # not on PyPI -- installed via git, see sdk/python/README.md
-├── examples/
-│   ├── example_api/                # runnable protected API built on the SDK
-│   └── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
-├── docker-compose.yml
-├── Dockerfile
-├── pyproject.toml / uv.lock
-├── .env / .env.example
-└── plan/                          # design doc this service is built from (not committed)
-```
+- **Full OAuth 2.1 / OIDC surface** — Authorization Code + mandatory PKCE, `client_credentials`, refresh token rotation with one-time-use enforcement, revocation, Dynamic Client Registration (RFC 7591), Protected Resource Metadata (RFC 9728)
+- **Self-service signup and admin-managed users** — toggle per client: let end users register themselves, or restrict a client to admin-added users only
+- **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client
+- **Web admin UI** (`/admin`) — pools, clients, resources, users, all clickable, with a CLI equivalent for scripting
+- **Resource-server SDK** (Python, `authservice-client`) plus a documented ~20-line pattern for any other language
+- **Argon2 password hashing, TOTP MFA, rotating RS256 signing keys, rate limiting**
+- **Zero-dependency test suite** — `uv run pytest` runs fully offline, no database or Redis required
 
 ## Getting started
 
@@ -324,6 +236,110 @@ uv sync
 uv run uvicorn main:app --reload --port 9001
 ```
 
+## Architecture
+
+```
+                         ┌─────────────────────────────────────────┐
+                         │        AUTH SERVICE (Python/FastAPI)      │
+                         │  /authorize  /token  /register  /revoke   │
+                         │  /login  /signup  /consent  /userinfo     │
+                         │  /.well-known/openid-configuration        │
+                         │  /.well-known/oauth-protected-resource    │
+                         │  /jwks.json                                │
+                         │  /admin/*  -- operator setup UI: pools,   │
+                         │    clients, resources, users, own login   │
+                         └───────────────┬─────────────────────────┘
+                                         │
+                     ┌───────────────────┼───────────────────┐
+                     ▼                   ▼                   ▼
+              PostgreSQL           Redis                  Signing keys
+          (users, clients,     (sessions, auth codes,     (rotating RSA
+           resources, consents, refresh tokens,            keypairs on disk,
+           refresh-token audit) revocation)                 kid-tagged)
+
+                     ▲  JWKS + OIDC discovery, fetched & cached locally
+                     │
+      ┌──────────────┼──────────────────┬──────────────────────┐
+      ▼                                  ▼                       ▼
+┌──────────────┐                 ┌──────────────┐        ┌───────────────────┐
+│   Website     │                 │  MCP servers  │        │  Other apps/APIs   │
+│ (any language) │                 │ (Python, Go,  │        │ (mobile, partner    │
+│                │                 │  Node, etc.)  │        │  services, any lang)│
+└──────────────┘                 └──────────────┘        └───────────────────┘
+```
+
+Every consumer is a **resource server**: it never issues tokens, it only fetches this service's JWKS once, caches it, and verifies JWTs locally — no network call back to the auth service on the hot path.
+
+## Tech stack
+
+| Component | Choice | Why |
+|---|---|---|
+| Web framework | FastAPI | Async, native OpenAPI docs |
+| Database | PostgreSQL via SQLAlchemy (async) + asyncpg | Users, clients, resources, consents, refresh-token audit trail |
+| Cache / sessions / codes | Redis | Login sessions, authorization codes, active refresh tokens, one-time-use enforcement |
+| JWT signing | `python-jose` + `cryptography` | RS256, `kid`-based key rotation |
+| Password hashing | `argon2-cffi` | Memory-hard, current best practice |
+| MFA | `pyotp` (TOTP) | Standard authenticator-app codes |
+| Rate limiting | `slowapi` | Brute-force protection on `/token` and `/authorize` |
+| Migrations | Alembic | Schema versioning |
+| Package/dependency manager | `uv` | Fast, lockfile-based, single source of truth (`pyproject.toml` / `uv.lock`) |
+| Templates | Jinja2 | Server-rendered login/consent pages |
+
+## Project structure
+
+```
+auth_service/
+├── app/
+│   ├── main.py                  # FastAPI app entrypoint, router + middleware wiring
+│   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
+│   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
+│   ├── db/
+│   │   ├── models.py            # SQLAlchemy models: UserPool, User, AdminUser, Client, Resource, Consent, RefreshToken
+│   │   ├── pools.py              # get_or_create_pool() -- pools are created implicitly by name
+│   │   ├── session.py           # async engine + session factory
+│   │   └── redis_client.py      # Redis connection
+│   ├── oidc/                     # standard OAuth/OIDC surface, all at root
+│   │   ├── discovery.py         # GET /.well-known/openid-configuration
+│   │   ├── prm.py                # GET /.well-known/oauth-protected-resource
+│   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow)
+│   │   ├── token.py              # POST /token (auth code, refresh, client_credentials)
+│   │   ├── refresh.py            # refresh-token issuance/rotation/revocation (Redis + Postgres audit)
+│   │   ├── clients.py            # client authentication (confidential/public)
+│   │   ├── scope.py              # scope resolution against a client's allowed_scope
+│   │   ├── pkce.py               # PKCE S256 verification
+│   │   ├── keys.py               # RSA key generation/rotation, JWKS
+│   │   ├── tokens.py             # JWT minting
+│   │   ├── jwks.py               # GET /jwks.json
+│   │   ├── register.py           # POST /register (Dynamic Client Registration, RFC 7591)
+│   │   ├── revoke.py             # POST /revoke
+│   │   └── userinfo.py           # GET /userinfo
+│   ├── admin/                     # mounted under /admin -- operator setup UI
+│   │   ├── auth.py                # admin login/logout, session handling
+│   │   ├── seed.py                # seeds the default admin account on startup
+│   │   └── routes.py              # dashboard, pools, clients, resources, users, account
+│   ├── auth/
+│   │   ├── passwords.py          # argon2 hashing
+│   │   ├── mfa.py                 # TOTP generate/verify
+│   │   └── sessions.py            # Redis-backed login sessions (shared by end-user and admin sessions)
+│   ├── middleware/
+│   │   └── rate_limit.py          # slowapi limiter
+│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, admin/*
+│   └── static/                    # CSS/JS for both the login/consent UI and the admin UI
+├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
+├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
+├── sdk/python/                     # authservice-client: TokenValidator + FastAPI helpers for resource servers
+│   └── authservice_client/          # standalone package, its own pyproject.toml/uv.lock, zero app.* dependency
+│                                    # not on PyPI -- installed via git, see sdk/python/README.md
+├── examples/
+│   ├── example_api/                # runnable protected API built on the SDK
+│   └── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
+├── docker-compose.yml
+├── Dockerfile
+├── pyproject.toml / uv.lock
+├── .env / .env.example
+└── plan/                          # design doc this service is built from (not committed)
+```
+
 ## Security
 
 - PKCE (S256) mandatory on every authorization code exchange
@@ -363,3 +379,7 @@ Following the build order this service was planned against:
 - [ ] mTLS between gateway and resource servers / `client_credentials` clients
 - [ ] Observability: structured audit logs, anomalous-issuance alerting
 - [ ] Pen test before production traffic
+
+## License
+
+Proprietary — internal use only. Not licensed for external distribution.
