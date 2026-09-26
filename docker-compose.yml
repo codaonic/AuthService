@@ -1,12 +1,13 @@
 services:
   auth-service:
     build: .
-    ports: ["8000:8000"]
+    ports: ["${HOST_PORT:-8000}:8000"]
     env_file:
       - .env
     environment:
       - DB_HOST=${COMPOSE_DB_HOST}
       - REDIS_HOST=${COMPOSE_REDIS_HOST}
+      - ISSUER=http://localhost:${HOST_PORT:-8000}
     volumes:
       - ./data/signing_keys:/app/keys
     depends_on:
