@@ -145,8 +145,9 @@ Brings up Postgres, Redis, and the service together, wired by container network 
 ```bash
 cp .env.example .env   # adjust values if needed; defaults match docker-compose
 docker compose up -d --build
-docker compose exec auth-service uv run alembic upgrade head
 ```
+
+That's it — no separate migration step. The container's entrypoint (`docker-entrypoint.sh`) runs `alembic upgrade head` automatically before the server starts, every time the container starts, including the very first boot. It's a no-op if the schema's already current, so it's safe on every restart and every redeploy, not just the first one.
 
 The service is now on `http://localhost:8000` — the standard OAuth surface at root, the setup UI under `/admin`, interactive API docs at `/docs`.
 
@@ -161,7 +162,6 @@ The service is now on `http://localhost:8000` — the standard OAuth surface at 
 > set -a; source .env; set +a
 > docker exec -it auth_pgsql psql -U "$DB_USER" -d "$DB_NAME" -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASSWORD';"
 > ```
-> Either way, if you just wiped the volume, `alembic upgrade head` needs to run again (see below) before the app has any tables.
 
 ### Option B — Local dev with uv
 
