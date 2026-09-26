@@ -9,7 +9,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.admin import auth as admin_auth
 from app.admin import routes as admin_routes
 from app.admin.seed import ensure_default_admin
-from app.db.session import wait_for_database
+from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
 from app.oidc import authorize, discovery, jwks, prm, register, revoke, token, userinfo
 
@@ -17,6 +17,7 @@ from app.oidc import authorize, discovery, jwks, prm, register, revoke, token, u
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await wait_for_database()
+    await init_db_schema()
     await ensure_default_admin()
     yield
 

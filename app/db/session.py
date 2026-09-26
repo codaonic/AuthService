@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
@@ -44,3 +44,35 @@ async def wait_for_database(max_attempts: int = 10, delay_seconds: float = 2.0) 
                 delay_seconds,
             )
             await asyncio.sleep(delay_seconds)
+
+
+async def init_db_schema() -> None:
+    """Bootstrap tables on a brand-new, empty database.
+
+    A fresh deploy against an empty volume otherwise crashes on startup
+    because nobody has run `alembic upgrade head` yet. This creates the
+    schema from the current models and stamps Alembic to head, so the app
+    can start immediately and future `alembic upgrade head` runs continue
+    from here.
+
+    No-ops on any database that's already been migrated (i.e. already has
+    an `alembic_version` table) -- it only ever bootstraps a genuinely
+    empty database, never touches or alters an existing one.
+    """
+    from app.db.models import Base
+
+    async with engine.begin() as conn:
+        already_migrated = await conn.run_sync(lambda c: inspect(c).has_table("alembic_version"))
+        if already_migrated:
+            return
+        logger.info("Empty database detected -- creating schema and stamping Alembic to head")
+        await conn.run_sync(Base.metadata.create_all)
+
+    await asyncio.to_thread(_stamp_alembic_head)
+
+
+def _stamp_alembic_head() -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    command.stamp(Config("alembic.ini"), "head")
