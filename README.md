@@ -19,6 +19,7 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 - [Database migrations](#database-migrations)
 - [API surface](#api-surface)
 - [Core flows](#core-flows)
+- [User pools](#user-pools)
 - [Integrating your applications and MCP servers](#integrating-your-applications-and-mcp-servers)
 - [Security](#security)
 - [Testing](#testing)
@@ -86,13 +87,13 @@ auth_service/
 │   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
 │   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
 │   ├── db/
-│   │   ├── models.py            # SQLAlchemy models: User, Client, Resource, Consent, RefreshToken
+│   │   ├── models.py            # SQLAlchemy models: UserPool, User, Client, Resource, Consent, RefreshToken
 │   │   ├── session.py           # async engine + session factory
 │   │   └── redis_client.py      # Redis connection
 │   ├── oidc/
 │   │   ├── discovery.py         # GET /.well-known/openid-configuration
 │   │   ├── prm.py                # GET /.well-known/oauth-protected-resource
-│   │   ├── authorize.py          # GET /authorize, POST /login, POST /consent (PKCE + login + consent flow)
+│   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow)
 │   │   ├── token.py              # POST /token (auth code, refresh, client_credentials)
 │   │   ├── refresh.py            # refresh-token issuance/rotation/revocation (Redis + Postgres audit)
 │   │   ├── clients.py            # client authentication (confidential/public)
@@ -186,7 +187,7 @@ uv run alembic upgrade head
 | `GET /.well-known/oauth-protected-resource` | Protected Resource Metadata (RFC 9728), per `resource=` query param |
 | `GET /jwks.json` | Public signing keys, `kid`-tagged |
 | `GET /authorize` | Authorization Code + PKCE entry point |
-| `POST /login`, `POST /consent` | Login and consent-screen form submissions |
+| `GET`/`POST /login`, `GET`/`POST /signup`, `POST /consent` | Login, signup, and consent-screen pages/submissions |
 | `POST /token` | Code exchange, refresh, and `client_credentials` grant |
 | `POST /register` | Dynamic Client Registration (RFC 7591) |
 | `GET /userinfo` | OIDC standard claims endpoint |
@@ -203,7 +204,31 @@ Full request/response schemas: `/docs` (Swagger UI) once the service is running.
 
 **Service-to-service.** `POST /token` with `grant_type=client_credentials` and the service's own `client_id`/`client_secret` returns a short-lived, user-less JWT scoped to the calling service.
 
+**User signup.** `/authorize` shows a login page with a "Sign up" link (`/signup`) for any client that doesn't recognize the email. A new account is created directly by this service (Argon2-hashed password), logged in, and carried straight into the same consent flow — no separate onboarding step needed.
+
 **Token validation (every consumer, every language).** Fetch `/jwks.json` once, cache it, verify signature + `exp` + `aud` + `iss` locally. No call back to this service required — that's the cross-language guarantee.
+
+## User pools
+
+A single deployment of this service is meant to sit behind **all of one company's own apps, APIs, and MCP servers**. Within that one deployment, every client belongs to a **user pool**:
+
+- Clients that share a pool name share one set of users — sign up through any one of them, log into all of them. This is the common case: one company, one identity, every internal service trusts the same login.
+- Clients in different pool names are fully isolated — a user created via one can't log into the other, even though both run on this same instance. Use this for something that genuinely needs a separate user base (e.g. an internal admin tool vs. your public product).
+
+Different *organizations* don't share a deployment at all — each company/provider runs its own separate instance of this service (own DB, own Redis, own signing keys, own domain). Pools are for grouping services *within* one deployment, not for multi-tenant hosting of unrelated companies.
+
+Pools are created implicitly by name the first time you reference them — there's no separate "create a pool" step:
+
+```bash
+# These two share one pool ("acme") -- same users can log into both:
+uv run python -m app.cli register-client --client-id acme-web --type public --redirect-uri "..." --user-pool acme
+uv run python -m app.cli register-client --client-id acme-mobile --type public --redirect-uri "..." --user-pool acme
+
+# This one is isolated in its own pool -- none of the "acme" users can log in here:
+uv run python -m app.cli register-client --client-id acme-admin --type confidential --user-pool acme-admin-only
+```
+
+`--user-pool` defaults to `default` if omitted (including for DCR/`/register` self-registration), so the common "one company, one shared identity" case needs zero pool configuration at all.
 
 ## Integrating your applications and MCP servers
 
@@ -219,6 +244,8 @@ uv run python -m app.cli register-resource --resource-id "https://mcp.yourdomain
 uv run python -m app.cli register-client --client-id your-app --type public --redirect-uri "https://yourapp.com/callback"
 # (in Docker: docker compose exec auth-service uv run python -m app.cli ...)
 ```
+
+Add `--user-pool <name>` to either share users with your other clients or isolate them — see [User pools](#user-pools). Omit it and everything lands in one shared `default` pool.
 
 MCP clients don't need manual registration — they self-register at connect time via `POST /register` (Dynamic Client Registration), which is exactly what `/.well-known/oauth-protected-resource` + `/.well-known/openid-configuration` exist to point them at.
 
@@ -268,6 +295,7 @@ Following the build order this service was planned against:
 - [x] Dynamic Client Registration, refresh rotation, revocation denylist
 - [x] Polished login/consent UI
 - [x] Admin CLI for registering resources/clients/users; resource-server SDK + example integrations
+- [x] Self-service user signup, and user pools (shared vs. isolated identity across clients on one deployment)
 - [ ] Website integration: BFF pattern, end-to-end session cookie test against a real frontend
 - [ ] MCP support: validated against a real MCP client
 - [ ] CIMD support (once MCP client ecosystem expects it)
