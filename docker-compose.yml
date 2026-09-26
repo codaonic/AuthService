@@ -1,6 +1,7 @@
 services:
   auth-service:
     build: .
+    container_name: auth_backend
     ports: ["${HOST_PORT:-8113}:8113"]
     env_file:
       - .env
