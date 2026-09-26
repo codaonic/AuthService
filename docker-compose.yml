@@ -5,8 +5,8 @@ services:
     env_file:
       - .env
     environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
+      - DB_HOST=${COMPOSE_DB_HOST}
+      - REDIS_HOST=${COMPOSE_REDIS_HOST}
     volumes:
       - ./data/signing_keys:/app/keys
     depends_on:
