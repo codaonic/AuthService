@@ -1,13 +1,13 @@
 services:
   auth-service:
     build: .
-    ports: ["${HOST_PORT:-8000}:8000"]
+    ports: ["${HOST_PORT:-8113}:8113"]
     env_file:
       - .env
     environment:
       - DB_HOST=${COMPOSE_DB_HOST}
       - REDIS_HOST=${COMPOSE_REDIS_HOST}
-      - ISSUER=http://localhost:${HOST_PORT:-8000}
+      - ISSUER=${ISSUER}
     volumes:
       - ./data/signing_keys:/app/keys
     depends_on:
@@ -15,9 +15,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - nginx-proxy-net
 
   postgres:
     image: postgres:16
+    container_name: auth_pgsql
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -28,11 +31,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - nginx-proxy-net
 
   redis:
     image: redis:7
+    container_name: auth_redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - nginx-proxy-net
+
+networks:
+  nginx-proxy-net:
+    external: true
