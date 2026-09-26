@@ -36,7 +36,7 @@ wheels = [
 [[package]]
 name = "authservice-client"
 version = "0.1.0"
-source = { editable = "../../sdk/python" }
+source = { git = "https://github.com/codaonic/AuthService_Client.git?branch=main#15a16a216946425e300133fd392af368861ed6b8" }
 dependencies = [
     { name = "httpx" },
     { name = "python-jose", extra = ["cryptography"] },
@@ -45,22 +45,6 @@ dependencies = [
 [package.optional-dependencies]
 fastapi = [
     { name = "fastapi" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.110" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.5.0" },
-]
-provides-extras = ["fastapi"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "cryptography", specifier = ">=42.0" },
-    { name = "fastapi", specifier = ">=0.110" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
 ]
 
 [[package]]
@@ -239,7 +223,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "authservice-client", extras = ["fastapi"], editable = "../../sdk/python" },
+    { name = "authservice-client", extras = ["fastapi"], git = "https://github.com/codaonic/AuthService_Client.git?branch=main" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 

@@ -44,7 +44,7 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 - **Self-service signup and admin-managed users** — toggle per client: let end users register themselves, or restrict a client to admin-added users only
 - **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client
 - **Web admin UI** (`/admin`) — pools, clients, resources, users, all clickable, with a CLI equivalent for scripting
-- **Resource-server SDK** (Python, `authservice-client`) plus a documented ~20-line pattern for any other language
+- **Resource-server SDK** (Python, [`authservice-client`](https://github.com/codaonic/AuthService_Client), its own repo) plus a documented ~20-line pattern for any other language
 - **Argon2 password hashing, TOTP MFA, rotating RS256 signing keys, rate limiting**
 - **Zero-dependency test suite** — `uv run pytest` runs fully offline, no database or Redis required
 
@@ -218,11 +218,13 @@ MCP clients don't need manual registration — they self-register at connect tim
 
 This is the part every app/MCP server has to do, and it's the same three steps in any language (fetch JWKS → cache it → verify signature/`exp`/`aud`/`iss` locally, no call back to this service per-request). Two ways to do it:
 
-- **Python**: use [`sdk/python`](sdk/python) (`authservice-client`) — a `TokenValidator` plus FastAPI dependency helpers (`make_auth_dependency`, `make_scope_dependency`) and a router that serves your resource's own RFC 9728 metadata. Not on PyPI — install straight from this repo:
+- **Python**: use [`authservice-client`](https://github.com/codaonic/AuthService_Client) — its own repo, so it installs without needing access to this one — a `TokenValidator` plus FastAPI dependency helpers (`make_auth_dependency`, `make_scope_dependency`) and a router that serves your resource's own RFC 9728 metadata. Not on PyPI — install straight from GitHub:
   ```bash
-  uv add "authservice-client @ git+https://github.com/codaonic/AuthService.git@main#subdirectory=sdk/python"
+  uv add "authservice-client @ git+https://github.com/codaonic/AuthService_Client.git@main"
+  # pip install "authservice-client @ git+https://github.com/codaonic/AuthService_Client.git@main"
+  # poetry add "git+https://github.com/codaonic/AuthService_Client.git#main"
   ```
-  Full usage: [`sdk/python/README.md`](sdk/python/README.md).
+  Full usage, versioning, and changelog: [codaonic/AuthService_Client](https://github.com/codaonic/AuthService_Client).
 - **Any other language**: reimplement the same ~20-line pattern — there's a mature JWT + JWKS library in every mainstream language (`jose`/`jwks-rsa` in Node, `github.com/coreos/go-oidc` in Go, `jose4j` in Java). No dependency on this being a Python service.
 
 Two runnable, tested examples built on the SDK:
@@ -327,9 +329,6 @@ auth_service/
 │   └── static/                    # CSS/JS for both the login/consent UI and the admin UI
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
-├── sdk/python/                     # authservice-client: TokenValidator + FastAPI helpers for resource servers
-│   └── authservice_client/          # standalone package, its own pyproject.toml/uv.lock, zero app.* dependency
-│                                    # not on PyPI -- installed via git, see sdk/python/README.md
 ├── examples/
 │   ├── example_api/                # runnable protected API built on the SDK
 │   └── mcp_server/                 # runnable MCP-server auth pattern built on the SDK

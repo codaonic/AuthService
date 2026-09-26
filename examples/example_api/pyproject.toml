@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-authservice-client = { path = "../../sdk/python", editable = true }
+authservice-client = { git = "https://github.com/codaonic/AuthService_Client.git", branch = "main" }
 
 [tool.uv]
 package = false
