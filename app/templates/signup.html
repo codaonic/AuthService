@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 
-{% block title %}Sign in{% endblock %}
+{% block title %}Create account{% endblock %}
 
 {% block icon %}
 <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/>
-  <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
-  <circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/>
+  <circle cx="12" cy="8" r="3.5"/>
+  <path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>
+  <path d="M19 8h3M20.5 6.5v3"/>
 </svg>
 {% endblock %}
 
-{% block heading %}Sign in{% endblock %}
+{% block heading %}Create your account{% endblock %}
 
 {% block subheading %}
 {% if client_id %}
@@ -30,18 +30,18 @@
 </div>
 {% endif %}
 
-<form method="post" action="/login" class="form" novalidate>
+<form method="post" action="/signup" class="form" novalidate>
   <input type="hidden" name="flow_id" value="{{ flow_id }}">
 
   <div class="field">
     <label for="email">Email</label>
-    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="you@example.com">
+    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="you@example.com" value="{{ email or '' }}">
   </div>
 
   <div class="field">
     <label for="password">Password</label>
     <div class="input-group">
-      <input id="password" type="password" name="password" required autocomplete="current-password" placeholder="••••••••">
+      <input id="password" type="password" name="password" required autocomplete="new-password" placeholder="At least 8 characters">
       <button type="button" class="toggle-visibility" data-target="password" aria-label="Show password" aria-pressed="false">
         <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
@@ -57,14 +57,14 @@
   </div>
 
   <div class="field">
-    <label for="totp_code">Authentication code <span class="field__hint">(if MFA is enabled)</span></label>
-    <input id="totp_code" class="input--otp" type="text" name="totp_code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+    <label for="confirm_password">Confirm password</label>
+    <input id="confirm_password" type="password" name="confirm_password" required autocomplete="new-password" placeholder="••••••••">
   </div>
 
-  <button type="submit" class="btn btn--primary btn--block">Sign in</button>
+  <button type="submit" class="btn btn--primary btn--block">Create account</button>
 </form>
 
-<p class="form-switch">Don't have an account? <a href="/signup?flow_id={{ flow_id }}">Sign up</a></p>
+<p class="form-switch">Already have an account? <a href="/login?flow_id={{ flow_id }}">Sign in</a></p>
 {% endblock %}
 
-{% block footer %}Your credentials are sent directly to this service and are never shared with {{ client_id or "the requesting application" }}.{% endblock %}
+{% block footer %}Your account is created for this application and any others sharing its user pool.{% endblock %}

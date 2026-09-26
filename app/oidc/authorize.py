@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.mfa import verify_totp
-from app.auth.passwords import verify_password
+from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, get_session_user
 from app.config import get_settings
 from app.db.models import Client, Consent, User
@@ -25,6 +25,7 @@ templates = Jinja2Templates(directory="app/templates")
 FLOW_KEY_PREFIX = "flow:"
 CODE_KEY_PREFIX = "code:"
 SUPPORTED_CHALLENGE_METHODS = {"S256"}
+MIN_PASSWORD_LENGTH = 8
 
 SCOPE_DESCRIPTIONS = {
     "openid": "Confirm your identity",
@@ -40,6 +41,13 @@ async def _load_client(db: AsyncSession, client_id: str) -> Client:
     if client is None:
         raise HTTPException(400, "invalid_client")
     return client
+
+
+async def _get_flow_client(db: AsyncSession, redis: Redis, flow_id: str) -> Client:
+    client_id = await redis.hget(f"{FLOW_KEY_PREFIX}{flow_id}", "client_id")
+    if client_id is None:
+        raise HTTPException(400, "invalid_request: expired or unknown flow")
+    return await _load_client(db, client_id)
 
 
 @router.get("/authorize")
@@ -86,12 +94,32 @@ async def authorize(
     session_id = request.cookies.get(settings.session_cookie_name)
     user_id = await get_session_user(redis, session_id)
 
+    if user_id is not None:
+        # A session cookie from a different, isolated user pool must not
+        # grant access here -- fall through to login/signup for this client.
+        user = await db.get(User, uuid.UUID(user_id))
+        if user is None or user.user_pool_id != client.user_pool_id:
+            user_id = None
+
     if user_id is None:
         return templates.TemplateResponse(
             request, "login.html", {"flow_id": flow_id, "client_id": client_id, "error": None}
         )
 
     return await _continue_flow(request, db, redis, flow_id, user_id)
+
+
+@router.get("/login")
+async def login_page(
+    request: Request,
+    flow_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    client = await _get_flow_client(db, redis, flow_id)
+    return templates.TemplateResponse(
+        request, "login.html", {"flow_id": flow_id, "client_id": client.client_id, "error": None}
+    )
 
 
 @router.post("/login")
@@ -105,16 +133,18 @@ async def login(
     redis: Redis = Depends(get_redis),
 ):
     settings = get_settings()
-    client_id = await redis.hget(f"{FLOW_KEY_PREFIX}{flow_id}", "client_id")
+    client = await _get_flow_client(db, redis, flow_id)
 
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(
+        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
+    )
     user = result.scalar_one_or_none()
 
     if user is None or user.status != "active" or not verify_password(password, user.password_hash):
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "client_id": client_id, "error": "Invalid email or password"},
+            {"flow_id": flow_id, "client_id": client.client_id, "error": "Invalid email or password"},
             status_code=401,
         )
 
@@ -122,9 +152,72 @@ async def login(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "client_id": client_id, "error": "Invalid or missing MFA code"},
+            {"flow_id": flow_id, "client_id": client.client_id, "error": "Invalid or missing MFA code"},
             status_code=401,
         )
+
+    session_id = await create_session(redis, str(user.id))
+    response = await _continue_flow(request, db, redis, flow_id, str(user.id))
+    response.set_cookie(
+        settings.session_cookie_name,
+        session_id,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=settings.session_ttl_seconds,
+    )
+    return response
+
+
+@router.get("/signup")
+async def signup_page(
+    request: Request,
+    flow_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    client = await _get_flow_client(db, redis, flow_id)
+    return templates.TemplateResponse(
+        request, "signup.html", {"flow_id": flow_id, "client_id": client.client_id, "error": None}
+    )
+
+
+@router.post("/signup")
+async def signup(
+    request: Request,
+    flow_id: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    settings = get_settings()
+    client = await _get_flow_client(db, redis, flow_id)
+
+    def error(message: str, status_code: int = 400):
+        return templates.TemplateResponse(
+            request,
+            "signup.html",
+            {"flow_id": flow_id, "client_id": client.client_id, "error": message, "email": email},
+            status_code=status_code,
+        )
+
+    if password != confirm_password:
+        return error("Passwords do not match")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+
+    existing = await db.execute(
+        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return error("An account with that email already exists")
+
+    user = User(user_pool_id=client.user_pool_id, email=email, password_hash=hash_password(password))
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
 
     session_id = await create_session(redis, str(user.id))
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))

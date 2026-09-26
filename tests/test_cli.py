@@ -2,10 +2,11 @@ import pytest
 from sqlalchemy import select
 
 from app import cli
-from app.db.models import Client, Resource, User
+from app.db.models import Client, Resource, User, UserPool
 
 
 def _args(**kwargs):
+    kwargs.setdefault("user_pool", "default")
     return cli.argparse.Namespace(**kwargs)
 
 
@@ -95,3 +96,80 @@ async def test_create_user(db_session, monkeypatch):
     result = await db_session.execute(select(User).where(User.email == "cli-user@example.com"))
     user = result.scalar_one()
     assert user.email == "cli-user@example.com"
+
+
+@pytest.mark.asyncio
+async def test_clients_sharing_pool_name_share_one_pool(db_session, monkeypatch):
+    monkeypatch.setattr(cli, "async_session_factory", lambda: db_session)
+
+    await cli.register_client(
+        _args(
+            client_id="acme-web",
+            type="public",
+            redirect_uri=["https://acme.example.com/cb"],
+            grant_type=["authorization_code"],
+            scope=None,
+            application_type="web",
+            secret=None,
+            user_pool="acme",
+        )
+    )
+    await cli.register_client(
+        _args(
+            client_id="acme-mobile",
+            type="public",
+            redirect_uri=["acme://cb"],
+            grant_type=["authorization_code"],
+            scope=None,
+            application_type="native",
+            secret=None,
+            user_pool="acme",
+        )
+    )
+
+    result = await db_session.execute(select(Client).where(Client.client_id.in_(["acme-web", "acme-mobile"])))
+    clients = result.scalars().all()
+    assert len({c.user_pool_id for c in clients}) == 1
+
+
+@pytest.mark.asyncio
+async def test_clients_with_different_pool_names_are_isolated(db_session, monkeypatch):
+    monkeypatch.setattr(cli, "async_session_factory", lambda: db_session)
+
+    await cli.register_client(
+        _args(
+            client_id="tenant-a",
+            type="public",
+            redirect_uri=["https://a.example.com/cb"],
+            grant_type=["authorization_code"],
+            scope=None,
+            application_type="web",
+            secret=None,
+            user_pool="tenant-a",
+        )
+    )
+    await cli.register_client(
+        _args(
+            client_id="tenant-b",
+            type="public",
+            redirect_uri=["https://b.example.com/cb"],
+            grant_type=["authorization_code"],
+            scope=None,
+            application_type="web",
+            secret=None,
+            user_pool="tenant-b",
+        )
+    )
+
+    result = await db_session.execute(select(Client).where(Client.client_id.in_(["tenant-a", "tenant-b"])))
+    clients = result.scalars().all()
+    assert len({c.user_pool_id for c in clients}) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_pools(db_session, monkeypatch):
+    monkeypatch.setattr(cli, "async_session_factory", lambda: db_session)
+    await cli.create_user(_args(email="a@example.com", password="s3cret-password!", user_pool="acme"))
+
+    result = await db_session.execute(select(UserPool).where(UserPool.name == "acme"))
+    assert result.scalar_one() is not None

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid, func
+from sqlalchemy import JSON, DateTime, ForeignKey, String, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -9,11 +9,28 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(Base):
-    __tablename__ = "users"
+class UserPool(Base):
+    """A group of clients that share one set of users.
+
+    Clients in the same pool give their users a single shared identity
+    (sign up once, log into any of them). Clients in different pools are
+    fully isolated from each other's users, even on this same deployment.
+    """
+
+    __tablename__ = "user_pools"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("user_pool_id", "email", name="uq_users_pool_email"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_pool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_pools.id"), index=True)
+    email: Mapped[str] = mapped_column(String, index=True)
     password_hash: Mapped[str] = mapped_column(String)
     mfa_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="active")
@@ -27,6 +44,7 @@ class Client(Base):
     __tablename__ = "clients"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_pool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_pools.id"), index=True)
     client_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     client_secret_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     client_type: Mapped[str] = mapped_column(String)  # public | confidential

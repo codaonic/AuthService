@@ -4,6 +4,7 @@ import secrets
 
 from app.auth.passwords import hash_password
 from app.db.models import Client, Resource, User
+from app.db.pools import get_or_create_pool
 
 
 def make_pkce_pair() -> tuple[str, str]:
@@ -13,8 +14,11 @@ def make_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-async def create_user(db_session, email="user@example.com", password="correct horse battery"):
-    user = User(email=email, password_hash=hash_password(password))
+async def create_user(
+    db_session, email="user@example.com", password="correct horse battery", pool_name="default"
+):
+    pool = await get_or_create_pool(db_session, pool_name)
+    user = User(user_pool_id=pool.id, email=email, password_hash=hash_password(password))
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
@@ -28,8 +32,11 @@ async def create_client(
     redirect_uris=("https://client.example.com/callback",),
     grant_types=("authorization_code", "refresh_token"),
     client_secret=None,
+    pool_name="default",
 ):
+    pool = await get_or_create_pool(db_session, pool_name)
     client = Client(
+        user_pool_id=pool.id,
         client_id=client_id,
         client_secret_hash=hash_password(client_secret) if client_secret else None,
         client_type=client_type,

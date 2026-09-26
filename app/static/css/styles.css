@@ -214,6 +214,23 @@ body {
   gap: 16px;
 }
 
+.form-switch {
+  margin: 16px 0 0;
+  font-size: 13.5px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.form-switch a {
+  color: var(--color-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.form-switch a:hover {
+  text-decoration: underline;
+}
+
 .field {
   display: flex;
   flex-direction: column;

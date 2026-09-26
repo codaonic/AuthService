@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.passwords import hash_password
 from app.db.models import Client
+from app.db.pools import DEFAULT_POOL_NAME, get_or_create_pool
 from app.db.session import get_db
 
 router = APIRouter()
@@ -35,8 +36,10 @@ async def register_client(
 
     client_id = secrets.token_urlsafe(16)
     client_secret = None if is_public else secrets.token_urlsafe(32)
+    pool = await get_or_create_pool(db, DEFAULT_POOL_NAME)
 
     client = Client(
+        user_pool_id=pool.id,
         client_id=client_id,
         client_secret_hash=None if client_secret is None else hash_password(client_secret),
         client_type="public" if is_public else "confidential",
