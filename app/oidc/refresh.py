@@ -23,6 +23,7 @@ async def issue_refresh_token(
     user_id: str,
     client_id: str,
     resource: str,
+    scope: str = "",
     rotated_from: str | None = None,
 ) -> str:
     settings = get_settings()
@@ -35,6 +36,7 @@ async def issue_refresh_token(
         user_id=user_id,
         client_id=client_id,
         resource_id=resource,
+        scope=scope,
         token_hash=token_hash,
         rotated_from=rotated_from,
         expires_at=expires_at,
@@ -44,7 +46,13 @@ async def issue_refresh_token(
 
     await redis.hset(
         f"{REFRESH_KEY_PREFIX}{token_hash}",
-        mapping={"user_id": user_id, "client_id": client_id, "resource": resource, "row_id": str(row.id)},
+        mapping={
+            "user_id": user_id,
+            "client_id": client_id,
+            "resource": resource,
+            "scope": scope,
+            "row_id": str(row.id),
+        },
     )
     await redis.expire(f"{REFRESH_KEY_PREFIX}{token_hash}", settings.refresh_token_ttl_seconds)
     return token
@@ -66,7 +74,12 @@ async def validate_and_rotate_refresh_token(
         row.revoked_at = datetime.now(timezone.utc)
         await db.commit()
 
-    return {"user_id": data["user_id"], "resource": data["resource"], "row_id": data["row_id"]}
+    return {
+        "user_id": data["user_id"],
+        "resource": data["resource"],
+        "scope": data.get("scope", ""),
+        "row_id": data["row_id"],
+    }
 
 
 async def revoke_refresh_token(db: AsyncSession, redis: Redis, refresh_token: str) -> None:

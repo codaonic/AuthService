@@ -64,6 +64,7 @@ class RefreshToken(Base):
     user_id: Mapped[str] = mapped_column(String)
     client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"))
     resource_id: Mapped[str] = mapped_column(String)
+    scope: Mapped[str] = mapped_column(String, default="")
     token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
     rotated_from: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

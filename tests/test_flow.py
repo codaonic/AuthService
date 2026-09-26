@@ -75,6 +75,7 @@ async def test_full_authorization_code_flow(client, db_session):
     assert token_resp.status_code == 200
     body = token_resp.json()
     assert body["token_type"] == "Bearer"
+    assert body["scope"] == "profile email"
     assert "access_token" in body
     assert "refresh_token" in body
 
@@ -95,6 +96,7 @@ async def test_full_authorization_code_flow(client, db_session):
     assert refresh_resp.status_code == 200
     new_body = refresh_resp.json()
     assert new_body["access_token"] != body["access_token"]
+    assert new_body["scope"] == "profile email"
 
     reuse_resp = await client.post(
         "/token",
@@ -105,6 +107,28 @@ async def test_full_authorization_code_flow(client, db_session):
         },
     )
     assert reuse_resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_scope_outside_client_allowed(client, db_session):
+    await create_user(db_session, email="alice@example.com", password="s3cret-password!")
+    await create_client(db_session, client_id="test-client", redirect_uris=(REDIRECT_URI,))
+    await create_resource(db_session, resource_id=RESOURCE)
+    _, challenge = make_pkce_pair()
+
+    resp = await client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "test-client",
+            "redirect_uri": REDIRECT_URI,
+            "resource": RESOURCE,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "scope": "profile email admin",
+        },
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -148,6 +172,54 @@ async def test_client_credentials_grant(client, db_session):
     body = resp.json()
     assert "access_token" in body
     assert "refresh_token" not in body
+    assert body["scope"] == "profile email"
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_scope_narrowed_to_subset(client, db_session):
+    await create_client(
+        db_session,
+        client_id="service-a",
+        client_type="confidential",
+        grant_types=("client_credentials",),
+        client_secret="service-secret",
+    )
+
+    resp = await client.post(
+        "/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": "service-a",
+            "client_secret": "service-secret",
+            "resource": RESOURCE,
+            "scope": "profile",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["scope"] == "profile"
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_scope_outside_allowed_rejected(client, db_session):
+    await create_client(
+        db_session,
+        client_id="service-a",
+        client_type="confidential",
+        grant_types=("client_credentials",),
+        client_secret="service-secret",
+    )
+
+    resp = await client.post(
+        "/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": "service-a",
+            "client_secret": "service-secret",
+            "resource": RESOURCE,
+            "scope": "admin",
+        },
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio

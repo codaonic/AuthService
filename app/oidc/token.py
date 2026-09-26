@@ -9,6 +9,7 @@ from app.middleware.rate_limit import limiter
 from app.oidc.clients import get_and_validate_client
 from app.oidc.pkce import verify_pkce
 from app.oidc.refresh import issue_refresh_token, validate_and_rotate_refresh_token
+from app.oidc.scope import resolve_scope
 from app.oidc.tokens import mint_access_token
 
 router = APIRouter()
@@ -58,6 +59,7 @@ async def token_endpoint(
         if not resource:
             raise HTTPException(400, "invalid_request: resource is required")
         subject = client_id
+        scope = resolve_scope(scope, client.allowed_scope)
 
     elif grant_type == "refresh_token":
         if not refresh_token:
@@ -65,6 +67,7 @@ async def token_endpoint(
         rt = await validate_and_rotate_refresh_token(db, redis, refresh_token, client_id)
         subject = rt["user_id"]
         resource = resource or rt["resource"]
+        scope = resolve_scope(scope, rt["scope"])
 
     else:
         raise HTTPException(400, "unsupported_grant_type")
@@ -82,7 +85,7 @@ async def token_endpoint(
 
     if grant_type != "client_credentials":
         response["refresh_token"] = await issue_refresh_token(
-            db, redis, subject, client_id, resource
+            db, redis, subject, client_id, resource, scope=scope
         )
 
     return response

@@ -17,6 +17,7 @@ from app.db.models import Client, Consent, User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.middleware.rate_limit import limiter
+from app.oidc.scope import resolve_scope
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -66,6 +67,8 @@ async def authorize(
     client = await _load_client(db, client_id)
     if redirect_uri not in client.redirect_uris:
         raise HTTPException(400, "invalid_redirect_uri")
+
+    scope = resolve_scope(scope, client.allowed_scope)
 
     flow_id = secrets.token_urlsafe(16)
     flow = {
