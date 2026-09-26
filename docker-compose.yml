@@ -1,25 +1,4 @@
 services:
-  auth-service:
-    build: .
-    container_name: auth_backend
-    restart: unless-stopped
-    ports: ["${HOST_PORT:-8113}:8113"]
-    env_file:
-      - .env
-    environment:
-      - DB_HOST=${COMPOSE_DB_HOST}
-      - REDIS_HOST=${COMPOSE_REDIS_HOST}
-      - ISSUER=${ISSUER}
-    volumes:
-      - ./data/signing_keys:/app/keys
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - nginx-proxy-net
-
   postgres:
     image: postgres:16
     container_name: auth_pgsql
@@ -56,6 +35,26 @@ services:
       timeout: 5s
       retries: 5
     volumes: ["./data/redis:/data"]
+    networks:
+      - nginx-proxy-net
+  auth-service:
+    build: .
+    container_name: auth_backend
+    restart: unless-stopped
+    ports: ["${HOST_PORT:-8113}:8113"]
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=${COMPOSE_DB_HOST}
+      - REDIS_HOST=${COMPOSE_REDIS_HOST}
+      - ISSUER=${ISSUER}
+    volumes:
+      - ./data/signing_keys:/app/keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - nginx-proxy-net
 
