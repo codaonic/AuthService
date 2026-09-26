@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Your account{% endblock %}
+
+{% block icon %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="8" r="3.5"/>
+  <path d="M4.5 19.5a7.5 7.5 0 0 1 15 0"/>
+</svg>
+{% endblock %}
+
+{% block heading %}Your account{% endblock %}
+
+{% block content %}
+{% if user is none %}
+<div class="alert alert--error" role="alert">
+  <span>You're not signed in. Sign in through the application you're using, then come back to this page to manage your passkeys.</span>
+</div>
+{% else %}
+<p class="card__subtitle" style="margin-bottom:16px;">Signed in as <strong>{{ user.email }}</strong></p>
+
+<h2 style="font-size:15px; margin:0 0 10px;">Passkeys</h2>
+
+{% if credentials %}
+<div class="form" style="gap:10px; margin-bottom:16px;">
+  {% for cred in credentials %}
+  <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border:1px solid var(--color-border); border-radius:var(--radius-sm);">
+    <span>{{ cred.nickname or "Unnamed passkey" }}</span>
+    <form method="post" action="/account/webauthn/{{ cred.id }}/delete" style="margin:0;">
+      <button type="submit" class="btn btn--secondary">Remove</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--color-text-secondary); font-size:13.5px; margin-bottom:16px;">No passkeys registered yet.</p>
+{% endif %}
+
+<button type="button" class="btn btn--primary btn--block" data-webauthn-register>Add a passkey</button>
+
+<form id="webauthn-register-form" method="post" action="/account/webauthn/register/verify" hidden>
+  <input type="hidden" name="credential" value="">
+  <input type="hidden" name="nickname" value="">
+</form>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', path='js/webauthn.js') }}" defer></script>
+{% endblock %}

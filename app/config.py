@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     password_reset_ttl_seconds: int = 30 * 60
     email_verification_ttl_seconds: int = 60 * 60 * 24
 
+    webauthn_rp_name: str = "Auth Service"
+    webauthn_challenge_ttl_seconds: int = 5 * 60
+
 
 @lru_cache
 def get_settings() -> Settings:
