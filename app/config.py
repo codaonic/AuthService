@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     webauthn_rp_name: str = "Auth Service"
     webauthn_challenge_ttl_seconds: int = 5 * 60
 
+    # Shared secret only your reverse proxy knows -- proves the mTLS
+    # verification headers it sets actually came from it, not from a client
+    # request that reached this app directly. Empty (the default) disables
+    # mTLS client auth entirely, since trusting those headers without this
+    # check would let anyone self-declare a verified certificate.
+    mtls_trusted_proxy_secret: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

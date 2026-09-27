@@ -34,6 +34,7 @@ async def register_client(args: argparse.Namespace) -> None:
                 allowed_scope=args.scope or "",
                 registration_method="static",
                 application_type=args.application_type,
+                mtls_cert_thumbprint=args.mtls_thumbprint,
             )
         )
         await db.commit()
@@ -120,6 +121,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scope", help="Space-separated allowed scopes")
     p.add_argument("--application-type", default="web", choices=["web", "native", "service"])
     p.add_argument("--secret", help="Confidential clients only; generated if omitted")
+    p.add_argument(
+        "--mtls-thumbprint",
+        help=(
+            "SHA-256 thumbprint (hex) of this client's certificate, for mutual-TLS "
+            "client auth instead of a shared secret. Requires your reverse proxy to "
+            "verify client certs and forward the result -- see README's mTLS section."
+        ),
+    )
     p.add_argument(
         "--user-pool",
         default=DEFAULT_POOL_NAME,

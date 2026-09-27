@@ -55,6 +55,8 @@ class Client(Base):
     registration_method: Mapped[str] = mapped_column(String, default="static")  # static | dcr | cimd
     application_type: Mapped[str] = mapped_column(String, default="web")  # web | native | service
     allow_signup: Mapped[bool] = mapped_column(Boolean, default=True)
+    mtls_cert_thumbprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    cimd_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

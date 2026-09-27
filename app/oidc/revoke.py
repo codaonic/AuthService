@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ router = APIRouter()
 
 @router.post("/revoke", status_code=200)
 async def revoke_token(
+    request: Request,
     token: str = Form(...),
     token_type_hint: str | None = Form(None),
     client_id: str = Form(...),
@@ -20,7 +21,7 @@ async def revoke_token(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
-    await get_and_validate_client(db, client_id, client_secret)
+    await get_and_validate_client(db, client_id, client_secret, request)
     await revoke_refresh_token(db, redis, token)
     log_event("token_revoked", client_id=client_id)
     return {}

@@ -21,6 +21,7 @@ from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.email import send_verification_email
 from app.middleware.rate_limit import limiter
+from app.oidc.cimd import is_cimd_client_id, resolve_cimd_client
 from app.oidc.scope import resolve_scope
 
 router = APIRouter()
@@ -58,6 +59,8 @@ async def _record_login_failure(
 
 
 async def _load_client(db: AsyncSession, client_id: str) -> Client:
+    if is_cimd_client_id(client_id):
+        return await resolve_cimd_client(db, client_id)
     result = await db.execute(select(Client).where(Client.client_id == client_id))
     client = result.scalar_one_or_none()
     if client is None:

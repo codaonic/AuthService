@@ -7,6 +7,7 @@ from app.db.models import Client, Resource, User, UserPool
 
 def _args(**kwargs):
     kwargs.setdefault("user_pool", "default")
+    kwargs.setdefault("mtls_thumbprint", None)
     return cli.argparse.Namespace(**kwargs)
 
 

@@ -34,7 +34,7 @@ async def token_endpoint(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
-    client = await get_and_validate_client(db, client_id, client_secret)
+    client = await get_and_validate_client(db, client_id, client_secret, request)
     if grant_type not in client.grant_types:
         raise HTTPException(400, "unauthorized_client")
 
