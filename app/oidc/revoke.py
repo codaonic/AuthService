@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Form
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import log_event
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.oidc.clients import get_and_validate_client
@@ -21,4 +22,5 @@ async def revoke_token(
 ):
     await get_and_validate_client(db, client_id, client_secret)
     await revoke_refresh_token(db, redis, token)
+    log_event("token_revoked", client_id=client_id)
     return {}

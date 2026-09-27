@@ -34,6 +34,12 @@ async def client(db_session, redis_client, tmp_path, monkeypatch):
     get_key_manager.cache_clear()
 
     from app.main import app
+    from app.middleware.rate_limit import limiter
+
+    # The limiter's storage is shared process-wide (all tests hit it as the
+    # same "127.0.0.1" caller), so without a reset, unrelated tests eat into
+    # each other's rate-limit budget purely based on run order/count.
+    limiter.reset()
 
     async def override_get_db():
         yield db_session

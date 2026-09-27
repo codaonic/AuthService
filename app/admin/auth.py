@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -7,6 +8,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import client_ip, log_event, record_failed_login
 from app.auth.passwords import verify_password
 from app.auth.sessions import create_session, delete_session, get_session_user
 from app.config import get_settings
@@ -47,10 +49,15 @@ async def admin_login(
     admin = result.scalar_one_or_none()
 
     if admin is None or not verify_password(password, admin.password_hash):
+        ip = client_ip(request)
+        log_event("admin_login_failure", level=logging.WARNING, email=email, ip=ip)
+        if await record_failed_login(redis, f"admin:{email}"):
+            log_event("anomalous_activity", level=logging.WARNING, reason="repeated_admin_login_failures", email=email, ip=ip)
         return templates.TemplateResponse(
             request, "admin/login.html", {"error": "Invalid email or password"}, status_code=401
         )
 
+    log_event("admin_login_success", admin_id=str(admin.id), ip=client_ip(request))
     session_id = await create_session(redis, str(admin.id))
     response = RedirectResponse("/admin", status_code=303)
     response.set_cookie(

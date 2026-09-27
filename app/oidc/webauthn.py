@@ -17,6 +17,7 @@ from webauthn import (
 )
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
+from app.audit import client_ip, log_event
 from app.auth.sessions import create_session, get_session_user
 from app.auth.webauthn import (
     pop_authentication_challenge,
@@ -130,6 +131,7 @@ async def webauthn_login_verify(
 
     stored.sign_count = verification.new_sign_count
     await db.commit()
+    log_event("webauthn_login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
     session_id = await create_session(redis, str(user.id))
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
@@ -227,6 +229,7 @@ async def webauthn_register_verify(
         )
     )
     await db.commit()
+    log_event("webauthn_registered", user_id=str(user.id), ip=client_ip(request))
 
     return RedirectResponse("/account", status_code=303)
 

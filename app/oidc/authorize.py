@@ -1,3 +1,4 @@
+import logging
 import secrets
 import uuid
 from urllib.parse import urlencode
@@ -9,6 +10,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import client_ip, log_event, record_failed_login
 from app.auth.mfa import verify_totp
 from app.auth.password_reset import create_email_verification_token
 from app.auth.passwords import hash_password, verify_password
@@ -35,6 +37,24 @@ SCOPE_DESCRIPTIONS = {
     "email": "View your email address",
     "offline_access": "Maintain access when you're not present",
 }
+
+
+async def _record_login_failure(
+    redis: Redis, email: str, request: Request, client_id: str, reason: str
+) -> None:
+    ip = client_ip(request)
+    log_event("login_failure", level=logging.WARNING, client_id=client_id, email=email, ip=ip, reason=reason)
+
+    email_anomaly = await record_failed_login(redis, f"email:{email}")
+    ip_anomaly = ip is not None and await record_failed_login(redis, f"ip:{ip}")
+    if email_anomaly or ip_anomaly:
+        log_event(
+            "anomalous_activity",
+            level=logging.WARNING,
+            reason="repeated_failed_logins",
+            email=email if email_anomaly else None,
+            ip=ip if ip_anomaly else None,
+        )
 
 
 async def _load_client(db: AsyncSession, client_id: str) -> Client:
@@ -147,6 +167,7 @@ async def login(
     user = result.scalar_one_or_none()
 
     if user is None or user.status != "active" or not verify_password(password, user.password_hash):
+        await _record_login_failure(redis, email, request, client.client_id, "invalid_credentials")
         return templates.TemplateResponse(
             request,
             "login.html",
@@ -160,6 +181,7 @@ async def login(
         )
 
     if user.mfa_secret and not verify_totp(user.mfa_secret, totp_code):
+        await _record_login_failure(redis, email, request, client.client_id, "invalid_mfa_code")
         return templates.TemplateResponse(
             request,
             "login.html",
@@ -172,6 +194,7 @@ async def login(
             status_code=401,
         )
 
+    log_event("login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
     session_id = await create_session(redis, str(user.id))
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(
@@ -238,6 +261,7 @@ async def signup(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    log_event("signup_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
     # Verification is informational, not a login gate -- a failed send
     # shouldn't block account creation. See plan/password-recovery-mcp-passkeys-plan.md §5.2.

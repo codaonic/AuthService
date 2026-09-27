@@ -6,6 +6,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import client_ip, log_event
 from app.auth.passwords import hash_password
 from app.auth.password_reset import (
     consume_email_verification_token,
@@ -60,6 +61,7 @@ async def forgot_password_submit(
     if user is not None and user.status == "active":
         token = await create_password_reset_token(redis, str(user.id))
         await send_password_reset_email(user.email, token)
+        log_event("password_reset_requested", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
     # Always the same response -- never reveal whether the account exists.
     return templates.TemplateResponse(
@@ -105,6 +107,7 @@ async def reset_password_submit(
     # A password reset should kill every other session/token this user has.
     await revoke_all_sessions_for_user(redis, str(user.id))
     await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
+    log_event("password_reset_completed", user_id=str(user.id), ip=client_ip(request))
 
     return templates.TemplateResponse(request, "reset_password_done.html", {})
 
@@ -121,6 +124,7 @@ async def verify_email(request: Request, token: str, db: AsyncSession = Depends(
     if user is not None:
         user.email_verified = True
         await db.commit()
+        log_event("email_verified", user_id=str(user.id))
 
     return templates.TemplateResponse(request, "verify_email_result.html", {"success": True})
 

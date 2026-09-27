@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import log_event
 from app.auth.passwords import hash_password
 from app.db.models import Client
 from app.db.pools import DEFAULT_POOL_NAME, get_or_create_pool
@@ -51,6 +52,13 @@ async def register_client(
     )
     db.add(client)
     await db.commit()
+    log_event(
+        "client_registered",
+        client_id=client_id,
+        registration_method="dcr",
+        client_type=client.client_type,
+        grant_types=body.grant_types,
+    )
 
     response = {
         "client_id": client_id,

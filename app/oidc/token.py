@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import client_ip, log_event
 from app.config import get_settings
 from app.db.redis_client import get_redis
 from app.db.session import get_db
@@ -74,6 +75,15 @@ async def token_endpoint(
 
     access_token, expires_in = mint_access_token(
         sub=subject, aud=resource, client_id=client_id, scope=scope
+    )
+    log_event(
+        "token_issued",
+        grant_type=grant_type,
+        client_id=client_id,
+        subject=subject,
+        resource=resource,
+        scope=scope,
+        ip=client_ip(request),
     )
 
     response = {
