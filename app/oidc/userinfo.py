@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.models import User
 from app.db.session import get_db
+from app.db.tenant import bypass_tenant_rls
 from app.oidc.keys import get_key_manager
 
 router = APIRouter()
@@ -45,6 +46,9 @@ async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
     except (ValueError, KeyError) as exc:
         raise HTTPException(400, "invalid_token: not a user token") from exc
 
+    # Authorized by the verified JWT signature, not pool membership -- there's
+    # no client/pool in scope on this bearer-token-only endpoint.
+    await bypass_tenant_rls(db)
     user = await db.get(User, user_id)
     if user is None or user.status != "active":
         raise HTTPException(401, "invalid_token")

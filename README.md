@@ -19,6 +19,7 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
   - [Server / production deployment](#server--production-deployment-docker-compose)
 - [Configuration](#configuration)
 - [Database migrations](#database-migrations)
+- [Row-level security](#row-level-security)
 - [API surface](#api-surface)
 - [Core flows](#core-flows)
 - [User pools](#user-pools)
@@ -46,7 +47,7 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 - **MCP-native client registration** — Dynamic Client Registration (RFC 7591), Protected Resource Metadata (RFC 9728), and [CIMD](#mutual-tls-for-client_credentials-clients) (`client_id`-as-URL), the method the MCP spec's 2026-07-28 revision now prefers over DCR
 - **Self-service signup, password recovery, and email verification** — with admin-managed users as an alternative, toggled per client
 - **Passkey (WebAuthn) login** alongside password + TOTP, not instead of it
-- **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client
+- **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client, with optional [Postgres Row-Level Security](#row-level-security) as a database-level backstop
 - **Web admin UI** (`/admin`) — pools, clients, resources, users, all clickable, with a CLI equivalent for scripting
 - **Resource-server SDK** (Python, [`authservice-client`](https://github.com/codaonic/AuthService_Client), its own repo) plus a documented ~20-line pattern for any other language
 - **mTLS client authentication** for `client_credentials` clients, stronger than a shared secret
@@ -115,7 +116,8 @@ All configuration is environment-driven (`app/config.py`, loaded from `.env`). C
 | Variable | Default | Purpose |
 |---|---|---|
 | `ISSUER` | `http://localhost:8000` | This service's own URL; stamped into every token's `iss` claim and the discovery doc. The `.env.example` default matches local `uv run` dev (uvicorn's default port); for Docker set it to the real domain in front of the reverse proxy, e.g. `https://auth.yourdomain.com` — never `localhost` once anything else needs to reach it |
-| `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` / `DB_NAME` | `auth` / `auth` / `localhost` / `5432` / `auth` | Postgres connection, composed into `DATABASE_URL` |
+| `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` / `DB_NAME` | `auth` / `auth` / `localhost` / `5432` / `auth` | Postgres connection, composed into `DATABASE_URL`. Used for migrations, the CLI, and first-boot schema bootstrap — these need DDL rights |
+| `DB_APP_USER` / `DB_APP_PASSWORD` | *(none — falls back to `DB_USER`/`DB_PASSWORD`)* | The role the running app actually connects as to serve requests. See "Row-level security" below — this is what makes that protection real instead of a no-op |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` / `REDIS_PASSWORD` | `localhost` / `6379` / `0` / *(none)* | Redis connection, composed into `REDIS_URL` |
 | `SIGNING_KEY_DIR` | `./keys` | Where RSA signing keys are generated and persisted (mounted as a volume in Docker) |
 | `ACCESS_TOKEN_TTL_SECONDS` | `600` | Access token lifetime |
@@ -136,6 +138,33 @@ Alembic is wired directly to the SQLAlchemy models (`app/db/models.py`), so sche
 uv run alembic revision --autogenerate -m "describe the change"
 uv run alembic upgrade head
 ```
+
+## Row-level security
+
+Multi-tenancy here is pool-based (see "User pools" below): every user belongs to exactly
+one pool, and application code filters every query by it. Postgres Row-Level Security adds
+a database-level backstop for that — a query on `users` that forgot its `user_pool_id`
+filter returns zero rows instead of another tenant's data, instead of relying on
+application code alone getting it right every time.
+
+**This only takes effect if the app connects as a non-superuser role.** Postgres exempts
+superusers from RLS unconditionally, and the role in `DB_USER` is commonly a superuser by
+default in the official Postgres Docker image (it's the bootstrap role from `initdb`). To
+actually enable it:
+
+```bash
+docker compose exec postgres psql -U "$DB_USER" -d "$DB_NAME" \
+  -c "ALTER ROLE auth_app_runtime WITH PASSWORD 'choose-a-strong-one';"
+```
+
+The `auth_app_runtime` role itself is created by a migration (`alembic upgrade head`) with
+no usable password until you set one — it can `SELECT`/`INSERT`/`UPDATE`/`DELETE` on the
+app's tables, nothing else (no DDL, no superuser). Then set `DB_APP_USER=auth_app_runtime`
+and `DB_APP_PASSWORD=<what you chose>` in `.env` and restart. `DB_USER`/`DB_PASSWORD` keep
+being used for migrations and the CLI, which still need DDL rights.
+
+Until both steps are done, the app keeps using the same credentials as before — this is
+opt-in, not a breaking change on upgrade.
 
 ## API surface
 

@@ -15,6 +15,19 @@ class Settings(BaseSettings):
     db_port: int = 5432
     db_name: str = "auth"
 
+    # A separate, restricted role for the app to use when actually serving
+    # requests, distinct from db_user (which runs migrations and needs DDL
+    # rights). Unset by default, which keeps existing deployments unchanged
+    # -- runtime_database_url below falls back to the same db_user/db_password
+    # as everything else. Row-Level Security (see the
+    # `restrict_runtime_db_role` migration) has no effect on a Postgres
+    # superuser, which db_user commonly is by default in the official
+    # Postgres Docker image -- set these once you've created and password'd
+    # the role that migration adds, to actually enforce RLS. See README's
+    # "Row-level security" section.
+    db_app_user: str | None = None
+    db_app_password: str | None = None
+
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
@@ -27,6 +40,17 @@ class Settings(BaseSettings):
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
+
+    @computed_field
+    @property
+    def runtime_database_url(self) -> str:
+        """What the running app connects as to serve requests -- everything
+        else (migrations, the CLI, first-boot schema bootstrap) uses
+        database_url instead, since those legitimately need DDL rights.
+        """
+        user = self.db_app_user or self.db_user
+        password = self.db_app_password or self.db_password
+        return f"postgresql+asyncpg://{user}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     @computed_field
     @property

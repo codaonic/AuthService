@@ -10,12 +10,22 @@ from app.config import get_settings
 settings = get_settings()
 logger = logging.getLogger("app.db")
 
+# Owner-privileged connection -- migrations, the CLI, and first-boot schema
+# bootstrap all need DDL rights, so they stay on this one.
 engine = create_async_engine(settings.database_url, pool_pre_ping=True)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
+# What the running app actually uses to serve requests. Falls back to the
+# same credentials as `engine` unless DB_APP_USER/DB_APP_PASSWORD are set --
+# see Settings.runtime_database_url and README's "Row-level security"
+# section. Row-Level Security on `users` only means anything once this is a
+# genuinely restricted, non-superuser role.
+runtime_engine = create_async_engine(settings.runtime_database_url, pool_pre_ping=True)
+runtime_session_factory = async_sessionmaker(runtime_engine, expire_on_commit=False)
+
 
 async def get_db() -> AsyncIterator[AsyncSession]:
-    async with async_session_factory() as session:
+    async with runtime_session_factory() as session:
         yield session
 
 

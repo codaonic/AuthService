@@ -37,6 +37,7 @@ from app.config import get_settings
 from app.db.models import User, WebAuthnCredential
 from app.db.redis_client import get_redis
 from app.db.session import get_db
+from app.db.tenant import bypass_tenant_rls, set_tenant_pool
 from app.oidc.authorize import _continue_flow, _get_flow_client
 
 router = APIRouter()
@@ -49,6 +50,9 @@ async def _current_user(request: Request, db: AsyncSession, redis: Redis) -> Use
     user_id = await get_session_user(redis, session_id)
     if user_id is None:
         return None
+    # Authorized by the session cookie, not pool membership -- /account is
+    # reached directly, with no client/pool in scope.
+    await bypass_tenant_rls(db)
     return await db.get(User, uuid.UUID(user_id))
 
 
@@ -64,6 +68,7 @@ async def webauthn_login_options(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
+    await set_tenant_pool(db, client.user_pool_id)
 
     result = await db.execute(
         select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
@@ -104,6 +109,7 @@ async def webauthn_login_verify(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
+    await set_tenant_pool(db, client.user_pool_id)
     settings = get_settings()
 
     challenge = await pop_authentication_challenge(redis, flow_id)

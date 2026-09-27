@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.db.models import Client, Consent, User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
+from app.db.tenant import set_tenant_pool
 from app.email import send_verification_email
 from app.middleware.rate_limit import limiter
 from app.oidc.cimd import is_cimd_client_id, resolve_cimd_client
@@ -103,6 +104,7 @@ async def authorize(
     client = await _load_client(db, client_id)
     if redirect_uri not in client.redirect_uris:
         raise HTTPException(400, "invalid_redirect_uri")
+    await set_tenant_pool(db, client.user_pool_id)
 
     scope = resolve_scope(scope, client.allowed_scope)
 
@@ -166,6 +168,7 @@ async def login(
 ):
     settings = get_settings()
     client = await _get_flow_client(db, redis, flow_id)
+    await set_tenant_pool(db, client.user_pool_id)
 
     result = await db.execute(
         select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
@@ -245,6 +248,7 @@ async def signup(
     client = await _get_flow_client(db, redis, flow_id)
     if not client.allow_signup:
         raise HTTPException(403, "signup_disabled")
+    await set_tenant_pool(db, client.user_pool_id)
 
     def error(message: str, status_code: int = 400):
         return templates.TemplateResponse(

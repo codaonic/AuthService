@@ -9,6 +9,7 @@ from app.auth.passwords import hash_password
 from app.db.models import Client, Resource, User, UserPool
 from app.db.pools import DEFAULT_POOL_NAME, get_or_create_pool
 from app.db.session import async_session_factory
+from app.db.tenant import set_tenant_pool
 
 
 async def register_client(args: argparse.Namespace) -> None:
@@ -67,6 +68,7 @@ async def register_resource(args: argparse.Namespace) -> None:
 async def create_user(args: argparse.Namespace) -> None:
     async with async_session_factory() as db:
         pool = await get_or_create_pool(db, args.user_pool)
+        await set_tenant_pool(db, pool.id)
 
         existing = await db.execute(
             select(User).where(User.email == args.email, User.user_pool_id == pool.id)
