@@ -1,5 +1,6 @@
 import secrets
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
@@ -9,13 +10,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.auth import get_current_admin
+from app.audit import log_event, recent_events
 from app.auth.password_reset import create_password_reset_token
 from app.auth.passwords import hash_password, verify_password
+from app.auth.sessions import revoke_all_sessions_for_user
 from app.db.models import AdminUser, Client, Resource, User, UserPool
 from app.db.pools import get_or_create_pool
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.email import send_password_reset_email
+from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -26,6 +30,22 @@ NOT_LOGGED_IN = RedirectResponse("/admin/login", status_code=303)
 
 def _ctx(admin: AdminUser, active: str, **extra) -> dict:
     return {"active": active, "must_change_password": admin.must_change_password, **extra}
+
+
+def _format_events(raw_events: list[dict]) -> list[dict]:
+    events = []
+    for raw in raw_events:
+        ts, level, event = raw["ts"], raw["level"], raw["event"]
+        extra = {k: v for k, v in raw.items() if k not in ("ts", "level", "event")}
+        events.append(
+            {
+                "time": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "level": level,
+                "event": event,
+                "extra": extra,
+            }
+        )
+    return events
 
 
 @router.get("/admin")
@@ -39,8 +59,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db), redis:
         result = await db.execute(select(func.count()).select_from(model))
         counts[label] = result.scalar_one()
 
+    recent = _format_events(recent_events(8))
+
     return templates.TemplateResponse(
-        request, "admin/dashboard.html", _ctx(admin, "dashboard", counts=counts)
+        request, "admin/dashboard.html", _ctx(admin, "dashboard", counts=counts, recent=recent)
     )
 
 
@@ -190,6 +212,27 @@ async def create_client(
     )
 
 
+@router.post("/admin/clients/{client_id}/mtls")
+async def set_client_mtls_thumbprint(
+    client_id: str,
+    request: Request,
+    thumbprint: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    admin = await get_current_admin(request, db, redis)
+    if admin is None:
+        return NOT_LOGGED_IN
+
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if client is not None:
+        client.mtls_cert_thumbprint = thumbprint.strip().upper() or None
+        await db.commit()
+
+    return RedirectResponse("/admin/clients", status_code=303)
+
+
 @router.post("/admin/clients/{client_id}/toggle-signup")
 async def toggle_client_signup(
     client_id: str,
@@ -206,6 +249,35 @@ async def toggle_client_signup(
     if client is not None:
         client.allow_signup = not client.allow_signup
         await db.commit()
+
+    return RedirectResponse("/admin/clients", status_code=303)
+
+
+@router.post("/admin/clients/{client_id}/toggle-enabled")
+async def toggle_client_enabled(
+    client_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Turn a client's access on/off without deleting it -- for a compromised
+    secret, a retired app, or anything else that should stop working right
+    now but keep its history (tokens, consents, audit trail).
+    """
+    admin = await get_current_admin(request, db, redis)
+    if admin is None:
+        return NOT_LOGGED_IN
+
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if client is not None:
+        client.enabled = not client.enabled
+        await db.commit()
+        log_event(
+            "client_" + ("enabled" if client.enabled else "disabled"),
+            client_id=client_id,
+            admin_id=str(admin.id),
+        )
 
     return RedirectResponse("/admin/clients", status_code=303)
 
@@ -277,6 +349,55 @@ async def create_user_route(
     return RedirectResponse("/admin/users", status_code=303)
 
 
+@router.post("/admin/users/{user_id}/toggle-status")
+async def toggle_user_status(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Disable an account without deleting it. Disabling also signs them out
+    everywhere and kills their refresh tokens immediately -- otherwise
+    "disabled" would only stop new logins, not access already granted.
+    """
+    admin = await get_current_admin(request, db, redis)
+    if admin is None:
+        return NOT_LOGGED_IN
+
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is not None:
+        user.status = "disabled" if user.status == "active" else "active"
+        await db.commit()
+        if user.status == "disabled":
+            await revoke_all_sessions_for_user(redis, str(user.id))
+            await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
+        log_event(
+            "user_" + user.status, user_id=str(user.id), email=user.email, admin_id=str(admin.id)
+        )
+
+    return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.post("/admin/users/{user_id}/sign-out")
+async def sign_out_user(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    admin = await get_current_admin(request, db, redis)
+    if admin is None:
+        return NOT_LOGGED_IN
+
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is not None:
+        await revoke_all_sessions_for_user(redis, str(user.id))
+        await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
+        log_event("user_signed_out_by_admin", user_id=str(user.id), admin_id=str(admin.id))
+
+    return RedirectResponse("/admin/users", status_code=303)
+
+
 @router.post("/admin/users/{user_id}/send-reset")
 async def send_password_reset(
     user_id: str,
@@ -294,6 +415,16 @@ async def send_password_reset(
         await send_password_reset_email(user.email, token)
 
     return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.get("/admin/audit")
+async def audit_log(request: Request, db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)):
+    admin = await get_current_admin(request, db, redis)
+    if admin is None:
+        return NOT_LOGGED_IN
+
+    events = _format_events(recent_events())
+    return templates.TemplateResponse(request, "admin/audit.html", _ctx(admin, "audit", events=events))
 
 
 @router.get("/admin/account")

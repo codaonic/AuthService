@@ -12,27 +12,59 @@
 {% if error %}<div class="alert alert--error" role="alert"><span>{{ error }}</span></div>{% endif %}
 
 <table class="admin-table">
-  <thead><tr><th>Application</th><th>Type</th><th>Login group</th><th>Signup</th><th></th></tr></thead>
+  <thead><tr><th>Application</th><th>Type</th><th>Source</th><th>Login group</th><th>Status</th><th>Signup</th><th>mTLS thumbprint</th><th></th></tr></thead>
   <tbody>
     {% for c, pool_name in clients %}
-    <tr>
-      <td>{{ c.client_id }}</td>
+    <tr{% if not c.enabled %} style="opacity:0.55;"{% endif %}>
+      <td>{{ c.client_id if c.registration_method != "cimd" else c.client_id[:40] + ("…" if c.client_id|length > 40 else "") }}</td>
       <td>{{ c.client_type }}</td>
+      <td>
+        {% if c.registration_method == "cimd" %}<span class="badge badge--off" title="Registered itself via its client_id URL{{ ' — last checked ' + c.cimd_fetched_at.strftime('%Y-%m-%d %H:%M UTC') if c.cimd_fetched_at else '' }}">CIMD</span>
+        {% elif c.registration_method == "dcr" %}<span class="badge badge--off" title="Registered itself via dynamic client registration">DCR</span>
+        {% else %}<span class="badge badge--off">Added by you</span>{% endif %}
+      </td>
       <td>{{ pool_name }}</td>
+      <td>
+        {% if c.enabled %}<span class="badge badge--on">Active</span>{% else %}<span class="badge badge--off">Disabled</span>{% endif %}
+      </td>
       <td>
         {% if c.allow_signup %}<span class="badge badge--on">Allowed</span>{% else %}<span class="badge badge--off">Admin-only</span>{% endif %}
       </td>
       <td>
-        <form method="post" action="/admin/clients/{{ c.client_id }}/toggle-signup">
-          <button type="submit" class="btn btn--secondary">{{ "Disable signup" if c.allow_signup else "Enable signup" }}</button>
+        {% if c.registration_method == "cimd" %}
+        <span class="field__hint">not applicable</span>
+        {% else %}
+        <form method="post" action="/admin/clients/{{ c.client_id }}/mtls" style="display:flex; gap:6px;">
+          <input type="text" name="thumbprint" value="{{ c.mtls_cert_thumbprint or '' }}" placeholder="SHA-256 cert thumbprint" style="font: inherit; font-size:12.5px; padding: 6px 8px; border-radius: var(--radius-sm); border: 1px solid var(--color-border-strong); background: var(--color-surface); color: var(--color-text); width: 170px;">
+          <button type="submit" class="btn btn--secondary">Save</button>
         </form>
+        {% endif %}
+      </td>
+      <td>
+        <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-start;">
+          <form method="post" action="/admin/clients/{{ c.client_id }}/toggle-enabled">
+            <button type="submit" class="btn btn--secondary">{{ "Disable" if c.enabled else "Re-enable" }}</button>
+          </form>
+          {% if c.registration_method != "cimd" %}
+          <form method="post" action="/admin/clients/{{ c.client_id }}/toggle-signup">
+            <button type="submit" class="btn btn--secondary">{{ "Disable signup" if c.allow_signup else "Enable signup" }}</button>
+          </form>
+          {% endif %}
+        </div>
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="5">No applications yet — add your first one below.</td></tr>
+    <tr><td colspan="8">No applications yet — add your first one below.</td></tr>
     {% endfor %}
   </tbody>
 </table>
+<p class="field__hint" style="margin-top:8px;">
+  <strong>Disable</strong> immediately blocks an app from letting anyone log in or refresh a
+  token, without deleting it — use this for a compromised secret or a retired app while
+  keeping its history. mTLS thumbprint is only checked for apps that talk directly to the
+  server (not ones a person logs into through a browser) — leave blank unless you've set up
+  <a href="https://github.com/codaonic/AuthService#mutual-tls-for-client_credentials-clients">mutual TLS</a> for it.
+</p>
 
 <div class="admin-card admin-card--wide">
   <h2>Add an application</h2>

@@ -57,6 +57,7 @@ class Client(Base):
     allow_signup: Mapped[bool] = mapped_column(Boolean, default=True)
     mtls_cert_thumbprint: Mapped[str | None] = mapped_column(String, nullable=True)
     cimd_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

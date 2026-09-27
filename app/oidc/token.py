@@ -1,9 +1,12 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import client_ip, log_event
 from app.config import get_settings
+from app.db.models import User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.middleware.rate_limit import limiter
@@ -72,6 +75,13 @@ async def token_endpoint(
 
     else:
         raise HTTPException(400, "unsupported_grant_type")
+
+    if grant_type != "client_credentials":
+        # A user disabled after issuing this code/refresh token shouldn't be
+        # able to keep minting access tokens from it.
+        user = await db.get(User, uuid.UUID(subject))
+        if user is None or user.status != "active":
+            raise HTTPException(400, "invalid_grant")
 
     access_token, expires_in = mint_access_token(
         sub=subject, aud=resource, client_id=client_id, scope=scope

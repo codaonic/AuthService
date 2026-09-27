@@ -58,7 +58,9 @@ async def admin_login(
         )
 
     log_event("admin_login_success", admin_id=str(admin.id), ip=client_ip(request))
-    session_id = await create_session(redis, str(admin.id))
+    session_id = await create_session(
+        redis, str(admin.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
     response = RedirectResponse("/admin", status_code=303)
     response.set_cookie(
         settings.admin_session_cookie_name,

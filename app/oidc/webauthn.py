@@ -18,7 +18,14 @@ from webauthn import (
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
 from app.audit import client_ip, log_event
-from app.auth.sessions import create_session, get_session_user
+from app.auth.passwords import hash_password, verify_password
+from app.auth.sessions import (
+    create_session,
+    get_session_user,
+    list_sessions_for_user,
+    revoke_other_sessions,
+    revoke_session,
+)
 from app.auth.webauthn import (
     pop_authentication_challenge,
     pop_registration_challenge,
@@ -112,7 +119,7 @@ async def webauthn_login_verify(
         raise HTTPException(400, "Unknown passkey")
 
     user = await db.get(User, stored.user_id)
-    if user is None or user.user_pool_id != client.user_pool_id:
+    if user is None or user.user_pool_id != client.user_pool_id or user.status != "active":
         raise HTTPException(400, "Unknown passkey")
 
     rp_id, origin = relying_party()
@@ -133,7 +140,9 @@ async def webauthn_login_verify(
     await db.commit()
     log_event("webauthn_login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
-    session_id = await create_session(redis, str(user.id))
+    session_id = await create_session(
+        redis, str(user.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(
         settings.session_cookie_name,
@@ -153,17 +162,114 @@ def _credential_id_from_json(credential_json: str) -> str:
 # --- Managing passkeys from the account page (requires an existing session) ---
 
 
+MIN_PASSWORD_LENGTH = 8
+
+
+async def _account_context(request: Request, db: AsyncSession, redis: Redis, user: User, **extra) -> dict:
+    settings = get_settings()
+    result = await db.execute(
+        select(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id).order_by(WebAuthnCredential.created_at)
+    )
+    credentials = result.scalars().all()
+    sessions = await list_sessions_for_user(redis, str(user.id))
+    current_session_id = request.cookies.get(settings.session_cookie_name)
+    return {
+        "user": user,
+        "credentials": credentials,
+        "sessions": sessions,
+        "current_session_id": current_session_id,
+        "error": None,
+        "success": None,
+        **extra,
+    }
+
+
 @router.get("/account")
 async def account_page(request: Request, db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)):
     user = await _current_user(request, db, redis)
     if user is None:
         return templates.TemplateResponse(request, "account.html", {"user": None, "credentials": []})
 
-    result = await db.execute(
-        select(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id).order_by(WebAuthnCredential.created_at)
-    )
-    credentials = result.scalars().all()
-    return templates.TemplateResponse(request, "account.html", {"user": user, "credentials": credentials})
+    return templates.TemplateResponse(request, "account.html", await _account_context(request, db, redis, user))
+
+
+@router.post("/account/password")
+async def change_account_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    user = await _current_user(request, db, redis)
+    if user is None:
+        raise HTTPException(401, "Not signed in")
+
+    async def error(message: str, status_code: int = 400):
+        ctx = await _account_context(request, db, redis, user, error=message)
+        return templates.TemplateResponse(request, "account.html", ctx, status_code=status_code)
+
+    if not verify_password(current_password, user.password_hash):
+        return await error("Current password is incorrect")
+    if new_password != confirm_password:
+        return await error("New passwords do not match")
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        return await error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+
+    user.password_hash = hash_password(new_password)
+    await db.commit()
+    log_event("password_changed", user_id=str(user.id), ip=client_ip(request))
+
+    settings = get_settings()
+    current_session_id = request.cookies.get(settings.session_cookie_name)
+    if current_session_id:
+        await revoke_other_sessions(redis, str(user.id), current_session_id)
+
+    ctx = await _account_context(request, db, redis, user, success="Password updated")
+    return templates.TemplateResponse(request, "account.html", ctx)
+
+
+@router.post("/account/sessions/{session_id}/revoke")
+async def revoke_account_session(
+    session_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    user = await _current_user(request, db, redis)
+    if user is None:
+        raise HTTPException(401, "Not signed in")
+
+    settings = get_settings()
+    current_session_id = request.cookies.get(settings.session_cookie_name)
+    revoked = await revoke_session(redis, session_id, str(user.id))
+    if revoked:
+        log_event("session_revoked", user_id=str(user.id), ip=client_ip(request))
+
+    if session_id == current_session_id:
+        response = RedirectResponse("/account", status_code=303)
+        response.delete_cookie(settings.session_cookie_name)
+        return response
+
+    return RedirectResponse("/account", status_code=303)
+
+
+@router.post("/account/sessions/revoke-others")
+async def revoke_other_account_sessions(
+    request: Request, db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)
+):
+    user = await _current_user(request, db, redis)
+    if user is None:
+        raise HTTPException(401, "Not signed in")
+
+    settings = get_settings()
+    current_session_id = request.cookies.get(settings.session_cookie_name)
+    if current_session_id:
+        await revoke_other_sessions(redis, str(user.id), current_session_id)
+        log_event("sessions_revoked_others", user_id=str(user.id), ip=client_ip(request))
+
+    return RedirectResponse("/account", status_code=303)
 
 
 @router.post("/account/webauthn/register/options")

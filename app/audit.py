@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections import deque
 from typing import Any
 
 from fastapi import Request
@@ -18,6 +19,14 @@ FAILED_LOGIN_PREFIX = "audit_failed_login:"
 FAILED_LOGIN_THRESHOLD = 5
 FAILED_LOGIN_WINDOW_SECONDS = 5 * 60
 
+# In-memory only, capped, per-process -- lets the admin UI show "what just
+# happened" without standing up a second durable store for audit data.
+# stdout (via audit_logger above) stays the actual source of truth; point a
+# real log aggregator at it for anything that needs to survive a restart or
+# span multiple replicas.
+_RECENT_EVENTS_MAXLEN = 500
+_recent_events: deque[dict] = deque(maxlen=_RECENT_EVENTS_MAXLEN)
+
 
 def log_event(event: str, level: int = logging.INFO, **fields: Any) -> None:
     """Emit one structured (JSON-lines) audit record.
@@ -30,6 +39,12 @@ def log_event(event: str, level: int = logging.INFO, **fields: Any) -> None:
     """
     payload = {"ts": round(time.time(), 3), "level": logging.getLevelName(level), "event": event, **fields}
     audit_logger.log(level, json.dumps(payload, default=str))
+    _recent_events.append(payload)
+
+
+def recent_events(limit: int = 200) -> list[dict]:
+    """Most-recent-first slice of this process's in-memory event buffer."""
+    return list(_recent_events)[::-1][:limit]
 
 
 def client_ip(request: Request) -> str | None:

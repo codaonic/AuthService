@@ -60,10 +60,13 @@ async def _record_login_failure(
 
 async def _load_client(db: AsyncSession, client_id: str) -> Client:
     if is_cimd_client_id(client_id):
-        return await resolve_cimd_client(db, client_id)
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
+        client = await resolve_cimd_client(db, client_id)
+    else:
+        result = await db.execute(select(Client).where(Client.client_id == client_id))
+        client = result.scalar_one_or_none()
+        if client is None:
+            raise HTTPException(400, "invalid_client")
+    if not client.enabled:
         raise HTTPException(400, "invalid_client")
     return client
 
@@ -198,7 +201,9 @@ async def login(
         )
 
     log_event("login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
-    session_id = await create_session(redis, str(user.id))
+    session_id = await create_session(
+        redis, str(user.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(
         settings.session_cookie_name,
@@ -271,7 +276,9 @@ async def signup(
     token = await create_email_verification_token(redis, str(user.id))
     await send_verification_email(user.email, token)
 
-    session_id = await create_session(redis, str(user.id))
+    session_id = await create_session(
+        redis, str(user.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(
         settings.session_cookie_name,

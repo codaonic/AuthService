@@ -15,4 +15,29 @@
   check for tokens, then add an <a href="/admin/clients">application</a> for each website, mobile app,
   or AI assistant that should be able to log people in.
 </p>
+
+<div class="section-gap">
+  <div style="display:flex; justify-content:space-between; align-items:baseline;">
+    <h2 style="font-size:15px; margin:0 0 10px;">Recent activity</h2>
+    <a href="/admin/audit" class="field__hint">View full log →</a>
+  </div>
+  {% if recent %}
+  <table class="admin-table">
+    <thead><tr><th>Time</th><th>Event</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for e in recent %}
+      <tr>
+        <td style="white-space:nowrap;">{{ e.time }}</td>
+        <td><code>{{ e.event }}</code></td>
+        <td style="font-size:12.5px; color:var(--color-text-secondary);">
+          {% for k, v in e.extra.items() %}{{ k }}=<span style="color:var(--color-text);">{{ v }}</span>{{ ", " if not loop.last }}{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--color-text-secondary); font-size:13.5px;">No activity recorded yet on this process.</p>
+  {% endif %}
+</div>
 {% endblock %}

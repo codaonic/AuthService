@@ -192,12 +192,15 @@ uv run python -m app.cli register-client --client-id acme-admin --type confident
 
 Everything the CLI can do is also available as a web UI at `/admin`, for operators who'd rather click than run commands:
 
-- **Dashboard** — counts of pools/clients/resources/users.
+- **Dashboard** — counts of pools/clients/resources/users, plus a recent-activity preview.
 - **User pools** — create pools by name.
-- **Clients** — register clients (public or confidential), pick their user pool, and toggle **"allow signup"** per client — turn it off for a client where only admins should be able to add users (end users can still log in, just not self-register).
+- **Clients** — register clients (public or confidential), pick their user pool, toggle **"allow signup"** per client, set/rotate a client's **mTLS certificate thumbprint**, and **disable/re-enable** a client without deleting it (blocks all sign-in and token refresh immediately — for a compromised secret or a retired app, while keeping its history). Clients that registered themselves (DCR or CIMD) are marked with a **Source** badge and can't be edited here.
 - **Resources** — register protected APIs/MCP servers.
-- **Users** — the manual add-a-user path, for clients with signup disabled; lists/filters existing users by pool.
+- **Users** — the manual add-a-user path, for clients with signup disabled; lists/filters existing users by pool; **disable an account** (revokes all sessions and refresh tokens immediately, not just future logins) or **sign it out everywhere** without disabling it.
+- **Activity log** — a live, in-memory view of recent logins, token issuance, and security events on this process (also written to stdout as JSON lines — point a real log aggregator there for durable history).
 - **Account** — change the admin password.
+
+End users get their own self-service page at `/account` once signed in: change password, manage passkeys, and see/revoke active sessions per device.
 
 A default admin account is seeded automatically on first startup (`admin@localhost` / `admin123!` unless overridden via `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD`), logged clearly at startup. Sign in at `/admin/login` and change it immediately — the UI shows a banner reminding you until you do. Admin sessions are a separate cookie from end-user sessions, so being signed into `/admin` never grants access to any client's login.
 

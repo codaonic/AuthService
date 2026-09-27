@@ -1,0 +1,35 @@
+{% extends "admin/_base.html" %}
+{% block title %}Activity log{% endblock %}
+{% block content %}
+<div class="admin-header"><h1 class="admin-title">Activity log</h1></div>
+
+<p class="admin-lead">
+  Recent logins, token issuance, and security events from this server process — logins,
+  password resets, client registration, revoked tokens, and repeated-failure alerts.
+  This is a live view for quick checks, not permanent storage: it resets on restart and
+  only covers this one process. For a durable, searchable history, point a log
+  aggregator at this service's stdout — every event here is also written there as a
+  JSON line.
+</p>
+
+<table class="admin-table">
+  <thead><tr><th>Time</th><th>Level</th><th>Event</th><th>Details</th></tr></thead>
+  <tbody>
+    {% for e in events %}
+    <tr>
+      <td style="white-space:nowrap;">{{ e.time }}</td>
+      <td>
+        {% if e.level == "WARNING" %}<span class="badge badge--off" style="color:var(--color-danger); background:var(--color-danger-bg);">{{ e.level }}</span>
+        {% else %}<span class="badge badge--off">{{ e.level }}</span>{% endif %}
+      </td>
+      <td><code>{{ e.event }}</code></td>
+      <td style="font-size:12.5px; color:var(--color-text-secondary);">
+        {% for k, v in e.extra.items() %}{{ k }}=<span style="color:var(--color-text);">{{ v }}</span>{{ ", " if not loop.last }}{% endfor %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No activity recorded yet on this process.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

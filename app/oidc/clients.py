@@ -37,11 +37,15 @@ async def get_and_validate_client(
         client = await resolve_cimd_client(db, client_id)
         if client_secret:  # CIMD clients are always public -- no secret to check
             raise HTTPException(401, "invalid_client")
+        if not client.enabled:
+            raise HTTPException(401, "invalid_client")
         return client
 
     result = await db.execute(select(Client).where(Client.client_id == client_id))
     client = result.scalar_one_or_none()
     if client is None:
+        raise HTTPException(401, "invalid_client")
+    if not client.enabled:
         raise HTTPException(401, "invalid_client")
 
     if client.mtls_cert_thumbprint:

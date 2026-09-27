@@ -17,17 +17,27 @@
   <thead><tr><th>Email</th><th>Login group</th><th>Status</th><th>Email verified</th><th></th></tr></thead>
   <tbody>
     {% for u, pool_name in users %}
-    <tr>
+    <tr{% if u.status != "active" %} style="opacity:0.55;"{% endif %}>
       <td>{{ u.email }}</td>
       <td>{{ pool_name }}</td>
-      <td>{{ u.status }}</td>
+      <td>
+        {% if u.status == "active" %}<span class="badge badge--on">Active</span>{% else %}<span class="badge badge--off">Disabled</span>{% endif %}
+      </td>
       <td>
         {% if u.email_verified %}<span class="badge badge--on">Verified</span>{% else %}<span class="badge badge--off">Unverified</span>{% endif %}
       </td>
       <td>
-        <form method="post" action="/admin/users/{{ u.id }}/send-reset">
-          <button type="submit" class="btn btn--secondary">Send password reset</button>
-        </form>
+        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+          <form method="post" action="/admin/users/{{ u.id }}/toggle-status">
+            <button type="submit" class="btn btn--secondary">{{ "Disable" if u.status == "active" else "Re-enable" }}</button>
+          </form>
+          <form method="post" action="/admin/users/{{ u.id }}/sign-out">
+            <button type="submit" class="btn btn--secondary">Sign out everywhere</button>
+          </form>
+          <form method="post" action="/admin/users/{{ u.id }}/send-reset">
+            <button type="submit" class="btn btn--secondary">Send password reset</button>
+          </form>
+        </div>
       </td>
     </tr>
     {% else %}
@@ -35,6 +45,12 @@
     {% endfor %}
   </tbody>
 </table>
+<p class="field__hint" style="margin-top:8px;">
+  <strong>Disable</strong> blocks all sign-in and immediately revokes their active sessions
+  and refresh tokens — use it for a compromised or offboarded account.
+  <strong>Sign out everywhere</strong> does the same revocation without disabling the
+  account, for something like a lost device.
+</p>
 
 <div class="admin-card">
   <h2>Add a user</h2>
