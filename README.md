@@ -2,7 +2,6 @@
 
 A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces Keycloak: one service owns identity and tokens, while every consumer — regardless of language — talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server.
 
-![Test](https://github.com/codaonic/AuthService/actions/workflows/test.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -29,6 +28,7 @@ A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by
 - [Tech stack](#tech-stack)
 - [Project structure](#project-structure)
 - [Security](#security)
+- [Mutual TLS for `client_credentials` clients](#mutual-tls-for-client_credentials-clients)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
@@ -42,11 +42,15 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 
 ## Features
 
-- **Full OAuth 2.1 / OIDC surface** — Authorization Code + mandatory PKCE, `client_credentials`, refresh token rotation with one-time-use enforcement, revocation, Dynamic Client Registration (RFC 7591), Protected Resource Metadata (RFC 9728)
-- **Self-service signup and admin-managed users** — toggle per client: let end users register themselves, or restrict a client to admin-added users only
+- **Full OAuth 2.1 / OIDC surface** — Authorization Code + mandatory PKCE, `client_credentials`, refresh token rotation with one-time-use enforcement, revocation
+- **MCP-native client registration** — Dynamic Client Registration (RFC 7591), Protected Resource Metadata (RFC 9728), and [CIMD](#mutual-tls-for-client_credentials-clients) (`client_id`-as-URL), the method the MCP spec's 2026-07-28 revision now prefers over DCR
+- **Self-service signup, password recovery, and email verification** — with admin-managed users as an alternative, toggled per client
+- **Passkey (WebAuthn) login** alongside password + TOTP, not instead of it
 - **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client
 - **Web admin UI** (`/admin`) — pools, clients, resources, users, all clickable, with a CLI equivalent for scripting
 - **Resource-server SDK** (Python, [`authservice-client`](https://github.com/codaonic/AuthService_Client), its own repo) plus a documented ~20-line pattern for any other language
+- **mTLS client authentication** for `client_credentials` clients, stronger than a shared secret
+- **Structured (JSON-lines) audit logging** with anomalous-activity flagging, ready for any log aggregator
 - **Argon2 password hashing, TOTP MFA, rotating RS256 signing keys, rate limiting**
 - **Zero-dependency test suite** — `uv run pytest` runs fully offline, no database or Redis required
 
@@ -214,7 +218,9 @@ uv run python -m app.cli register-client --client-id your-app --type public --re
 
 Add `--user-pool <name>` to either share users with your other clients or isolate them — see [User pools](#user-pools). Omit it and everything lands in one shared `default` pool.
 
-MCP clients don't need manual registration — they self-register at connect time via `POST /register` (Dynamic Client Registration), which is exactly what `/.well-known/oauth-protected-resource` + `/.well-known/openid-configuration` exist to point them at.
+MCP clients don't need manual registration — they self-register at connect time, either via `POST /register` (Dynamic Client Registration) or, increasingly, by hosting a JSON document at their own `client_id` URL ([CIMD](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/), which the MCP spec's 2026-07-28 revision now prefers over DCR — this server supports both, resolving whichever style of `client_id` a request presents). Either way, it's `/.well-known/oauth-protected-resource` + `/.well-known/openid-configuration` that point clients at this server in the first place.
+
+Service-to-service `client_credentials` clients can authenticate with a certificate instead of a shared secret — see [Mutual TLS](#mutual-tls-for-client_credentials-clients).
 
 ### 2. Validate tokens in the resource server
 
@@ -238,6 +244,18 @@ Two runnable, tested examples built on the SDK:
 cd examples/example_api
 uv sync
 uv run uvicorn main:app --reload --port 9001
+```
+
+### 3. For a website: the BFF pattern
+
+A website's own backend is a **client** (it logs users in), not a resource server. The pattern that keeps tokens safe: the browser only ever holds an opaque, `HttpOnly` session cookie for *your* backend — access/refresh tokens live server-side and never reach the browser or its JavaScript. When your site needs to call another API on the user's behalf, your backend does it directly and returns the result.
+
+[`examples/website_bff`](examples/website_bff) is a complete, runnable reference for this — register, log in, exchange the code, call a downstream API server-side, log out:
+
+```bash
+cd examples/website_bff
+uv sync
+uv run uvicorn main:app --reload --port 9003
 ```
 
 ## Architecture
@@ -297,8 +315,10 @@ auth_service/
 │   ├── main.py                  # FastAPI app entrypoint, router + middleware wiring
 │   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
 │   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
+│   ├── audit.py                  # structured (JSON-lines) audit logging + failed-login anomaly tracking
+│   ├── email.py                   # SMTP sender (password reset + verification emails)
 │   ├── db/
-│   │   ├── models.py            # SQLAlchemy models: UserPool, User, AdminUser, Client, Resource, Consent, RefreshToken
+│   │   ├── models.py            # SQLAlchemy models: UserPool, User, AdminUser, Client, Resource, Consent, RefreshToken, WebAuthnCredential
 │   │   ├── pools.py              # get_or_create_pool() -- pools are created implicitly by name
 │   │   ├── session.py           # async engine + session factory
 │   │   └── redis_client.py      # Redis connection
@@ -306,9 +326,12 @@ auth_service/
 │   │   ├── discovery.py         # GET /.well-known/openid-configuration
 │   │   ├── prm.py                # GET /.well-known/oauth-protected-resource
 │   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow)
+│   │   ├── password_reset.py     # /forgot-password, /reset-password, /verify-email, /resend-verification
+│   │   ├── webauthn.py           # /webauthn/* (passkey register + login), /account (manage passkeys)
 │   │   ├── token.py              # POST /token (auth code, refresh, client_credentials)
 │   │   ├── refresh.py            # refresh-token issuance/rotation/revocation (Redis + Postgres audit)
-│   │   ├── clients.py            # client authentication (confidential/public)
+│   │   ├── clients.py            # client authentication (confidential/public/mTLS)
+│   │   ├── cimd.py               # Client ID Metadata Document resolution (client_id-as-URL)
 │   │   ├── scope.py              # scope resolution against a client's allowed_scope
 │   │   ├── pkce.py               # PKCE S256 verification
 │   │   ├── keys.py               # RSA key generation/rotation, JWKS
@@ -324,21 +347,24 @@ auth_service/
 │   ├── auth/
 │   │   ├── passwords.py          # argon2 hashing
 │   │   ├── mfa.py                 # TOTP generate/verify
-│   │   └── sessions.py            # Redis-backed login sessions (shared by end-user and admin sessions)
+│   │   ├── sessions.py            # Redis-backed login sessions (shared by end-user and admin sessions)
+│   │   ├── password_reset.py      # Redis-backed reset/verification tokens
+│   │   └── webauthn.py            # WebAuthn RP ID/origin + Redis-backed challenge storage
 │   ├── middleware/
 │   │   └── rate_limit.py          # slowapi limiter
-│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, admin/*
-│   └── static/                    # CSS/JS for both the login/consent UI and the admin UI
+│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, account.html, admin/*
+│   └── static/                    # CSS/JS for the login/consent/account UI (incl. webauthn.js) and the admin UI
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
 ├── examples/
 │   ├── example_api/                # runnable protected API built on the SDK
-│   └── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
+│   ├── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
+│   └── website_bff/                 # runnable BFF-pattern website client (no SDK needed -- it's a client, not a resource server)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml / uv.lock
 ├── .env / .env.example
-└── plan/                          # design doc this service is built from (not committed)
+└── plan/                          # design docs this service is built from (not committed)
 ```
 
 ## Security
@@ -354,6 +380,44 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) for how to report it priva
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever served over HTTPS; admin sessions use a separate cookie from end-user sessions
 - No credentials or connection strings are hardcoded anywhere — `docker-compose.yml` sources them from `.env` via variable interpolation, and the app itself composes URLs from discrete env vars at runtime
 - A default admin account is seeded on first run and flagged `must_change_password` until you change it via `/admin/account` — override `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` before first boot if you don't want the default to exist even briefly
+- Structured (JSON-lines) audit logging on stdout for every login, signup, token issuance/revocation, admin login, password reset, and DCR registration — `anomalous_activity` events (e.g. repeated failed logins) log at `WARNING` so they're easy to filter for. Wiring these into an actual alert (Slack, PagerDuty, email) is a log-aggregator choice left to your deployment, same as any other 12-factor app.
+
+## Mutual TLS for `client_credentials` clients
+
+For service-to-service clients, a certificate is a stronger authentication method than a shared secret — it proves possession of a private key, not just knowledge of a string. This is disabled by default (`MTLS_TRUSTED_PROXY_SECRET` empty in `.env`) and requires your reverse proxy to actually verify client certificates, since this app itself sits behind nginx and never sees the raw TLS connection.
+
+**1. Register the client with its certificate's thumbprint:**
+
+```bash
+uv run python -m app.cli register-client \
+  --client-id some-service --type confidential \
+  --grant-type client_credentials \
+  --mtls-thumbprint "$(openssl x509 -in client.crt -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+```
+
+**2. Generate a proxy secret and set it in `.env`:**
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+**3. Add this to your nginx site config, on the `/token` and `/revoke` locations** (adjust `ssl_client_certificate` to your CA bundle):
+
+```nginx
+ssl_client_certificate /etc/nginx/certs/client-ca.pem;
+ssl_verify_client optional;  # "optional" so non-mTLS clients still reach /token normally
+
+location ~ ^/(token|revoke)$ {
+    proxy_pass http://auth_backend:8113;
+    proxy_set_header X-Internal-Proxy-Secret "REPLACE_WITH_THE_SECRET_FROM_STEP_2";
+    proxy_set_header X-Client-Cert-Verify $ssl_client_verify;
+    proxy_set_header X-Client-Cert-Fingerprint $ssl_client_fingerprint;
+}
+```
+
+`$ssl_client_fingerprint` is SHA-1 by default in stock nginx — either switch the thumbprint you registered in step 1 to SHA-1 to match, or use `ssl_client_fingerprint` alternatives available in your nginx build for SHA-256. Whichever you pick, the algorithm on both sides must match.
+
+Once configured for a client, mTLS is *required* for it — a correct `client_secret` alone is no longer accepted, since allowing either would make the certificate requirement pointless.
 
 ## Testing
 
@@ -374,14 +438,13 @@ Following the build order this service was planned against:
 - [x] Admin CLI for registering resources/clients/users; resource-server SDK + example integrations
 - [x] Self-service user signup, and user pools (shared vs. isolated identity across clients on one deployment)
 - [x] `/admin` setup UI (pools, clients, resources, users, per-client signup toggle) with a seeded default admin account
-- [ ] Website integration: BFF pattern, end-to-end session cookie test against a real frontend
-- [ ] MCP support: validated against a real MCP client
-- [ ] CIMD support (once MCP client ecosystem expects it)
-- [ ] Policy layer: OPA sidecar for fine-grained authz
-- [ ] Gateway hardening: Envoy JWT validation in front of resource servers
-- [ ] mTLS between gateway and resource servers / `client_credentials` clients
-- [ ] Observability: structured audit logs, anomalous-issuance alerting
-- [ ] Pen test before production traffic
+- [x] MCP support: RFC 8707 resource indicators, RFC 9728 protected resource metadata, RFC 7591 Dynamic Client Registration
+- [x] Password recovery and email verification
+- [x] Passkey (WebAuthn) login, alongside password + TOTP
+- [x] Website integration: BFF pattern (`examples/website_bff`)
+- [x] CIMD support: `client_id`-as-URL resolution, per the MCP spec's 2026-07-28 revision preferring it over DCR
+- [x] mTLS for `client_credentials` clients (RFC 8705-style cert-thumbprint binding, via reverse-proxy header handoff)
+- [x] Observability: structured audit logs, anomalous-issuance alerting
 
 ## Contributing
 
