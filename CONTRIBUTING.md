@@ -22,8 +22,8 @@ uv run pytest
 ```
 
 The suite is fully offline — in-memory SQLite and `fakeredis`, no real
-Postgres/Redis needed. It must pass before a PR is merged; CI runs it
-automatically on every push and PR.
+Postgres/Redis needed. Run it yourself before opening a PR — there's no
+automated CI running it for you.
 
 ## Making a change
 
