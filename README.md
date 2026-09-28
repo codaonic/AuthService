@@ -1,6 +1,6 @@
 # Auth Service
 
-A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces Keycloak: one service owns identity and tokens, while every consumer — regardless of language — talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server.
+A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces our previous third-party identity provider: one service now owns identity and tokens, while every consumer, regardless of language, talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server..
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688)
