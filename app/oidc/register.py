@@ -21,6 +21,7 @@ class ClientRegistrationRequest(BaseModel):
     token_endpoint_auth_method: str = "client_secret_post"  # or "none" for public clients
     application_type: str = "web"
     scope: str = ""
+    client_name: str | None = None
 
 
 @router.post("/register", status_code=201)
@@ -42,6 +43,7 @@ async def register_client(
     client = Client(
         user_pool_id=pool.id,
         client_id=client_id,
+        client_name=body.client_name,
         client_secret_hash=None if client_secret is None else hash_password(client_secret),
         client_type="public" if is_public else "confidential",
         redirect_uris=body.redirect_uris,
@@ -67,6 +69,8 @@ async def register_client(
         "token_endpoint_auth_method": body.token_endpoint_auth_method,
         "application_type": body.application_type,
     }
+    if body.client_name is not None:
+        response["client_name"] = body.client_name
     if client_secret is not None:
         response["client_secret"] = client_secret
     return response

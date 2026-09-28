@@ -9,6 +9,23 @@ class Settings(BaseSettings):
 
     issuer: str = "http://localhost:8000"
 
+    @computed_field
+    @property
+    def issuer_url(self) -> str:
+        """Canonical issuer identity string, always trailing-slash-terminated.
+
+        OAuth/OIDC clients (e.g. the MCP SDK's AnyHttpUrl handling) normalize
+        a bare-host issuer to end in "/", so every place that asserts issuer
+        *identity* (discovery's "issuer", PRM's authorization_servers, the
+        "iss" claim/param, and the value JWTs are verified against) must use
+        this instead of the raw `issuer` setting, or a byte-for-byte metadata
+        comparison on the client side will fail. `issuer` itself stays
+        unnormalized since it's also used as a base for concatenating
+        endpoint paths (see discovery.py), where a trailing slash would
+        produce a double slash.
+        """
+        return self.issuer.rstrip("/") + "/"
+
     db_user: str = "auth"
     db_password: str = "auth"
     db_host: str = "localhost"

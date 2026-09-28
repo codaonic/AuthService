@@ -12,3 +12,6 @@ htmlcov/
 *.sqlite3
 /data/
 /keys/
+
+frontend/node_modules/
+frontend/dist/

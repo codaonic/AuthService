@@ -72,6 +72,24 @@ uv run uvicorn app.main:app --reload
 
 Uvicorn defaults to port `8000` here (no `--port` given), so `ISSUER=http://localhost:8000` in `.env.example` is correct as-is for this path.
 
+The admin console at `/admin` is a separate React app (`frontend/`) that FastAPI serves as a
+built static bundle — `uv run uvicorn` alone won't have anything to serve there until you build
+it once:
+
+```bash
+cd frontend
+npm install
+npm run build     # outputs frontend/dist, which app/main.py serves at /admin
+```
+
+Iterating on the admin UI itself is faster with Vite's own dev server instead, which proxies
+`/admin/api/*` to the FastAPI backend (see `frontend/vite.config.ts`) and hot-reloads on save:
+
+```bash
+cd frontend
+npm run dev        # serves the SPA itself at http://localhost:5173/admin
+```
+
 ### Server / production deployment (Docker Compose)
 
 `docker-compose.yml` builds and runs Postgres, Redis, and the app together as a stack, on port **8113** internally, meant to sit behind a **reverse proxy that already exists on the host** — it does not serve the public internet directly, and it expects an external Docker network named `nginx-proxy-net` for that proxy to reach it on. If that network doesn't exist yet:
@@ -219,7 +237,7 @@ uv run python -m app.cli register-client --client-id acme-admin --type confident
 
 ## Admin UI
 
-Everything the CLI can do is also available as a web UI at `/admin`, for operators who'd rather click than run commands:
+Everything the CLI can do is also available as a web UI at `/admin`, for operators who'd rather click than run commands. It's a React SPA (`frontend/`) that talks to a JSON API at `/admin/api/*` (`app/admin/api.py`), authenticated by the same admin session cookie as before — see [Local development](#local-development) for how to build/run it:
 
 - **Dashboard** — counts of pools/clients/resources/users, plus a recent-activity preview.
 - **User pools** — create pools by name.
@@ -338,6 +356,7 @@ Every consumer is a **resource server**: it never issues tokens, it only fetches
 | Migrations | Alembic | Schema versioning |
 | Package/dependency manager | `uv` | Fast, lockfile-based, single source of truth (`pyproject.toml` / `uv.lock`) |
 | Templates | Jinja2 | Server-rendered login/consent pages |
+| Admin console | React + Vite + TypeScript + React Router | SPA at `/admin`, talking to a JSON API (`app/admin/api.py`) over the admin session cookie |
 
 ## Project structure
 
@@ -372,10 +391,10 @@ auth_service/
 │   │   ├── register.py           # POST /register (Dynamic Client Registration, RFC 7591)
 │   │   ├── revoke.py             # POST /revoke
 │   │   └── userinfo.py           # GET /userinfo
-│   ├── admin/                     # mounted under /admin -- operator setup UI
-│   │   ├── auth.py                # admin login/logout, session handling
+│   ├── admin/                     # backs /admin -- operator setup UI (see frontend/ for the SPA itself)
+│   │   ├── auth.py                # get_current_admin() session lookup, shared by api.py
 │   │   ├── seed.py                # seeds the default admin account on startup
-│   │   └── routes.py              # dashboard, pools, clients, resources, users, account
+│   │   └── api.py                 # JSON API under /admin/api/*: login/logout, dashboard, pools, clients, resources, users, account
 │   ├── auth/
 │   │   ├── passwords.py          # argon2 hashing
 │   │   ├── mfa.py                 # TOTP generate/verify
@@ -384,8 +403,16 @@ auth_service/
 │   │   └── webauthn.py            # WebAuthn RP ID/origin + Redis-backed challenge storage
 │   ├── middleware/
 │   │   └── rate_limit.py          # slowapi limiter
-│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, account.html, admin/*
-│   └── static/                    # CSS/JS for the login/consent/account UI (incl. webauthn.js) and the admin UI
+│   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, account.html
+│   └── static/                    # CSS/JS for the login/consent/account UI (incl. webauthn.js)
+├── frontend/                      # React SPA for /admin (Vite + TypeScript + React Router)
+│   ├── src/
+│   │   ├── main.tsx / App.tsx     # entry point, route table
+│   │   ├── api.ts                  # typed fetch client for /admin/api/*
+│   │   ├── AdminContext.tsx        # current-admin auth state
+│   │   ├── components/             # Layout (nav shell), Modal
+│   │   └── pages/                  # Login, Dashboard, Applications, Users, LoginGroups, Resources, AuditLog, Account
+│   └── dist/                      # `npm run build` output; served by app/main.py at /admin (gitignored)
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
 ├── examples/

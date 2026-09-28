@@ -15,7 +15,7 @@ def mint_access_token(sub: str, aud: str, client_id: str, scope: str) -> tuple[s
     payload = {
         "sub": sub,
         "aud": aud,
-        "iss": settings.issuer,
+        "iss": settings.issuer_url,
         "client_id": client_id,
         "scope": scope,
         "iat": now,

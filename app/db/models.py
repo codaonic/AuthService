@@ -47,6 +47,10 @@ class Client(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_pool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_pools.id"), index=True)
     client_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    # Human-readable display name -- shown on login/consent screens instead of
+    # client_id, which for dcr/cimd clients is an opaque token or a bare URL.
+    # Optional: falls back to client_id wherever it's rendered.
+    client_name: Mapped[str | None] = mapped_column(String, nullable=True)
     client_secret_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     client_type: Mapped[str] = mapped_column(String)  # public | confidential
     redirect_uris: Mapped[list[str]] = mapped_column(JSON, default=list)

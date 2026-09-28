@@ -9,7 +9,7 @@ RESOURCE = "https://api.example.com"
 async def _login_admin(client, db_session, **kwargs):
     admin = await create_admin(db_session, **kwargs)
     await client.post(
-        "/admin/login", data={"email": admin.email, "password": kwargs.get("password", "admin-password!")}
+        "/admin/api/login", json={"email": admin.email, "password": kwargs.get("password", "admin-password!")}
     )
     return admin
 
@@ -23,8 +23,8 @@ async def test_disabled_client_cannot_start_authorize(client, db_session):
     await create_resource(db_session, resource_id=RESOURCE)
     await _login_admin(db_session=db_session, client=client)
 
-    resp = await client.post("/admin/clients/test-client/toggle-enabled")
-    assert resp.status_code == 303
+    resp = await client.post("/admin/api/clients/test-client/toggle-enabled")
+    assert resp.status_code == 200
 
     resp = await client.get(
         "/authorize",
@@ -45,16 +45,16 @@ async def test_admin_can_toggle_client_enabled_from_ui(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="test-client")
 
-    resp = await client.get("/admin/clients")
-    assert "Active" in resp.text
+    resp = await client.get("/admin/api/clients")
+    assert next(c for c in resp.json() if c["client_id"] == "test-client")["enabled"] is True
 
-    await client.post("/admin/clients/test-client/toggle-enabled")
-    resp = await client.get("/admin/clients")
-    assert "Disabled" in resp.text
+    await client.post("/admin/api/clients/test-client/toggle-enabled")
+    resp = await client.get("/admin/api/clients")
+    assert next(c for c in resp.json() if c["client_id"] == "test-client")["enabled"] is False
 
-    await client.post("/admin/clients/test-client/toggle-enabled")
-    resp = await client.get("/admin/clients")
-    assert "Active" in resp.text
+    await client.post("/admin/api/clients/test-client/toggle-enabled")
+    resp = await client.get("/admin/api/clients")
+    assert next(c for c in resp.json() if c["client_id"] == "test-client")["enabled"] is True
 
 
 # --- Disabling a user blocks login and kills existing access ---
@@ -113,8 +113,8 @@ async def test_admin_disabling_user_revokes_refresh_tokens(client, db_session, r
         db_session, redis_client, str(user.id), "test-client", RESOURCE, scope="profile"
     )
 
-    resp = await client.post(f"/admin/users/{user.id}/toggle-status")
-    assert resp.status_code == 303
+    resp = await client.post(f"/admin/api/users/{user.id}/toggle-status")
+    assert resp.status_code == 200
 
     key = f"refresh:{__import__('hashlib').sha256(refresh_token.encode()).hexdigest()}"
     assert await redis_client.exists(key) == 0
@@ -141,8 +141,8 @@ async def test_admin_sign_out_user_revokes_sessions(client, db_session, redis_cl
     result = await db_session.execute(select(User))
     user = result.scalars().first()
 
-    resp = await client.post(f"/admin/users/{user.id}/sign-out")
-    assert resp.status_code == 303
+    resp = await client.post(f"/admin/api/users/{user.id}/sign-out")
+    assert resp.status_code == 204
 
     assert await redis_client.exists(f"session:{session_cookie}") == 0
 
@@ -159,9 +159,9 @@ async def test_admin_can_toggle_user_status_from_ui(client, db_session):
     result = await db_session.execute(select(User))
     user = result.scalars().first()
 
-    resp = await client.get("/admin/users")
-    assert "Active" in resp.text
+    resp = await client.get("/admin/api/users")
+    assert next(u for u in resp.json() if u["email"] == "alice@example.com")["status"] == "active"
 
-    await client.post(f"/admin/users/{user.id}/toggle-status")
-    resp = await client.get("/admin/users")
-    assert "Disabled" in resp.text
+    await client.post(f"/admin/api/users/{user.id}/toggle-status")
+    resp = await client.get("/admin/api/users")
+    assert next(u for u in resp.json() if u["email"] == "alice@example.com")["status"] == "disabled"

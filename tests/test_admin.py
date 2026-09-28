@@ -6,17 +6,16 @@ from tests.helpers import create_admin, create_client, create_user
 
 
 @pytest.mark.asyncio
-async def test_admin_login_page_renders(client):
+async def test_admin_spa_served_at_login(client):
     resp = await client.get("/admin/login")
     assert resp.status_code == 200
-    assert "Admin sign in" in resp.text
+    assert '<div id="root">' in resp.text
 
 
 @pytest.mark.asyncio
 async def test_dashboard_requires_login(client):
-    resp = await client.get("/admin")
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/admin/login"
+    resp = await client.get("/admin/api/dashboard")
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -24,7 +23,7 @@ async def test_admin_login_wrong_password_rejected(client, db_session):
     await create_admin(db_session, email="admin@example.com", password="correct-password!")
 
     resp = await client.post(
-        "/admin/login", data={"email": "admin@example.com", "password": "wrong-password"}
+        "/admin/api/login", json={"email": "admin@example.com", "password": "wrong-password"}
     )
     assert resp.status_code == 401
 
@@ -34,20 +33,21 @@ async def test_admin_login_and_dashboard(client, db_session):
     await create_admin(db_session, email="admin@example.com", password="correct-password!")
 
     login_resp = await client.post(
-        "/admin/login", data={"email": "admin@example.com", "password": "correct-password!"}
+        "/admin/api/login", json={"email": "admin@example.com", "password": "correct-password!"}
     )
-    assert login_resp.status_code == 303
-    assert login_resp.headers["location"] == "/admin"
+    assert login_resp.status_code == 200
+    assert login_resp.json()["email"] == "admin@example.com"
 
-    dashboard_resp = await client.get("/admin")
+    dashboard_resp = await client.get("/admin/api/dashboard")
     assert dashboard_resp.status_code == 200
-    assert "Dashboard" in dashboard_resp.text
+    assert "counts" in dashboard_resp.json()
 
 
 async def _login_admin(client, db_session, **kwargs):
     admin = await create_admin(db_session, **kwargs)
     await client.post(
-        "/admin/login", data={"email": admin.email, "password": kwargs.get("password", "admin-password!")}
+        "/admin/api/login",
+        json={"email": admin.email, "password": kwargs.get("password", "admin-password!")},
     )
     return admin
 
@@ -56,8 +56,8 @@ async def _login_admin(client, db_session, **kwargs):
 async def test_create_pool_via_admin(client, db_session):
     await _login_admin(client, db_session)
 
-    resp = await client.post("/admin/pools", data={"name": "acme"})
-    assert resp.status_code == 303
+    resp = await client.post("/admin/api/pools", json={"name": "acme"})
+    assert resp.status_code == 201
 
     result = await db_session.execute(select(UserPool).where(UserPool.name == "acme"))
     assert result.scalar_one() is not None
@@ -68,9 +68,9 @@ async def test_create_resource_via_admin(client, db_session):
     await _login_admin(client, db_session)
 
     resp = await client.post(
-        "/admin/resources", data={"resource_id": "https://api.example.com", "name": "API"}
+        "/admin/api/resources", json={"resource_id": "https://api.example.com", "name": "API"}
     )
-    assert resp.status_code == 303
+    assert resp.status_code == 201
 
     result = await db_session.execute(select(Resource).where(Resource.resource_id == "https://api.example.com"))
     assert result.scalar_one() is not None
@@ -81,8 +81,8 @@ async def test_create_public_client_via_admin(client, db_session):
     await _login_admin(client, db_session)
 
     resp = await client.post(
-        "/admin/clients",
-        data={
+        "/admin/api/clients",
+        json={
             "client_id": "acme-web",
             "client_type": "public",
             "redirect_uris": "https://acme.example.com/cb",
@@ -90,12 +90,12 @@ async def test_create_public_client_via_admin(client, db_session):
             "scope": "profile email",
             "application_type": "web",
             "user_pool": "acme",
-            "allow_signup": "true",
+            "allow_signup": True,
         },
     )
-    assert resp.status_code == 200
-    assert "is ready to go" in resp.text
-    assert "Its secret key" not in resp.text
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["client_secret"] is None
 
     result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
     saved = result.scalar_one()
@@ -108,16 +108,16 @@ async def test_create_confidential_client_shows_secret_once(client, db_session):
     await _login_admin(client, db_session)
 
     resp = await client.post(
-        "/admin/clients",
-        data={
+        "/admin/api/clients",
+        json={
             "client_id": "acme-service",
             "client_type": "confidential",
             "grant_types": ["client_credentials"],
             "user_pool": "default",
         },
     )
-    assert resp.status_code == 200
-    assert "Its secret key" in resp.text
+    assert resp.status_code == 201
+    assert resp.json()["client_secret"] is not None
 
     result = await db_session.execute(select(Client).where(Client.client_id == "acme-service"))
     saved = result.scalar_one()
@@ -129,8 +129,9 @@ async def test_toggle_client_signup(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="acme-web", pool_name="default", allow_signup=True)
 
-    resp = await client.post("/admin/clients/acme-web/toggle-signup")
-    assert resp.status_code == 303
+    resp = await client.post("/admin/api/clients/acme-web/toggle-signup")
+    assert resp.status_code == 200
+    assert resp.json()["allow_signup"] is False
 
     result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
     assert result.scalar_one().allow_signup is False
@@ -141,9 +142,10 @@ async def test_create_user_via_admin(client, db_session):
     await _login_admin(client, db_session)
 
     resp = await client.post(
-        "/admin/users", data={"email": "newuser@example.com", "password": "s3cret-password!", "user_pool": "default"}
+        "/admin/api/users",
+        json={"email": "newuser@example.com", "password": "s3cret-password!", "user_pool": "default"},
     )
-    assert resp.status_code == 303
+    assert resp.status_code == 201
 
     result = await db_session.execute(select(User).where(User.email == "newuser@example.com"))
     assert result.scalar_one() is not None
@@ -154,18 +156,26 @@ async def test_change_admin_password(client, db_session):
     admin = await _login_admin(client, db_session, email="admin@example.com", password="old-password!")
 
     wrong = await client.post(
-        "/admin/account",
-        data={"current_password": "not-the-password", "new_password": "new-password!", "confirm_password": "new-password!"},
+        "/admin/api/account/password",
+        json={
+            "current_password": "not-the-password",
+            "new_password": "new-password!",
+            "confirm_password": "new-password!",
+        },
     )
     assert wrong.status_code == 400
-    assert "incorrect" in wrong.text
+    assert "incorrect" in wrong.json()["detail"]
 
     resp = await client.post(
-        "/admin/account",
-        data={"current_password": "old-password!", "new_password": "new-password!", "confirm_password": "new-password!"},
+        "/admin/api/account/password",
+        json={
+            "current_password": "old-password!",
+            "new_password": "new-password!",
+            "confirm_password": "new-password!",
+        },
     )
     assert resp.status_code == 200
-    assert "Password updated" in resp.text
+    assert resp.json()["must_change_password"] is False
 
     await db_session.refresh(admin)
     assert admin.must_change_password is False
@@ -214,8 +224,8 @@ async def test_admin_send_password_reset(client, db_session, monkeypatch):
     await _login_admin(client, db_session)
     user = await create_user(db_session, email="alice@example.com")
 
-    resp = await client.post(f"/admin/users/{user.id}/send-reset")
-    assert resp.status_code == 303
+    resp = await client.post(f"/admin/api/users/{user.id}/send-reset")
+    assert resp.status_code == 204
 
     send_mock.assert_awaited_once()
     assert send_mock.await_args.args[0] == "alice@example.com"

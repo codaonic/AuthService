@@ -135,7 +135,14 @@ async def authorize(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"flow_id": flow_id, "client_id": client_id, "allow_signup": client.allow_signup, "error": None},
+            {
+                "flow_id": flow_id,
+                "client_id": client_id,
+                "client_name": client.client_name,
+                "allow_signup": client.allow_signup,
+                "show_totp": False,
+                "error": None,
+            },
         )
 
     return await _continue_flow(request, db, redis, flow_id, user_id)
@@ -152,7 +159,14 @@ async def login_page(
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"flow_id": flow_id, "client_id": client.client_id, "allow_signup": client.allow_signup, "error": None},
+        {
+            "flow_id": flow_id,
+            "client_id": client.client_id,
+            "client_name": client.client_name,
+            "allow_signup": client.allow_signup,
+            "show_totp": False,
+            "error": None,
+        },
     )
 
 
@@ -183,7 +197,9 @@ async def login(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
+                "client_name": client.client_name,
                 "allow_signup": client.allow_signup,
+                "show_totp": False,
                 "error": "Invalid email or password",
             },
             status_code=401,
@@ -197,8 +213,11 @@ async def login(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
+                "client_name": client.client_name,
                 "allow_signup": client.allow_signup,
-                "error": "Invalid or missing MFA code",
+                "show_totp": True,
+                "email": email,
+                "error": "Enter the code from your authenticator app" if not totp_code else "Invalid authentication code",
             },
             status_code=401,
         )
@@ -230,7 +249,9 @@ async def signup_page(
     if not client.allow_signup:
         raise HTTPException(403, "signup_disabled")
     return templates.TemplateResponse(
-        request, "signup.html", {"flow_id": flow_id, "client_id": client.client_id, "error": None}
+        request,
+        "signup.html",
+        {"flow_id": flow_id, "client_id": client.client_id, "client_name": client.client_name, "error": None},
     )
 
 
@@ -254,7 +275,13 @@ async def signup(
         return templates.TemplateResponse(
             request,
             "signup.html",
-            {"flow_id": flow_id, "client_id": client.client_id, "error": message, "email": email},
+            {
+                "flow_id": flow_id,
+                "client_id": client.client_id,
+                "client_name": client.client_name,
+                "error": message,
+                "email": email,
+            },
             status_code=status_code,
         )
 
@@ -318,6 +345,7 @@ async def _continue_flow(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
+                "client_name": client.client_name,
                 "scopes": sorted(requested_scopes),
                 "scope_descriptions": SCOPE_DESCRIPTIONS,
             },
@@ -391,7 +419,7 @@ async def _issue_code(redis: Redis, flow_id: str, flow: dict, user_id: str) -> R
     await redis.expire(f"{CODE_KEY_PREFIX}{code}", settings.authorization_code_ttl_seconds)
     await redis.delete(f"{FLOW_KEY_PREFIX}{flow_id}")
 
-    params = {"code": code, "iss": settings.issuer}
+    params = {"code": code, "iss": settings.issuer_url}
     if flow["state"]:
         params["state"] = flow["state"]
     return RedirectResponse(f"{flow['redirect_uri']}?{urlencode(params)}", status_code=303)

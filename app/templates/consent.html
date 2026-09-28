@@ -12,7 +12,7 @@
 {% block heading %}Authorize access{% endblock %}
 
 {% block subheading %}
-<p class="card__subtitle"><strong>{{ client_id }}</strong> is requesting access to your account</p>
+<p class="card__subtitle"><strong>{{ client_name or client_id }}</strong> is requesting access to your account</p>
 {% endblock %}
 
 {% block content %}

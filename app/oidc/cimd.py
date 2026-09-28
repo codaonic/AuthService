@@ -93,6 +93,7 @@ async def resolve_cimd_client(db: AsyncSession, client_id: str) -> Client:
         grant_types = ["authorization_code"]
     scope = doc.get("scope", "") if isinstance(doc.get("scope"), str) else ""
     application_type = doc.get("application_type", "native")
+    client_name = doc.get("client_name") if isinstance(doc.get("client_name"), str) else None
 
     now = datetime.now(timezone.utc)
 
@@ -101,12 +102,14 @@ async def resolve_cimd_client(db: AsyncSession, client_id: str) -> Client:
         existing.grant_types = grant_types
         existing.allowed_scope = scope
         existing.application_type = application_type
+        existing.client_name = client_name
         existing.cimd_fetched_at = now
     else:
         pool = await get_or_create_pool(db, DEFAULT_POOL_NAME)
         client = Client(
             user_pool_id=pool.id,
             client_id=client_id,
+            client_name=client_name,
             client_secret_hash=None,  # CIMD clients are always public -- no secret to hold
             client_type="public",
             redirect_uris=redirect_uris,

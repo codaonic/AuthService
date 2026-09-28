@@ -8,9 +8,9 @@ router = APIRouter()
 @router.get("/.well-known/openid-configuration")
 async def openid_configuration():
     settings = get_settings()
-    issuer = settings.issuer
+    issuer = settings.issuer.rstrip("/")
     return {
-        "issuer": issuer,
+        "issuer": settings.issuer_url,
         "authorization_endpoint": f"{issuer}/authorize",
         "token_endpoint": f"{issuer}/token",
         "registration_endpoint": f"{issuer}/register",

@@ -22,7 +22,7 @@ async def oauth_protected_resource(
 
     return {
         "resource": resource_row.resource_id,
-        "authorization_servers": [settings.issuer],
+        "authorization_servers": [settings.issuer_url],
         "bearer_methods_supported": ["header"],
         "resource_name": resource_row.name,
     }

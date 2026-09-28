@@ -11,7 +11,7 @@ RESOURCE = "https://api.example.com"
 async def _login_admin(client, db_session, **kwargs):
     admin = await create_admin(db_session, **kwargs)
     await client.post(
-        "/admin/login", data={"email": admin.email, "password": kwargs.get("password", "admin-password!")}
+        "/admin/api/login", json={"email": admin.email, "password": kwargs.get("password", "admin-password!")}
     )
     return admin
 
@@ -44,12 +44,13 @@ async def test_admin_can_set_and_view_mtls_thumbprint(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="svc-client", client_type="confidential", grant_types=("client_credentials",))
 
-    resp = await client.post("/admin/clients/svc-client/mtls", data={"thumbprint": "ab:cd:ef"})
-    assert resp.status_code == 303
-
-    resp = await client.get("/admin/clients")
+    resp = await client.post("/admin/api/clients/svc-client/mtls", json={"thumbprint": "ab:cd:ef"})
     assert resp.status_code == 200
-    assert "AB:CD:EF" in resp.text
+    assert resp.json()["mtls_cert_thumbprint"] == "AB:CD:EF"
+
+    resp = await client.get("/admin/api/clients")
+    assert resp.status_code == 200
+    assert any(c["mtls_cert_thumbprint"] == "AB:CD:EF" for c in resp.json())
 
 
 # --- CIMD clients are visually distinguished, not editable for mTLS/signup ---
@@ -69,10 +70,10 @@ async def test_cimd_client_shown_with_badge_and_no_mtls_form(client, db_session)
     )
     await db_session.commit()
 
-    resp = await client.get("/admin/clients")
+    resp = await client.get("/admin/api/clients")
     assert resp.status_code == 200
-    assert "CIMD" in resp.text
-    assert "not applicable" in resp.text
+    cimd_client = next(c for c in resp.json() if c["registration_method"] == "cimd")
+    assert cimd_client["client_id"] == "https://mcp.example.com/.well-known/client-id"
 
 
 # --- Activity log ---
@@ -80,20 +81,20 @@ async def test_cimd_client_shown_with_badge_and_no_mtls_form(client, db_session)
 
 @pytest.mark.asyncio
 async def test_audit_log_requires_login(client):
-    resp = await client.get("/admin/audit")
-    assert resp.status_code == 303
+    resp = await client.get("/admin/api/audit")
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_audit_log_shows_recent_events(client, db_session):
     await create_admin(db_session, email="admin@example.com", password="admin-password!")
     await client.post(
-        "/admin/login", data={"email": "admin@example.com", "password": "admin-password!"}
+        "/admin/api/login", json={"email": "admin@example.com", "password": "admin-password!"}
     )
 
-    resp = await client.get("/admin/audit")
+    resp = await client.get("/admin/api/audit")
     assert resp.status_code == 200
-    assert "admin_login_success" in resp.text
+    assert any(e["event"] == "admin_login_success" for e in resp.json())
 
 
 # --- End-user account: password change ---

@@ -35,7 +35,7 @@ async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
             token,
             key,
             algorithms=[settings.signing_key_algorithm],
-            issuer=settings.issuer,
+            issuer=settings.issuer_url,
             options={"verify_aud": False},
         )
     except JWTError as exc:
