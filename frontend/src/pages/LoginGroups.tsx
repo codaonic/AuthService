@@ -53,6 +53,7 @@ export function LoginGroups() {
         what groups exist, or creating one ahead of time with a custom name.
       </p>
 
+      <div className="table-wrap">
       <table className="table">
         <thead>
           <tr>
@@ -74,6 +75,7 @@ export function LoginGroups() {
           ))}
         </tbody>
       </table>
+      </div>
 
       {modalOpen && (
         <Modal title="Create a login group" onClose={() => setModalOpen(false)}>

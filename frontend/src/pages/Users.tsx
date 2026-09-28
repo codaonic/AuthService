@@ -91,6 +91,7 @@ export function Users() {
         <button type="submit" className="btn btn--secondary">Filter</button>
       </form>
 
+      <div className="table-wrap">
       <table className="table">
         <thead>
           <tr>
@@ -138,6 +139,7 @@ export function Users() {
           ))}
         </tbody>
       </table>
+      </div>
       <p className="field__hint" style={{ marginTop: 8 }}>
         <strong>Disable</strong> blocks all sign-in and immediately revokes their active sessions
         and refresh tokens — use it for a compromised or offboarded account.{" "}
@@ -147,7 +149,7 @@ export function Users() {
 
       {modalOpen && (
         <Modal title="Add a user" onClose={() => setModalOpen(false)}>
-          <p style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: -8 }}>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
             For applications where you've turned off self-service signup, this is how users get
             added.
           </p>

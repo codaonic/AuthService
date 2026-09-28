@@ -20,6 +20,7 @@ export function AuditLog() {
         </div>
       </div>
 
+      <div className="table-wrap">
       <table className="table">
         <thead>
           <tr>
@@ -40,7 +41,7 @@ export function AuditLog() {
               <td style={{ whiteSpace: "nowrap" }}>{event.time}</td>
               <td>{event.level}</td>
               <td>{event.event}</td>
-              <td style={{ color: "var(--color-text-secondary)", fontSize: 12.5 }}>
+              <td style={{ color: "var(--text-muted)", fontSize: 12.5 }}>
                 {Object.entries(event.extra)
                   .map(([k, v]) => `${k}=${v}`)
                   .join(" ")}
@@ -49,6 +50,7 @@ export function AuditLog() {
           ))}
         </tbody>
       </table>
+      </div>
     </>
   );
 }

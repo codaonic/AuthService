@@ -53,7 +53,7 @@ export function Account() {
         <h2 style={{ fontSize: 15, marginBottom: 16 }}>Change password</h2>
         {error && <div className="alert alert--error">{error}</div>}
         {success && (
-          <div className="alert" style={{ background: "var(--color-success-soft)", color: "var(--color-success)" }}>
+          <div className="alert" style={{ background: "var(--success-bg)", color: "var(--success-fg)" }}>
             {success}
           </div>
         )}

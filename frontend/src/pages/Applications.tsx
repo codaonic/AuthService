@@ -127,6 +127,7 @@ export function Applications() {
         application" above for every app you want to connect.
       </p>
 
+      <div className="table-wrap">
       <table className="table">
         <thead>
           <tr>
@@ -157,6 +158,7 @@ export function Applications() {
           ))}
         </tbody>
       </table>
+      </div>
       <p className="field__hint" style={{ marginTop: 8 }}>
         <strong>Disable</strong> immediately blocks an app from letting anyone log in or refresh a
         token, without deleting it — use this for a compromised secret or a retired app while
@@ -252,7 +254,7 @@ export function Applications() {
             )}
 
             <details>
-              <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--color-text-secondary)" }}>
+              <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>
                 Advanced settings (rarely needed)
               </summary>
               <div style={{ marginTop: 14 }}>
@@ -329,8 +331,8 @@ function SharingCard({
         flexDirection: "column",
         gap: 3,
         padding: "12px 14px",
-        border: `1px solid ${checked ? "var(--color-primary)" : "var(--color-border)"}`,
-        background: checked ? "var(--color-primary-soft)" : "transparent",
+        border: `1px solid ${checked ? "var(--brand-600)" : "var(--border)"}`,
+        background: checked ? "var(--brand-soft)" : "transparent",
         borderRadius: "var(--radius-sm)",
         cursor: "pointer",
       }}
@@ -339,7 +341,7 @@ function SharingCard({
         <input type="radio" checked={checked} onChange={onSelect} />
         <span style={{ fontWeight: 600, fontSize: 13.5 }}>{title}</span>
       </span>
-      <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{desc}</span>
+      <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{desc}</span>
     </label>
   );
 }

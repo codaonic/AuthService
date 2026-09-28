@@ -57,6 +57,7 @@ export function Resources() {
         tokens.
       </p>
 
+      <div className="table-wrap">
       <table className="table">
         <thead>
           <tr>
@@ -78,6 +79,7 @@ export function Resources() {
           ))}
         </tbody>
       </table>
+      </div>
 
       {modalOpen && (
         <Modal title="Register a resource" onClose={() => setModalOpen(false)}>
