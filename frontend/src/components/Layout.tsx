@@ -1,15 +1,26 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAdmin } from "../AdminContext";
 import { api } from "../api";
+import {
+  AccountIcon,
+  ActivityIcon,
+  AppsIcon,
+  DashboardIcon,
+  GroupsIcon,
+  ResourcesIcon,
+  ShieldIcon,
+  SignOutIcon,
+  UsersIcon,
+} from "./Icons";
 
 const NAV_ITEMS = [
-  { to: "/admin", label: "Dashboard", end: true },
-  { to: "/admin/clients", label: "Applications" },
-  { to: "/admin/resources", label: "APIs & MCP servers" },
-  { to: "/admin/users", label: "Users" },
-  { to: "/admin/pools", label: "Login groups" },
-  { to: "/admin/audit", label: "Activity log" },
-  { to: "/admin/account", label: "Account" },
+  { to: "/admin", label: "Dashboard", end: true, icon: DashboardIcon },
+  { to: "/admin/clients", label: "Applications", icon: AppsIcon },
+  { to: "/admin/resources", label: "APIs & MCP servers", icon: ResourcesIcon },
+  { to: "/admin/users", label: "Users", icon: UsersIcon },
+  { to: "/admin/pools", label: "Login groups", icon: GroupsIcon },
+  { to: "/admin/audit", label: "Activity log", icon: ActivityIcon },
+  { to: "/admin/account", label: "Account", icon: AccountIcon },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -25,14 +36,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="shell">
       <nav className="nav">
-        <div className="nav__brand">Auth Admin</div>
+        <div className="nav__brand">
+          <span className="nav__brand-mark">
+            <ShieldIcon width={17} height={17} />
+          </span>
+          Auth Admin
+        </div>
         {NAV_ITEMS.map((item) => (
           <NavLink key={item.to} to={item.to} end={item.end}>
+            <item.icon />
             {item.label}
           </NavLink>
         ))}
         <form onSubmit={(e) => { e.preventDefault(); signOut(); }}>
-          <button type="submit" className="btn btn--secondary btn--block">Sign out</button>
+          <button type="submit" className="btn btn--secondary btn--block">
+            <SignOutIcon width={16} height={16} style={{ marginRight: 6, verticalAlign: -3 }} />
+            Sign out
+          </button>
         </form>
       </nav>
       <main className="main">

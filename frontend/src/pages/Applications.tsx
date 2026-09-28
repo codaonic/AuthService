@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
+import { AppsIcon, PlusIcon } from "../components/Icons";
 import { api, ApiError, Client, Pool } from "../api";
 
 const GRANT_LABELS: Record<string, string> = {
@@ -109,9 +110,14 @@ export function Applications() {
   return (
     <>
       <div className="header">
-        <h1 className="title">Applications</h1>
+        <div className="header__title-row">
+          <span className="header__icon">
+            <AppsIcon />
+          </span>
+          <h1 className="title">Applications</h1>
+        </div>
         <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          Add application
+          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Add application
         </button>
       </div>
 

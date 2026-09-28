@@ -1,5 +1,7 @@
 import { FormEvent, useState } from "react";
 import { useAdmin } from "../AdminContext";
+import { AccountIcon } from "../components/Icons";
+import { PasswordInput } from "../components/PasswordInput";
 import { api, ApiError } from "../api";
 
 export function Account() {
@@ -37,7 +39,12 @@ export function Account() {
   return (
     <>
       <div className="header">
-        <h1 className="title">Account</h1>
+        <div className="header__title-row">
+          <span className="header__icon">
+            <AccountIcon />
+          </span>
+          <h1 className="title">Account</h1>
+        </div>
       </div>
 
       <p className="lead">Signed in as <strong>{admin?.email}</strong>.</p>
@@ -53,9 +60,8 @@ export function Account() {
         <form onSubmit={onSubmit}>
           <div className="field">
             <label htmlFor="current_password">Current password</label>
-            <input
+            <PasswordInput
               id="current_password"
-              type="password"
               required
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
@@ -63,9 +69,8 @@ export function Account() {
           </div>
           <div className="field">
             <label htmlFor="new_password">New password</label>
-            <input
+            <PasswordInput
               id="new_password"
-              type="password"
               required
               minLength={8}
               value={newPassword}
@@ -74,9 +79,8 @@ export function Account() {
           </div>
           <div className="field">
             <label htmlFor="confirm_password">Confirm new password</label>
-            <input
+            <PasswordInput
               id="confirm_password"
-              type="password"
               required
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
+import { GroupsIcon, PlusIcon } from "../components/Icons";
 import { api, ApiError, Pool } from "../api";
 
 export function LoginGroups() {
@@ -34,9 +35,14 @@ export function LoginGroups() {
   return (
     <>
       <div className="header">
-        <h1 className="title">Login groups</h1>
+        <div className="header__title-row">
+          <span className="header__icon">
+            <GroupsIcon />
+          </span>
+          <h1 className="title">Login groups</h1>
+        </div>
         <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          Create group
+          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Create group
         </button>
       </div>
 

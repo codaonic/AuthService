@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
+import { PlusIcon, ResourcesIcon } from "../components/Icons";
 import { api, ApiError, Resource } from "../api";
 
 export function Resources() {
@@ -38,9 +39,14 @@ export function Resources() {
   return (
     <>
       <div className="header">
-        <h1 className="title">Resources</h1>
+        <div className="header__title-row">
+          <span className="header__icon">
+            <ResourcesIcon />
+          </span>
+          <h1 className="title">Resources</h1>
+        </div>
         <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          Register resource
+          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Register resource
         </button>
       </div>
 

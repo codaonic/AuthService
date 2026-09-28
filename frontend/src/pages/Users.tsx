@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
+import { PasswordInput } from "../components/PasswordInput";
+import { PlusIcon, UsersIcon } from "../components/Icons";
 import { api, ApiError, AppUser, Pool } from "../api";
 
 export function Users() {
@@ -60,9 +62,14 @@ export function Users() {
   return (
     <>
       <div className="header">
-        <h1 className="title">Users</h1>
+        <div className="header__title-row">
+          <span className="header__icon">
+            <UsersIcon />
+          </span>
+          <h1 className="title">Users</h1>
+        </div>
         <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          Add user
+          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Add user
         </button>
       </div>
 
@@ -152,9 +159,8 @@ export function Users() {
             </div>
             <div className="field">
               <label htmlFor="add-password">Password</label>
-              <input
+              <PasswordInput
                 id="add-password"
-                type="password"
                 required
                 minLength={8}
                 value={password}

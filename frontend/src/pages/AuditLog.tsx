@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ActivityIcon } from "../components/Icons";
 import { api, AuditEvent } from "../api";
 
 export function AuditLog() {
@@ -11,7 +12,12 @@ export function AuditLog() {
   return (
     <>
       <div className="header">
-        <h1 className="title">Activity log</h1>
+        <div className="header__title-row">
+          <span className="header__icon">
+            <ActivityIcon />
+          </span>
+          <h1 className="title">Activity log</h1>
+        </div>
       </div>
 
       <table className="table">

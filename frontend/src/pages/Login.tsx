@@ -1,6 +1,8 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAdmin } from "../AdminContext";
+import { PasswordInput } from "../components/PasswordInput";
+import { ShieldIcon } from "../components/Icons";
 import { Admin, api, ApiError } from "../api";
 
 export function Login() {
@@ -29,6 +31,9 @@ export function Login() {
   return (
     <div className="auth-page">
       <div className="auth-card">
+        <div className="auth-card__icon">
+          <ShieldIcon width={22} height={22} />
+        </div>
         <h1 className="auth-card__title">Admin sign in</h1>
         {error && <div className="alert alert--error" role="alert">{error}</div>}
         <form onSubmit={onSubmit}>
@@ -46,9 +51,8 @@ export function Login() {
           </div>
           <div className="field">
             <label htmlFor="password">Password</label>
-            <input
+            <PasswordInput
               id="password"
-              type="password"
               required
               autoComplete="current-password"
               value={password}
