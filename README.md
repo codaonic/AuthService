@@ -1,17 +1,28 @@
 # Auth Service
 
-A custom **OAuth 2.1 / OIDC authorization server**, written in Python, shared by the website, MCP servers, and any other internal or partner service. It replaces our previous third-party identity provider: one service now owns identity and tokens, while every consumer, regardless of language, talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server..
+A self-hosted **OAuth 2.1 / OIDC authorization server**, written in Python and built MCP-native from day one. One service owns identity and tokens, while every consumer, regardless of language, talks to it over plain HTTP/JSON/JWT as a standards-compliant resource server.
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> Status: **Core AS implemented** — users, clients, `/authorize` + PKCE, `/token`, `/jwks.json`, discovery, dynamic client registration, refresh rotation, revocation, an `/admin` setup UI. See [Roadmap](#roadmap) for what's next.
+> Status: **Feature-complete against its planned scope** — full OAuth 2.1/OIDC surface, DCR + CIMD, passkeys, mTLS, user pools, and an admin UI. See [Roadmap](#roadmap) for the checklist.
+
+## Quickstart
+
+```bash
+docker network create nginx-proxy-net   # once, if it doesn't already exist
+cp .env.example .env
+docker compose up -d --build && docker compose exec auth-service uv run alembic upgrade head
+```
+
+That's a real, running instance at `http://localhost:8113` (admin console at `/admin`, default login logged to `docker compose logs auth-service`). See [Getting started](#getting-started) below for local (non-Docker) development, or to set real production values first.
 
 ---
 
 ## Table of contents
 
+- [Quickstart](#quickstart)
 - [Why a custom service](#why-a-custom-service)
 - [Features](#features)
 - [Getting started](#getting-started)
@@ -44,16 +55,17 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 ## Features
 
 - **Full OAuth 2.1 / OIDC surface** — Authorization Code + mandatory PKCE, `client_credentials`, refresh token rotation with one-time-use enforcement, revocation
-- **MCP-native client registration** — Dynamic Client Registration (RFC 7591), Protected Resource Metadata (RFC 9728), and [CIMD](#mutual-tls-for-client_credentials-clients) (`client_id`-as-URL), the method the MCP spec's 2026-07-28 revision now prefers over DCR
+- **MCP-native client registration** — Dynamic Client Registration (RFC 7591), Protected Resource Metadata (RFC 9728), and [CIMD](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (`client_id`-as-URL), which the MCP spec's 2026-07-28 revision formally deprecates DCR in favor of
 - **Self-service signup, password recovery, and email verification** — with admin-managed users as an alternative, toggled per client
 - **Passkey (WebAuthn) login** alongside password + TOTP, not instead of it
+- **Embeddable popup widget** (`auth-widget.js`) so a site can trigger login/signup from its own styled button without a full-page redirect, plus optional per-client branding (logo, color) on the hosted form itself — see [§4](#4-making-it-feel-embedded-the-popup-widget)
 - **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client, with optional [Postgres Row-Level Security](#row-level-security) as a database-level backstop
 - **Web admin UI** (`/admin`) — pools, clients, resources, users, all clickable, with a CLI equivalent for scripting
 - **Resource-server SDK** (Python, [`authservice-client`](https://github.com/codaonic/AuthService_Client), its own repo) plus a documented ~20-line pattern for any other language
 - **mTLS client authentication** for `client_credentials` clients, stronger than a shared secret
 - **Structured (JSON-lines) audit logging** with anomalous-activity flagging, ready for any log aggregator
 - **Argon2 password hashing, TOTP MFA, rotating RS256 signing keys, rate limiting**
-- **Zero-dependency test suite** — `uv run pytest` runs fully offline, no database or Redis required
+- **No external services required to test** — `uv run pytest` runs fully offline against `fakeredis` and an in-memory SQLite database, no Postgres or Redis needed
 
 ## Getting started
 
@@ -94,6 +106,8 @@ npm run dev        # serves the SPA itself at http://localhost:5173/admin
 
 `docker-compose.yml` builds and runs Postgres, Redis, and the app together as a stack, on port **8113** internally, meant to sit behind a **reverse proxy that already exists on the host** — it does not serve the public internet directly, and it expects an external Docker network named `nginx-proxy-net` for that proxy to reach it on. If that network doesn't exist yet:
 
+> **Naming note:** commands below mix two different names for the same thing. `postgres`, `redis`, and `auth-service` are the *compose service names* (what `docker compose exec <name> ...` takes); `auth_pgsql`, `auth_redis`, and `auth_backend` are the *container names* (what plain `docker exec <name> ...` or `docker logs <name>` take). Either works, but they're not interchangeable with the wrong command.
+
 ```bash
 docker network create nginx-proxy-net
 ```
@@ -102,11 +116,12 @@ Then:
 
 ```bash
 cp .env.example .env
-# set real values: ISSUER=https://your-domain (not localhost), real DB/Redis
-# credentials, and DEFAULT_ADMIN_EMAIL/DEFAULT_ADMIN_PASSWORD before first boot
+# set real values: ISSUER=https://your-domain (not localhost), real DB/Redis credentials
 docker compose up -d --build
 docker compose exec auth-service uv run alembic upgrade head
 ```
+
+Open `/admin` and you'll land on a setup screen to create your own admin email/password — there's no default credential to know about or change. (`DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` in [Configuration](#configuration) are an escape hatch for scripted deployments that can't drive that screen, not something you need for a normal setup.)
 
 The app itself is reachable at `http://localhost:${HOST_PORT:-8113}` on the host (or just internally at `auth_backend:8113` on `nginx-proxy-net` for your reverse proxy) — OAuth surface at root, setup UI at `/admin`, API docs at `/docs`. Point your reverse proxy's `proxy_pass` at `http://auth_backend:8113`.
 
@@ -141,7 +156,7 @@ All configuration is environment-driven (`app/config.py`, loaded from `.env`). C
 | `ACCESS_TOKEN_TTL_SECONDS` | `600` | Access token lifetime |
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` (30d) | Refresh token lifetime |
 | `SESSION_TTL_SECONDS` | `604800` (7d) | Login session cookie lifetime |
-| `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | `admin@localhost` / `admin123!` | Seeded admin credentials, used only if no admin account exists yet. Change the password via `/admin/account` after first login; overriding these before first boot avoids the default ever existing at all |
+| `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | *(unset)* | Optional, for scripted/automated deployments only. Left unset (the default), no admin is seeded at all — the first person to open `/admin` gets an interactive setup screen to choose their own email/password, so no known credential is ever created. Set both only if something needs a working admin login without a human driving that screen on first boot |
 | `RATE_LIMIT_TOKEN` / `RATE_LIMIT_AUTHORIZE` | `20/minute` / `30/minute` | Per-IP rate limits on the two most sensitive endpoints |
 | `COMPOSE_DB_HOST` / `COMPOSE_REDIS_HOST` | `postgres` / `redis` | **Compose-only**: not read by the app — used purely for `docker-compose.yml` variable interpolation so container-network hostnames aren't hardcoded in the compose file |
 | `HOST_PORT` (shell env, not `.env`) | `8113` | **Compose-only**: which host port `docker compose up` publishes the service on (the container always listens on `8113` internally), e.g. `HOST_PORT=8080 docker compose up -d` if `8113` is already taken |
@@ -159,10 +174,11 @@ uv run alembic upgrade head
 
 ## Row-level security
 
-Multi-tenancy here is pool-based (see "User pools" below): every user belongs to exactly
-one pool, and application code filters every query by it. Postgres Row-Level Security adds
-a database-level backstop for that — a query on `users` that forgot its `user_pool_id`
-filter returns zero rows instead of another tenant's data, instead of relying on
+Isolation here is pool-based (see "User pools" below, and its note on what pools are *not*
+for): every user belongs to exactly one pool, and application code filters every query by
+it. Postgres Row-Level Security adds a database-level backstop for that — a query on
+`users` that forgot its `user_pool_id` filter returns zero rows instead of another pool's
+data, instead of relying on
 application code alone getting it right every time.
 
 **This only takes effect if the app connects as a non-superuser role.** Postgres exempts
@@ -188,7 +204,8 @@ opt-in, not a breaking change on upgrade.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /.well-known/openid-configuration` | OIDC discovery (RFC 8414) |
+| `GET /.well-known/openid-configuration` | OpenID Connect Discovery |
+| `GET /.well-known/oauth-authorization-server` | The same document under its RFC 8414 path — several MCP clients probe this one first |
 | `GET /.well-known/oauth-protected-resource` | Protected Resource Metadata (RFC 9728), per `resource=` query param |
 | `GET /jwks.json` | Public signing keys, `kid`-tagged |
 | `GET /authorize` | Authorization Code + PKCE entry point |
@@ -249,7 +266,7 @@ Everything the CLI can do is also available as a web UI at `/admin`, for operato
 
 End users get their own self-service page at `/account` once signed in: change password, manage passkeys, and see/revoke active sessions per device.
 
-A default admin account is seeded automatically on first startup (`admin@localhost` / `admin123!` unless overridden via `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD`), logged clearly at startup. Sign in at `/admin/login` and change it immediately — the UI shows a banner reminding you until you do. Admin sessions are a separate cookie from end-user sessions, so being signed into `/admin` never grants access to any client's login.
+The first time `/admin` is opened with no admin account yet in the database, it shows a setup screen instead of a login screen — whoever fills it in becomes the admin, with the email and password they chose themselves. No default credential exists unless you explicitly set `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` (see [Configuration](#configuration)) for a scripted deployment, in which case that account is seeded flagged `must_change_password` and logged clearly at startup instead. Admin sessions are a separate cookie from end-user sessions, so being signed into `/admin` never grants access to any client's login.
 
 ## Integrating your applications and MCP servers
 
@@ -307,6 +324,35 @@ cd examples/website_bff
 uv sync
 uv run uvicorn main:app --reload --port 9003
 ```
+
+### 4. Making it feel embedded: the popup widget
+
+The BFF pattern above still means a full-page navigation away to this service's own `/login` and back. `app/static/js/auth-widget.js` (served at `<issuer>/static/js/auth-widget.js` by every deployment, no build step or install) opens that same login/signup in a **popup** instead — your own button, your own page, your own design; the popup is still this service's own hosted form, so the password still never touches your site's code:
+
+```html
+<script src="https://auth.yourdomain.com/static/js/auth-widget.js"></script>
+<button id="sign-in">Sign in</button>
+<script>
+  document.getElementById("sign-in").addEventListener("click", () => {
+    AuthWidget.openPopup("/login?popup=1")     // your own login-initiation route
+      .then(() => location.reload())            // your session cookie is already set
+      .catch((err) => { if (err.message !== "cancelled") alert(err.message); });
+  });
+</script>
+```
+
+Your backend's login/callback routes need two small additions (both shown in [`examples/website_bff/main.py`](examples/website_bff/main.py)):
+
+1. Your `/login` route remembers (alongside its PKCE verifier) that this particular attempt is a popup.
+2. Your `/callback` route, after its normal server-side code exchange, returns a tiny HTML page instead of redirecting when it's a popup — one that tells its opener it's done and closes itself:
+   ```html
+   <script>
+     window.opener.postMessage({type: "auth-widget:complete", success: true}, window.location.origin);
+     window.close();
+   </script>
+   ```
+
+For actual branding of the popup's contents (not just the button that opens it), a client can carry a `logo_url` and `brand_color` — set at creation via the admin UI/CLI, or updated any time with `POST /admin/api/clients/{client_id}/branding` — applied to that client's login/signup/consent pages (`app/templates/base.html`).
 
 ## Architecture
 
@@ -393,7 +439,7 @@ auth_service/
 │   │   └── userinfo.py           # GET /userinfo
 │   ├── admin/                     # backs /admin -- operator setup UI (see frontend/ for the SPA itself)
 │   │   ├── auth.py                # get_current_admin() session lookup, shared by api.py
-│   │   ├── seed.py                # seeds the default admin account on startup
+│   │   ├── seed.py                # optional admin seeding from DEFAULT_ADMIN_EMAIL/PASSWORD (scripted deployments only)
 │   │   └── api.py                 # JSON API under /admin/api/*: login/logout, dashboard, pools, clients, resources, users, account
 │   ├── auth/
 │   │   ├── passwords.py          # argon2 hashing
@@ -404,13 +450,14 @@ auth_service/
 │   ├── middleware/
 │   │   └── rate_limit.py          # slowapi limiter
 │   ├── templates/                 # Jinja2 pages: base.html, login.html, signup.html, consent.html, account.html
-│   └── static/                    # CSS/JS for the login/consent/account UI (incl. webauthn.js)
+│   └── static/                    # CSS/JS for the login/consent/account UI (incl. webauthn.js, auth-widget.js)
 ├── frontend/                      # React SPA for /admin (Vite + TypeScript + React Router)
 │   ├── src/
 │   │   ├── main.tsx / App.tsx     # entry point, route table
 │   │   ├── api.ts                  # typed fetch client for /admin/api/*
 │   │   ├── AdminContext.tsx        # current-admin auth state
-│   │   ├── components/             # Layout (nav shell), Modal
+│   │   ├── theme.ts                # light/dark toggle, persisted to localStorage
+│   │   ├── components/             # Layout, Modal, Drawer, Menu, Badge, ConfirmDialog, CopyableId, EmptyState, ToastProvider, PasswordInput
 │   │   └── pages/                  # Login, Dashboard, Applications, Users, LoginGroups, Resources, AuditLog, Account
 │   └── dist/                      # `npm run build` output; served by app/main.py at /admin (gitignored)
 ├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
@@ -419,11 +466,16 @@ auth_service/
 │   ├── example_api/                # runnable protected API built on the SDK
 │   ├── mcp_server/                 # runnable MCP-server auth pattern built on the SDK
 │   └── website_bff/                 # runnable BFF-pattern website client (no SDK needed -- it's a client, not a resource server)
+├── docs/
+│   └── architecture.md            # deeper design notes than this README's [Architecture](#architecture) section
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml / uv.lock
-├── .env / .env.example
-└── plan/                          # design docs this service is built from (not committed)
+├── .env.example                   # copy to .env (gitignored) and fill in real values -- see Configuration
+├── SECURITY.md                    # how to report a vulnerability privately
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+└── LICENSE
 ```
 
 ## Security
@@ -438,7 +490,7 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) for how to report it priva
 - Rate limiting on `/token`, `/authorize`, and `/admin/login`
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever served over HTTPS; admin sessions use a separate cookie from end-user sessions
 - No credentials or connection strings are hardcoded anywhere — `docker-compose.yml` sources them from `.env` via variable interpolation, and the app itself composes URLs from discrete env vars at runtime
-- A default admin account is seeded on first run and flagged `must_change_password` until you change it via `/admin/account` — override `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` before first boot if you don't want the default to exist even briefly
+- No default admin credential exists — the first person to open `/admin` chooses their own email/password via an interactive setup screen. `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` (unset by default) are an opt-in escape hatch for scripted deployments only; that account is flagged `must_change_password` until changed via `/admin/account`
 - Structured (JSON-lines) audit logging on stdout for every login, signup, token issuance/revocation, admin login, password reset, and DCR registration — `anomalous_activity` events (e.g. repeated failed logins) log at `WARNING` so they're easy to filter for. Wiring these into an actual alert (Slack, PagerDuty, email) is a log-aggregator choice left to your deployment, same as any other 12-factor app.
 
 ## Mutual TLS for `client_credentials` clients
@@ -451,7 +503,7 @@ For service-to-service clients, a certificate is a stronger authentication metho
 uv run python -m app.cli register-client \
   --client-id some-service --type confidential \
   --grant-type client_credentials \
-  --mtls-thumbprint "$(openssl x509 -in client.crt -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+  --mtls-thumbprint "$(openssl x509 -in client.crt -noout -fingerprint -sha1 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
 ```
 
 **2. Generate a proxy secret and set it in `.env`:**
@@ -474,7 +526,7 @@ location ~ ^/(token|revoke)$ {
 }
 ```
 
-`$ssl_client_fingerprint` is SHA-1 by default in stock nginx — either switch the thumbprint you registered in step 1 to SHA-1 to match, or use `ssl_client_fingerprint` alternatives available in your nginx build for SHA-256. Whichever you pick, the algorithm on both sides must match.
+`$ssl_client_fingerprint` is **SHA-1, always** in stock nginx (`ngx_http_ssl_module` has no built-in SHA-256 variant) — step 1's command above registers a SHA-1 thumbprint to match it, no extra tooling required. If you specifically need SHA-256 (stronger collision resistance, but SHA-1 is only used here as an equality-checked lookup key, not for anything cryptographically load-bearing), you'd compute it yourself from `$ssl_client_raw_cert` via an njs (`ngx_http_js_module`) or OpenResty/Lua handler and register that hash instead — nginx doesn't expose it as a plain variable. Whichever you pick, the algorithm on both sides must match.
 
 Once configured for a client, mTLS is *required* for it — a correct `client_secret` alone is no longer accepted, since allowing either would make the certificate requirement pointless.
 
@@ -496,10 +548,11 @@ Following the build order this service was planned against:
 - [x] Polished login/consent UI
 - [x] Admin CLI for registering resources/clients/users; resource-server SDK + example integrations
 - [x] Self-service user signup, and user pools (shared vs. isolated identity across clients on one deployment)
-- [x] `/admin` setup UI (pools, clients, resources, users, per-client signup toggle) with a seeded default admin account
+- [x] `/admin` setup UI (pools, clients, resources, users, per-client signup toggle) with an interactive first-run admin setup screen — no default credential
 - [x] MCP support: RFC 8707 resource indicators, RFC 9728 protected resource metadata, RFC 7591 Dynamic Client Registration
 - [x] Password recovery and email verification
 - [x] Passkey (WebAuthn) login, alongside password + TOTP
+- [x] Embeddable popup login/signup widget, with per-client branding (logo, color)
 - [x] Website integration: BFF pattern (`examples/website_bff`)
 - [x] CIMD support: `client_id`-as-URL resolution, per the MCP spec's 2026-07-28 revision preferring it over DCR
 - [x] mTLS for `client_credentials` clients (RFC 8705-style cert-thumbprint binding, via reverse-proxy header handoff)

@@ -165,3 +165,54 @@ async def test_admin_can_toggle_user_status_from_ui(client, db_session):
     await client.post(f"/admin/api/users/{user.id}/toggle-status")
     resp = await client.get("/admin/api/users")
     assert next(u for u in resp.json() if u["email"] == "alice@example.com")["status"] == "disabled"
+
+
+# --- Client branding renders on the login page ---
+
+
+@pytest.mark.asyncio
+async def test_client_branding_renders_on_login_page(client, db_session):
+    await create_client(
+        db_session,
+        client_id="branded-client",
+        redirect_uris=(REDIRECT_URI,),
+        logo_url="https://acme.example.com/logo.png",
+        brand_color="#1d4ed8",
+    )
+    await create_resource(db_session, resource_id=RESOURCE)
+
+    resp = await client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "branded-client",
+            "redirect_uri": REDIRECT_URI,
+            "resource": RESOURCE,
+            "code_challenge": "abc",
+            "code_challenge_method": "S256",
+        },
+    )
+    assert resp.status_code == 200
+    assert 'src="https://acme.example.com/logo.png"' in resp.text
+    assert "--color-primary: #1d4ed8;" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_no_branding_falls_back_to_default_icon(client, db_session):
+    await create_client(db_session, client_id="test-client", redirect_uris=(REDIRECT_URI,))
+    await create_resource(db_session, resource_id=RESOURCE)
+
+    resp = await client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "test-client",
+            "redirect_uri": REDIRECT_URI,
+            "resource": RESOURCE,
+            "code_challenge": "abc",
+            "code_challenge_method": "S256",
+        },
+    )
+    assert resp.status_code == 200
+    assert "<img" not in resp.text
+    assert "--color-primary: #1d4ed8;" not in resp.text

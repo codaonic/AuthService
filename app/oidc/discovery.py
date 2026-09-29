@@ -5,8 +5,7 @@ from app.config import get_settings
 router = APIRouter()
 
 
-@router.get("/.well-known/openid-configuration")
-async def openid_configuration():
+def _metadata_document() -> dict:
     settings = get_settings()
     issuer = settings.issuer.rstrip("/")
     return {
@@ -26,3 +25,18 @@ async def openid_configuration():
         "scopes_supported": ["openid", "profile", "email"],
         "claims_supported": ["sub", "email"],
     }
+
+
+@router.get("/.well-known/openid-configuration")
+async def openid_configuration():
+    return _metadata_document()
+
+
+@router.get("/.well-known/oauth-authorization-server")
+async def oauth_authorization_server():
+    """RFC 8414 authorization server metadata -- a superset-compatible alias
+    of the OIDC discovery document above. Several MCP clients probe this
+    path before falling back to /.well-known/openid-configuration; serving
+    both avoids that extra round trip (and 404) on every connection.
+    """
+    return _metadata_document()

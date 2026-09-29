@@ -2,17 +2,7 @@ import { ReactNode, useEffect, useRef } from "react";
 import { CloseIcon } from "./Icons";
 import { useFocusTrap } from "./useFocusTrap";
 
-export function Modal({
-  title,
-  wide,
-  onClose,
-  children,
-}: {
-  title: string;
-  wide?: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}) {
+export function Drawer({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useFocusTrap(ref);
 
@@ -26,19 +16,19 @@ export function Modal({
 
   return (
     <div
-      className="modal-backdrop"
+      className="drawer-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className={`modal${wide ? " modal--wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
-        <div className="modal__header">
+      <div className="drawer" role="dialog" aria-modal="true" aria-label={title} ref={ref}>
+        <div className="drawer__header">
           <h2>{title}</h2>
           <button type="button" className="modal__close" aria-label="Close" onClick={onClose}>
             <CloseIcon width={18} height={18} />
           </button>
         </div>
-        <div className="modal__body">{children}</div>
+        <div className="drawer__body">{children}</div>
       </div>
     </div>
   );

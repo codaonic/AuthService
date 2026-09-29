@@ -34,6 +34,8 @@ async def create_client(
     client_secret=None,
     pool_name="default",
     allow_signup=True,
+    logo_url=None,
+    brand_color=None,
 ):
     pool = await get_or_create_pool(db_session, pool_name)
     client = Client(
@@ -45,6 +47,8 @@ async def create_client(
         grant_types=list(grant_types),
         allowed_scope="profile email",
         allow_signup=allow_signup,
+        logo_url=logo_url,
+        brand_color=brand_color,
     )
     db_session.add(client)
     await db_session.commit()

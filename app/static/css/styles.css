@@ -167,6 +167,12 @@ body {
   color: var(--color-primary);
 }
 
+.brand-icon--logo {
+  background: none;
+  object-fit: contain;
+  padding: 4px;
+}
+
 .card__title {
   font-size: 22px;
   font-weight: 650;

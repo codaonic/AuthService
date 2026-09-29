@@ -56,6 +56,8 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "allow_signup": client.allow_signup,
         "enabled": client.enabled,
         "mtls_cert_thumbprint": client.mtls_cert_thumbprint,
+        "logo_url": client.logo_url,
+        "brand_color": client.brand_color,
         "cimd_fetched_at": client.cimd_fetched_at.isoformat() if client.cimd_fetched_at else None,
         "pool_name": pool_name,
     }
@@ -93,6 +95,64 @@ def _format_events(raw_events: list[dict]) -> list[dict]:
             }
         )
     return events
+
+
+# --- First-run setup ---
+#
+# No admin is seeded by default (see app/admin/seed.py) -- the first person
+# to open /admin sees a setup screen instead of a login screen, and this is
+# what backs it. Once one admin exists, /setup permanently refuses to create
+# another; use POST /users (there is no such general admin-creation endpoint
+# by design) or a direct DB insert for additional admins.
+
+
+@router.get("/setup-status")
+async def api_setup_status(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(func.count()).select_from(AdminUser))
+    return {"needs_setup": result.scalar_one() == 0}
+
+
+class SetupBody(BaseModel):
+    email: str
+    password: str
+    confirm_password: str
+
+
+@router.post("/setup")
+async def api_setup(
+    request: Request,
+    body: SetupBody,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    existing = await db.execute(select(func.count()).select_from(AdminUser))
+    if existing.scalar_one() > 0:
+        raise HTTPException(409, "Setup has already been completed")
+
+    if body.password != body.confirm_password:
+        raise HTTPException(400, "Passwords do not match")
+    if len(body.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+
+    admin = AdminUser(email=body.email, password_hash=hash_password(body.password), must_change_password=False)
+    db.add(admin)
+    await db.commit()
+    log_event("admin_setup_completed", admin_id=str(admin.id), email=admin.email)
+
+    settings = get_settings()
+    session_id = await create_session(
+        redis, str(admin.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    )
+    response.set_cookie(
+        settings.admin_session_cookie_name,
+        session_id,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=settings.admin_session_ttl_seconds,
+    )
+    return _admin_json(admin)
 
 
 # --- Auth ---
@@ -236,6 +296,8 @@ class CreateClientBody(BaseModel):
     application_type: str = "web"
     user_pool: str = "default"
     allow_signup: bool = False
+    logo_url: str = ""
+    brand_color: str = ""
 
 
 @router.post("/clients", status_code=201)
@@ -261,6 +323,8 @@ async def api_create_client(
         registration_method="static",
         application_type=body.application_type,
         allow_signup=body.allow_signup,
+        logo_url=body.logo_url.strip() or None,
+        brand_color=body.brand_color.strip() or None,
     )
     db.add(client)
     await db.commit()
@@ -282,6 +346,29 @@ async def api_set_client_mtls(
     if client is None:
         raise HTTPException(404, "unknown_client")
     client.mtls_cert_thumbprint = body.thumbprint.strip().upper() or None
+    await db.commit()
+    pool = await db.get(UserPool, client.user_pool_id)
+    return _client_json(client, pool.name)
+
+
+class BrandingBody(BaseModel):
+    logo_url: str = ""
+    brand_color: str = ""
+
+
+@router.post("/clients/{client_id}/branding")
+async def api_set_client_branding(
+    client_id: str, body: BrandingBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    """Applied to this client's login/signup/consent pages -- see
+    app/oidc/authorize.py's _branding() and app/templates/base.html.
+    """
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.logo_url = body.logo_url.strip() or None
+    client.brand_color = body.brand_color.strip() or None
     await db.commit()
     pool = await db.get(UserPool, client.user_pool_id)
     return _client_json(client, pool.name)

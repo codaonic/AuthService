@@ -36,6 +36,8 @@ async def register_client(args: argparse.Namespace) -> None:
                 registration_method="static",
                 application_type=args.application_type,
                 mtls_cert_thumbprint=args.mtls_thumbprint,
+                logo_url=args.logo_url,
+                brand_color=args.brand_color,
             )
         )
         await db.commit()
@@ -126,10 +128,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--mtls-thumbprint",
         help=(
-            "SHA-256 thumbprint (hex) of this client's certificate, for mutual-TLS "
-            "client auth instead of a shared secret. Requires your reverse proxy to "
-            "verify client certs and forward the result -- see README's mTLS section."
+            "Hex cert thumbprint of this client's certificate, for mutual-TLS client "
+            "auth instead of a shared secret -- must match whatever hash algorithm "
+            "your reverse proxy forwards (stock nginx sends SHA-1). Requires your "
+            "reverse proxy to verify client certs and forward the result -- see "
+            "README's mTLS section."
         ),
+    )
+    p.add_argument(
+        "--logo-url", help="Shown on this client's login/signup/consent pages instead of the default icon"
+    )
+    p.add_argument(
+        "--brand-color", help="CSS color (e.g. #1d4ed8) applied to this client's login/signup/consent pages"
     )
     p.add_argument(
         "--user-pool",

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
+import { Badge } from "../components/Badge";
 import { PasswordInput } from "../components/PasswordInput";
 import { PlusIcon, UsersIcon } from "../components/Icons";
 import { api, ApiError, AppUser, Pool } from "../api";
@@ -113,14 +114,14 @@ export function Users() {
               <td>{u.email}</td>
               <td>{u.pool_name}</td>
               <td>
-                <span className={`badge ${u.status === "active" ? "badge--on" : "badge--off"}`}>
+                <Badge variant={u.status === "active" ? "success" : "neutral"}>
                   {u.status === "active" ? "Active" : "Disabled"}
-                </span>
+                </Badge>
               </td>
               <td>
-                <span className={`badge ${u.email_verified ? "badge--on" : "badge--off"}`}>
+                <Badge variant={u.email_verified ? "success" : "warning"}>
                   {u.email_verified ? "Verified" : "Unverified"}
-                </span>
+                </Badge>
               </td>
               <td>
                 <div className="row-actions">

@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.db.models import Client, Resource, User, UserPool
+from app.db.models import AdminUser, Client, Resource, User, UserPool
 from tests.helpers import create_admin, create_client, create_user
 
 
@@ -125,6 +125,48 @@ async def test_create_confidential_client_shows_secret_once(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_create_client_with_branding(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post(
+        "/admin/api/clients",
+        json={
+            "client_id": "acme-branded",
+            "client_type": "public",
+            "redirect_uris": "https://acme.example.com/cb",
+            "logo_url": "https://acme.example.com/logo.png",
+            "brand_color": "#1d4ed8",
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["logo_url"] == "https://acme.example.com/logo.png"
+    assert body["brand_color"] == "#1d4ed8"
+
+
+@pytest.mark.asyncio
+async def test_set_client_branding(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web")
+
+    resp = await client.post(
+        "/admin/api/clients/acme-web/branding",
+        json={"logo_url": "https://acme.example.com/logo.png", "brand_color": "#1d4ed8"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["logo_url"] == "https://acme.example.com/logo.png"
+
+    result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
+    saved = result.scalar_one()
+    assert saved.brand_color == "#1d4ed8"
+
+    # Clearing (empty string) unsets it back to None, same as the mTLS field.
+    resp = await client.post("/admin/api/clients/acme-web/branding", json={})
+    assert resp.json()["logo_url"] is None
+    assert resp.json()["brand_color"] is None
+
+
+@pytest.mark.asyncio
 async def test_toggle_client_signup(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="acme-web", pool_name="default", allow_signup=True)
@@ -230,3 +272,64 @@ async def test_admin_send_password_reset(client, db_session, monkeypatch):
     send_mock.assert_awaited_once()
     assert send_mock.await_args.args[0] == "alice@example.com"
     assert "reset-password?token=" in send_mock.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_setup_status_reflects_whether_an_admin_exists(client, db_session):
+    resp = await client.get("/admin/api/setup-status")
+    assert resp.status_code == 200
+    assert resp.json() == {"needs_setup": True}
+
+    await create_admin(db_session)
+
+    resp = await client.get("/admin/api/setup-status")
+    assert resp.json() == {"needs_setup": False}
+
+
+@pytest.mark.asyncio
+async def test_setup_creates_admin_and_logs_in(client, db_session):
+    resp = await client.post(
+        "/admin/api/setup",
+        json={"email": "owner@example.com", "password": "a-strong-password!", "confirm_password": "a-strong-password!"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["email"] == "owner@example.com"
+    assert body["must_change_password"] is False
+
+    # Logged in immediately -- the session cookie from setup works for /me.
+    me = await client.get("/admin/api/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "owner@example.com"
+
+    result = await db_session.execute(select(AdminUser))
+    assert len(result.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_setup_refuses_once_an_admin_exists(client, db_session):
+    await create_admin(db_session, email="first@example.com")
+
+    resp = await client.post(
+        "/admin/api/setup",
+        json={"email": "second@example.com", "password": "a-strong-password!", "confirm_password": "a-strong-password!"},
+    )
+    assert resp.status_code == 409
+
+    result = await db_session.execute(select(AdminUser))
+    assert len(result.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_setup_rejects_mismatched_or_short_passwords(client):
+    mismatched = await client.post(
+        "/admin/api/setup",
+        json={"email": "owner@example.com", "password": "a-strong-password!", "confirm_password": "different!"},
+    )
+    assert mismatched.status_code == 400
+
+    short = await client.post(
+        "/admin/api/setup",
+        json={"email": "owner@example.com", "password": "short", "confirm_password": "short"},
+    )
+    assert short.status_code == 400

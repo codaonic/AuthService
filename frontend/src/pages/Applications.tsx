@@ -1,5 +1,12 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Modal } from "../components/Modal";
+import { Drawer } from "../components/Drawer";
+import { Badge } from "../components/Badge";
+import { Menu } from "../components/Menu";
+import { CopyableId } from "../components/CopyableId";
+import { EmptyState } from "../components/EmptyState";
+import { useConfirmDialog } from "../components/ConfirmDialog";
+import { useToast } from "../components/ToastProvider";
 import { AppsIcon, PlusIcon } from "../components/Icons";
 import { api, ApiError, Client, Pool } from "../api";
 
@@ -21,10 +28,14 @@ const PRESET_DEFAULTS: Record<Preset, { clientType: string; applicationType: str
 export function Applications() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [pools, setPools] = useState<Pool[]>([]);
+  const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [created, setCreated] = useState<Client | null>(null);
+  const [managing, setManaging] = useState<Client | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { confirm, dialog } = useConfirmDialog();
+  const { show } = useToast();
 
   const [preset, setPreset] = useState<Preset>("website");
   const [clientId, setClientId] = useState("");
@@ -35,6 +46,8 @@ export function Applications() {
   const [clientType, setClientType] = useState("confidential");
   const [grants, setGrants] = useState<string[]>(PRESET_DEFAULTS.website.grants);
   const [scope, setScope] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [brandColor, setBrandColor] = useState("");
 
   const load = () => api.get<Client[]>("/clients").then(setClients);
 
@@ -42,6 +55,21 @@ export function Applications() {
     load();
     api.get<Pool[]>("/pools").then(setPools);
   }, []);
+
+  // Keep the drawer in sync with the underlying row after a toggle/save.
+  useEffect(() => {
+    if (managing) setManaging((prev) => clients?.find((c) => c.id === prev?.id) ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients]);
+
+  const filtered = useMemo(() => {
+    if (!clients) return clients;
+    const q = search.trim().toLowerCase();
+    if (!q) return clients;
+    return clients.filter(
+      (c) => (c.client_name ?? "").toLowerCase().includes(q) || c.client_id.toLowerCase().includes(q),
+    );
+  }, [clients, search]);
 
   const applyPreset = (p: Preset) => {
     setPreset(p);
@@ -78,12 +106,16 @@ export function Applications() {
         application_type: PRESET_DEFAULTS[preset].applicationType,
         user_pool: resolvedPool(),
         allow_signup: allowSignup,
+        logo_url: logoUrl,
+        brand_color: brandColor,
       });
       setModalOpen(false);
       setCreated(result);
       setClientId("");
       setRedirectUris("");
       setScope("");
+      setLogoUrl("");
+      setBrandColor("");
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -92,18 +124,26 @@ export function Applications() {
     }
   };
 
-  const toggleEnabled = async (id: string) => {
-    await api.post(`/clients/${id}/toggle-enabled`);
+  const toggleEnabled = async (client: Client) => {
+    await api.post(`/clients/${client.client_id}/toggle-enabled`);
+    show(client.enabled ? `${displayName(client)} disabled` : `${displayName(client)} re-enabled`);
     load();
   };
 
-  const toggleSignup = async (id: string) => {
-    await api.post(`/clients/${id}/toggle-signup`);
+  const toggleSignup = async (client: Client) => {
+    await api.post(`/clients/${client.client_id}/toggle-signup`);
     load();
   };
 
-  const saveMtls = async (id: string, thumbprint: string) => {
-    await api.post(`/clients/${id}/mtls`, { thumbprint });
+  const saveMtls = async (client: Client, thumbprint: string) => {
+    await api.post(`/clients/${client.client_id}/mtls`, { thumbprint });
+    show("mTLS thumbprint saved");
+    load();
+  };
+
+  const saveBranding = async (client: Client, logoUrl: string, brandColor: string) => {
+    await api.post(`/clients/${client.client_id}/branding`, { logo_url: logoUrl, brand_color: brandColor });
+    show("Branding saved");
     load();
   };
 
@@ -117,55 +157,79 @@ export function Applications() {
           <h1 className="title">Applications</h1>
         </div>
         <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Add application
+          <PlusIcon width={16} height={16} /> Add application
         </button>
       </div>
 
       <p className="lead">
         An <strong>application</strong> is anything that lets people log in — a website, a mobile
-        app, or an AI assistant like ChatGPT or Claude connecting to your service. Click "Add
-        application" above for every app you want to connect.
+        app, or an AI assistant like ChatGPT or Claude connecting to your service.
       </p>
 
-      <div className="table-wrap">
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Application</th>
-            <th>Type</th>
-            <th>Source</th>
-            <th>Login group</th>
-            <th>Status</th>
-            <th>Signup</th>
-            <th>mTLS thumbprint</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {clients?.length === 0 && (
-            <tr>
-              <td colSpan={8}>No applications yet — click "Add application" above to add your first one.</td>
-            </tr>
-          )}
-          {clients?.map((c) => (
-            <ClientRow
-              key={c.id}
-              client={c}
-              onToggleEnabled={() => toggleEnabled(c.client_id)}
-              onToggleSignup={() => toggleSignup(c.client_id)}
-              onSaveMtls={(t) => saveMtls(c.client_id, t)}
-            />
-          ))}
-        </tbody>
-      </table>
-      </div>
-      <p className="field__hint" style={{ marginTop: 8 }}>
-        <strong>Disable</strong> immediately blocks an app from letting anyone log in or refresh a
-        token, without deleting it — use this for a compromised secret or a retired app while
-        keeping its history. mTLS thumbprint is only checked for apps that talk directly to the
-        server (not ones a person logs into through a browser) — leave blank unless you've set up
-        mutual TLS for it.
-      </p>
+      {clients && clients.length > 0 && (
+        <input
+          type="search"
+          placeholder="Search by name or client ID…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ maxWidth: 320, marginBottom: 16, display: "block" }}
+        />
+      )}
+
+      {clients?.length === 0 ? (
+        <EmptyState
+          icon={<AppsIcon width={20} height={20} />}
+          title="No applications yet"
+          description="Add the first website, mobile app, or AI assistant that should let people log in."
+          action={
+            <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
+              <PlusIcon width={16} height={16} /> Add application
+            </button>
+          }
+        />
+      ) : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Application</th>
+                <th>Type</th>
+                <th>Source</th>
+                <th>Login group</th>
+                <th>Status</th>
+                <th>Signup</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered?.length === 0 && (
+                <tr>
+                  <td colSpan={7}>No applications match "{search}".</td>
+                </tr>
+              )}
+              {filtered?.map((c) => (
+                <ClientRow
+                  key={c.id}
+                  client={c}
+                  onManage={() => setManaging(c)}
+                  onToggleSignup={() => toggleSignup(c)}
+                  onDisable={() =>
+                    confirm({
+                      title: `${c.enabled ? "Disable" : "Re-enable"} ${displayName(c)}?`,
+                      description: c.enabled
+                        ? "This immediately blocks anyone from logging in or refreshing a token with this application, without deleting it or losing its history. You can re-enable it any time."
+                        : "This lets the application accept logins and token refreshes again.",
+                      danger: c.enabled,
+                      confirmLabel: c.enabled ? "Disable" : "Re-enable",
+                      onConfirm: () => toggleEnabled(c),
+                    })
+                  }
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {modalOpen && (
         <Modal title="Add an application" wide onClose={() => setModalOpen(false)}>
@@ -282,6 +346,28 @@ export function Applications() {
                   </label>
                   <input id="scope" placeholder="openid profile email" value={scope} onChange={(e) => setScope(e.target.value)} />
                 </div>
+                <div className="field">
+                  <label htmlFor="logo_url">
+                    Logo URL <span className="field__hint">(optional — shown on this app's login/signup/consent pages)</span>
+                  </label>
+                  <input
+                    id="logo_url"
+                    placeholder="https://yourapp.com/logo.png"
+                    value={logoUrl}
+                    onChange={(e) => setLogoUrl(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="brand_color">
+                    Brand color <span className="field__hint">(optional — CSS color, e.g. #1d4ed8)</span>
+                  </label>
+                  <input
+                    id="brand_color"
+                    placeholder="#1d4ed8"
+                    value={brandColor}
+                    onChange={(e) => setBrandColor(e.target.value)}
+                  />
+                </div>
               </div>
             </details>
 
@@ -309,8 +395,23 @@ export function Applications() {
           </button>
         </Modal>
       )}
+
+      {managing && (
+        <ManageDrawer
+          client={managing}
+          onClose={() => setManaging(null)}
+          onSaveMtls={(t) => saveMtls(managing, t)}
+          onSaveBranding={(logoUrl, brandColor) => saveBranding(managing, logoUrl, brandColor)}
+        />
+      )}
+
+      {dialog}
     </>
   );
+}
+
+function displayName(client: Client) {
+  return client.client_name || "Unnamed application";
 }
 
 function SharingCard({
@@ -348,78 +449,146 @@ function SharingCard({
 
 function ClientRow({
   client,
-  onToggleEnabled,
+  onManage,
   onToggleSignup,
-  onSaveMtls,
+  onDisable,
 }: {
   client: Client;
-  onToggleEnabled: () => void;
+  onManage: () => void;
   onToggleSignup: () => void;
-  onSaveMtls: (thumbprint: string) => void;
+  onDisable: () => void;
 }) {
-  const [thumbprint, setThumbprint] = useState(client.mtls_cert_thumbprint ?? "");
-  const shownId =
-    client.registration_method === "cimd" && client.client_id.length > 40
-      ? `${client.client_id.slice(0, 40)}…`
-      : client.client_id;
-
   return (
     <tr style={{ opacity: client.enabled ? 1 : 0.55 }}>
       <td>
-        {client.client_name ? (
-          <>
-            {client.client_name} <span className="field__hint">({shownId})</span>
-          </>
-        ) : (
-          shownId
-        )}
+        <div style={{ fontWeight: 600 }}>{client.client_name || <em style={{ fontWeight: 400 }}>Unnamed application</em>}</div>
+        <CopyableId value={client.client_id} max={32} />
       </td>
       <td>{client.client_type}</td>
       <td>
-        {client.registration_method === "cimd" && <span className="badge badge--off">CIMD</span>}
-        {client.registration_method === "dcr" && <span className="badge badge--off">DCR</span>}
-        {client.registration_method === "static" && <span className="badge badge--off">Added by you</span>}
+        {client.registration_method === "cimd" && <Badge variant="neutral">CIMD</Badge>}
+        {client.registration_method === "dcr" && <Badge variant="neutral">DCR</Badge>}
+        {client.registration_method === "static" && <Badge variant="neutral">Added by you</Badge>}
       </td>
       <td>{client.pool_name}</td>
       <td>
-        <span className={`badge ${client.enabled ? "badge--on" : "badge--off"}`}>
-          {client.enabled ? "Active" : "Disabled"}
-        </span>
+        <Badge variant={client.enabled ? "success" : "neutral"}>{client.enabled ? "Active" : "Disabled"}</Badge>
       </td>
       <td>
-        <span className={`badge ${client.allow_signup ? "badge--on" : "badge--off"}`}>
+        <Badge variant={client.allow_signup ? "success" : "neutral"}>
           {client.allow_signup ? "Allowed" : "Admin-only"}
-        </span>
+        </Badge>
       </td>
       <td>
-        {client.registration_method === "cimd" ? (
-          <span className="field__hint">not applicable</span>
-        ) : (
-          <div style={{ display: "flex", gap: 6 }}>
-            <input
-              value={thumbprint}
-              onChange={(e) => setThumbprint(e.target.value)}
-              placeholder="SHA-256 cert thumbprint"
-              style={{ fontSize: 12.5, padding: "6px 8px", width: 170 }}
-            />
-            <button type="button" className="btn btn--secondary" onClick={() => onSaveMtls(thumbprint)}>
-              Save
-            </button>
-          </div>
-        )}
-      </td>
-      <td>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-          <button type="button" className="btn btn--secondary" onClick={onToggleEnabled}>
-            {client.enabled ? "Disable" : "Re-enable"}
+        <div className="row-actions">
+          <button type="button" className="btn btn--secondary" onClick={onManage}>
+            Manage
           </button>
-          {client.registration_method !== "cimd" && (
-            <button type="button" className="btn btn--secondary" onClick={onToggleSignup}>
-              {client.allow_signup ? "Disable signup" : "Enable signup"}
-            </button>
-          )}
+          <Menu
+            items={[
+              ...(client.registration_method !== "cimd"
+                ? [{ label: client.allow_signup ? "Disable signup" : "Enable signup", onSelect: onToggleSignup }]
+                : []),
+              { label: client.enabled ? "Disable" : "Re-enable", onSelect: onDisable, danger: client.enabled },
+            ]}
+          />
         </div>
       </td>
     </tr>
+  );
+}
+
+function ManageDrawer({
+  client,
+  onClose,
+  onSaveMtls,
+  onSaveBranding,
+}: {
+  client: Client;
+  onClose: () => void;
+  onSaveMtls: (thumbprint: string) => void;
+  onSaveBranding: (logoUrl: string, brandColor: string) => void;
+}) {
+  const [thumbprint, setThumbprint] = useState(client.mtls_cert_thumbprint ?? "");
+  const [logoUrl, setLogoUrl] = useState(client.logo_url ?? "");
+  const [brandColor, setBrandColor] = useState(client.brand_color ?? "");
+
+  return (
+    <Drawer title={displayName(client)} onClose={onClose}>
+      <div className="field">
+        <label>Client ID</label>
+        <CopyableId value={client.client_id} max={9999} />
+      </div>
+      <div className="field">
+        <label>Type</label>
+        <span style={{ fontSize: 14 }}>{client.client_type}</span>
+      </div>
+      <div className="field">
+        <label>Login group</label>
+        <span style={{ fontSize: 14 }}>{client.pool_name}</span>
+      </div>
+      {client.redirect_uris.length > 0 && (
+        <div className="field">
+          <label>Redirect URIs</label>
+          {client.redirect_uris.map((uri) => (
+            <div key={uri} style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--text-muted)" }}>
+              {uri}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="field">
+        <label>Grant types</label>
+        <span style={{ fontSize: 14 }}>{client.grant_types.map((g) => GRANT_LABELS[g] ?? g).join(", ")}</span>
+      </div>
+
+      {client.grant_types.includes("authorization_code") && client.registration_method !== "cimd" && (
+        <details style={{ marginTop: 8 }} open>
+          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 10 }}>
+            Branding
+          </summary>
+          <p className="field__hint" style={{ marginTop: -4 }}>
+            Applied to this app's login, signup, and consent pages — useful if you're embedding
+            them with the popup widget and want them to feel like part of your site.
+          </p>
+          <div className="field">
+            <label htmlFor="logo_url">Logo URL</label>
+            <input id="logo_url" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} placeholder="https://yourapp.com/logo.png" />
+          </div>
+          <div className="field">
+            <label htmlFor="brand_color">Brand color</label>
+            <input id="brand_color" value={brandColor} onChange={(e) => setBrandColor(e.target.value)} placeholder="#1d4ed8" />
+          </div>
+          <button type="button" className="btn btn--secondary" onClick={() => onSaveBranding(logoUrl, brandColor)}>
+            Save
+          </button>
+        </details>
+      )}
+
+      {client.registration_method !== "cimd" && (
+        <details style={{ marginTop: 8 }} open>
+          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 10 }}>
+            Advanced
+          </summary>
+          <div className="field">
+            <label htmlFor="mtls">mTLS certificate thumbprint</label>
+            <input
+              id="mtls"
+              value={thumbprint}
+              onChange={(e) => setThumbprint(e.target.value)}
+              placeholder="Cert thumbprint (hex)"
+              style={{ fontFamily: "var(--font-mono)" }}
+            />
+            <span className="field__hint">
+              Only checked for apps that talk directly to the server (not ones a person logs into
+              through a browser) — leave blank unless you've set up mutual TLS for it.
+            </span>
+          </div>
+          <button type="button" className="btn btn--secondary" onClick={() => onSaveMtls(thumbprint)}>
+            Save
+          </button>
+        </details>
+      )}
+    </Drawer>
   );
 }

@@ -12,6 +12,17 @@ async def test_openid_configuration(client):
 
 
 @pytest.mark.asyncio
+async def test_oauth_authorization_server_metadata_matches_oidc_discovery(client):
+    """RFC 8414 alias -- several MCP clients probe this path before falling
+    back to /.well-known/openid-configuration; both must serve the same doc.
+    """
+    oidc = await client.get("/.well-known/openid-configuration")
+    rfc8414 = await client.get("/.well-known/oauth-authorization-server")
+    assert rfc8414.status_code == 200
+    assert rfc8414.json() == oidc.json()
+
+
+@pytest.mark.asyncio
 async def test_jwks_has_keys(client):
     resp = await client.get("/jwks.json")
     assert resp.status_code == 200

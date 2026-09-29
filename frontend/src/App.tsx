@@ -1,7 +1,9 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AdminProvider, useAdmin } from "./AdminContext";
 import { Layout } from "./components/Layout";
+import { ToastProvider } from "./components/ToastProvider";
 import { Login } from "./pages/Login";
+import { Setup } from "./pages/Setup";
 import { Dashboard } from "./pages/Dashboard";
 import { Applications } from "./pages/Applications";
 import { Resources } from "./pages/Resources";
@@ -11,18 +13,36 @@ import { AuditLog } from "./pages/AuditLog";
 import { Account } from "./pages/Account";
 
 function RequireAdmin({ children }: { children: JSX.Element }) {
-  const { admin, loading } = useAdmin();
+  const { admin, loading, needsSetup } = useAdmin();
   const location = useLocation();
 
-  if (loading) return null;
+  if (needsSetup === null || loading) return null;
+  if (needsSetup) return <Navigate to="/admin/setup" replace />;
   if (!admin) return <Navigate to="/admin/login" state={{ from: location }} replace />;
   return children;
+}
+
+function RequireSetup({ children }: { children: JSX.Element }) {
+  const { needsSetup, admin } = useAdmin();
+
+  if (needsSetup === null) return null;
+  if (!needsSetup) return <Navigate to={admin ? "/admin" : "/admin/login"} replace />;
+  return children;
+}
+
+function LoginRoute() {
+  const { needsSetup } = useAdmin();
+
+  if (needsSetup === null) return null;
+  if (needsSetup) return <Navigate to="/admin/setup" replace />;
+  return <Login />;
 }
 
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/admin/login" element={<Login />} />
+      <Route path="/admin/setup" element={<RequireSetup><Setup /></RequireSetup>} />
+      <Route path="/admin/login" element={<LoginRoute />} />
       <Route
         path="/admin"
         element={
@@ -101,7 +121,9 @@ function AppRoutes() {
 export function App() {
   return (
     <AdminProvider>
-      <AppRoutes />
+      <ToastProvider>
+        <AppRoutes />
+      </ToastProvider>
     </AdminProvider>
   );
 }

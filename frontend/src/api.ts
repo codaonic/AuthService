@@ -64,6 +64,8 @@ export interface Client {
   allow_signup: boolean;
   enabled: boolean;
   mtls_cert_thumbprint: string | null;
+  logo_url: string | null;
+  brand_color: string | null;
   cimd_fetched_at: string | null;
   pool_name: string;
   client_secret?: string;

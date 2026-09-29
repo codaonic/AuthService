@@ -11,7 +11,18 @@ logger = logging.getLogger("app.admin")
 
 
 async def ensure_default_admin() -> None:
+    """Seeds an admin account from DEFAULT_ADMIN_EMAIL/DEFAULT_ADMIN_PASSWORD,
+    but only if both are explicitly set -- for scripted/automated deployments
+    that need a working login without driving the interactive setup screen.
+
+    Left unset (the default), this does nothing: no admin exists until the
+    first person to open /admin completes setup themselves via
+    POST /admin/api/setup, so no known/documented credential is ever seeded.
+    """
     settings = get_settings()
+    if settings.default_admin_email is None or settings.default_admin_password is None:
+        return
+
     async with async_session_factory() as db:
         result = await db.execute(select(AdminUser).limit(1))
         if result.scalar_one_or_none() is not None:
@@ -27,7 +38,7 @@ async def ensure_default_admin() -> None:
         await db.commit()
 
     logger.warning(
-        "Seeded default admin account (%s / %s) -- sign in at /admin/login and change the password immediately.",
+        "Seeded default admin account (%s) from DEFAULT_ADMIN_EMAIL/DEFAULT_ADMIN_PASSWORD -- "
+        "sign in at /admin/login and change the password immediately.",
         settings.default_admin_email,
-        settings.default_admin_password,
     )

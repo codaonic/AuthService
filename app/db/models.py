@@ -62,6 +62,13 @@ class Client(Base):
     mtls_cert_thumbprint: Mapped[str | None] = mapped_column(String, nullable=True)
     cimd_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optional branding applied to this client's login/signup/consent pages --
+    # lets a site's popup/embedded sign-in feel like their own even though
+    # the actual form is still served (and the password still only ever
+    # touched) by this service. Neither is validated beyond basic shape;
+    # logo_url is rendered as an <img src>, brand_color as a CSS color value.
+    logo_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    brand_color: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

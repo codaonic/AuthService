@@ -72,6 +72,14 @@ async def _load_client(db: AsyncSession, client_id: str) -> Client:
     return client
 
 
+def _branding(client: Client) -> dict:
+    """Fields every login/signup/consent template context includes so a
+    client can brand these pages -- e.g. for a popup/embedded sign-in that
+    should feel like it belongs to the site that opened it.
+    """
+    return {"client_name": client.client_name, "logo_url": client.logo_url, "brand_color": client.brand_color}
+
+
 async def _get_flow_client(db: AsyncSession, redis: Redis, flow_id: str) -> Client:
     client_id = await redis.hget(f"{FLOW_KEY_PREFIX}{flow_id}", "client_id")
     if client_id is None:
@@ -138,7 +146,7 @@ async def authorize(
             {
                 "flow_id": flow_id,
                 "client_id": client_id,
-                "client_name": client.client_name,
+                **_branding(client),
                 "allow_signup": client.allow_signup,
                 "show_totp": False,
                 "error": None,
@@ -162,7 +170,7 @@ async def login_page(
         {
             "flow_id": flow_id,
             "client_id": client.client_id,
-            "client_name": client.client_name,
+            **_branding(client),
             "allow_signup": client.allow_signup,
             "show_totp": False,
             "error": None,
@@ -197,7 +205,7 @@ async def login(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
-                "client_name": client.client_name,
+                **_branding(client),
                 "allow_signup": client.allow_signup,
                 "show_totp": False,
                 "error": "Invalid email or password",
@@ -213,7 +221,7 @@ async def login(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
-                "client_name": client.client_name,
+                **_branding(client),
                 "allow_signup": client.allow_signup,
                 "show_totp": True,
                 "email": email,
@@ -251,7 +259,7 @@ async def signup_page(
     return templates.TemplateResponse(
         request,
         "signup.html",
-        {"flow_id": flow_id, "client_id": client.client_id, "client_name": client.client_name, "error": None},
+        {"flow_id": flow_id, "client_id": client.client_id, **_branding(client), "error": None},
     )
 
 
@@ -278,7 +286,7 @@ async def signup(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
-                "client_name": client.client_name,
+                **_branding(client),
                 "error": message,
                 "email": email,
             },
@@ -345,7 +353,7 @@ async def _continue_flow(
             {
                 "flow_id": flow_id,
                 "client_id": client.client_id,
-                "client_name": client.client_name,
+                **_branding(client),
                 "scopes": sorted(requested_scopes),
                 "scope_descriptions": SCOPE_DESCRIPTIONS,
             },

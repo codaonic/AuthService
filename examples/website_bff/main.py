@@ -50,7 +50,7 @@ app = FastAPI(title="Example website (BFF pattern)")
 
 # In-memory stores for this example only -- a real deployment would use
 # Redis or a database, the same way the auth service itself does.
-PENDING_LOGINS: dict[str, str] = {}  # state -> code_verifier
+PENDING_LOGINS: dict[str, dict] = {}  # state -> {"verifier", "popup"}
 SESSIONS: dict[str, dict] = {}  # session_id -> {"access_token", "refresh_token", "sub", "email"}
 
 
@@ -64,8 +64,30 @@ def _make_pkce_pair() -> tuple[str, str]:
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     session = SESSIONS.get(request.cookies.get(SESSION_COOKIE))
+    widget_script = f'<script src="{ISSUER}/static/js/auth-widget.js"></script>'
+
     if session is None:
-        return "<h1>Example website (BFF pattern)</h1><p><a href='/login'>Log in</a></p>"
+        # Two ways to log in, both hitting the same /login route -- only the
+        # UX differs. The full-page link is the baseline that always works;
+        # the styled button demonstrates AuthWidget.openPopup(): this site's
+        # own markup/CSS, a popup for the actual (this-service-hosted) form,
+        # and no page navigation away from this site at all.
+        return f"""
+        <h1>Example website (BFF pattern)</h1>
+        <p><a href="/login">Log in (full-page redirect)</a></p>
+        <button id="popup-login" style="font: inherit; padding: 10px 18px; border-radius: 8px;
+            border: none; background: #111827; color: #fff; cursor: pointer;">
+          Sign in with Acme
+        </button>
+        {widget_script}
+        <script>
+          document.getElementById("popup-login").addEventListener("click", function () {{
+            AuthWidget.openPopup("/login?popup=1")
+              .then(function () {{ window.location.reload(); }})
+              .catch(function (err) {{ if (err.message !== "cancelled") alert(err.message); }});
+          }});
+        </script>
+        """
 
     return f"""
     <h1>Example website (BFF pattern)</h1>
@@ -77,10 +99,10 @@ async def home(request: Request):
 
 
 @app.get("/login")
-async def login():
+async def login(popup: bool = False):
     verifier, challenge = _make_pkce_pair()
     state = secrets.token_urlsafe(16)
-    PENDING_LOGINS[state] = verifier
+    PENDING_LOGINS[state] = {"verifier": verifier, "popup": popup}
 
     params = {
         "response_type": "code",
@@ -97,8 +119,8 @@ async def login():
 
 @app.get("/callback")
 async def callback(code: str, state: str):
-    verifier = PENDING_LOGINS.pop(state, None)
-    if verifier is None:
+    pending = PENDING_LOGINS.pop(state, None)
+    if pending is None:
         return HTMLResponse("Invalid or expired login attempt. <a href='/login'>Try again</a>.", status_code=400)
 
     async with httpx.AsyncClient() as http:
@@ -107,7 +129,7 @@ async def callback(code: str, state: str):
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "code_verifier": verifier,
+                "code_verifier": pending["verifier"],
                 "redirect_uri": REDIRECT_URI,
                 "client_id": CLIENT_ID,
                 "client_secret": CLIENT_SECRET,
@@ -133,7 +155,18 @@ async def callback(code: str, state: str):
         "email": who["email"],
     }
 
-    response = RedirectResponse("/")
+    if pending["popup"]:
+        # No redirect back to "/" here -- this response IS still the popup
+        # window. Tell the opener it's done and close, instead of navigating
+        # the popup anywhere. AuthWidget listens for exactly this message.
+        response = HTMLResponse(
+            "<script>"
+            "window.opener.postMessage({type: 'auth-widget:complete', success: true}, window.location.origin);"
+            "window.close();"
+            "</script>"
+        )
+    else:
+        response = RedirectResponse("/")
     response.set_cookie(SESSION_COOKIE, session_id, httponly=True, samesite="lax")
     return response
 
