@@ -182,22 +182,30 @@ export function Applications() {
   // One button in the Manage modal saves everything at once -- the fact
   // that this is three separate API calls under the hood is not the
   // admin's problem.
-  const saveAll = async (
-    client: Client,
-    fields: { name: string; uris: string; scope: string; logoUrl: string; brandColor: string; thumbprint: string },
-  ) => {
-    await Promise.all([
-      api.patch(`/clients/${client.client_id}`, {
-        client_name: fields.name,
-        redirect_uris: fields.uris,
-        scope: fields.scope,
-      }),
-      api.post(`/clients/${client.client_id}/branding`, {
-        logo_url: fields.logoUrl,
-        brand_color: fields.brandColor,
-      }),
-      api.post(`/clients/${client.client_id}/mtls`, { thumbprint: fields.thumbprint }),
-    ]);
+  const saveAll = async (client: Client, fields: SaveFields) => {
+    const calls: Promise<unknown>[] = [];
+    if (fields.details) {
+      calls.push(
+        api.patch(`/clients/${client.client_id}`, {
+          client_name: fields.details.name,
+          redirect_uris: fields.details.uris,
+          scope: fields.details.scope,
+        }),
+      );
+    }
+    if (fields.branding) {
+      calls.push(
+        api.post(`/clients/${client.client_id}/branding`, {
+          logo_url: fields.branding.logoUrl,
+          brand_color: fields.branding.brandColor,
+        }),
+      );
+    }
+    if (fields.thumbprint !== undefined) {
+      calls.push(api.post(`/clients/${client.client_id}/mtls`, { thumbprint: fields.thumbprint }));
+    }
+    if (calls.length === 0) return;
+    await Promise.all(calls);
     show("Saved");
     load();
   };
@@ -680,12 +688,13 @@ function ClientRow({
 }
 
 interface SaveFields {
-  name: string;
-  uris: string;
-  scope: string;
-  logoUrl: string;
-  brandColor: string;
-  thumbprint: string;
+  // Each section is only present when it actually changed from the
+  // client's current saved values -- Save changes is one button, but it
+  // must not blindly re-POST branding/mtls (or overwrite them with stale
+  // values) just because the admin only touched the name or scope.
+  details?: { name: string; uris: string; scope: string };
+  branding?: { logoUrl: string; brandColor: string };
+  thumbprint?: string;
 }
 
 function ManageDrawer({
@@ -1125,7 +1134,27 @@ function ManageDrawer({
           <button
             type="button"
             className="btn btn--primary btn--block"
-            onClick={() => onSave({ name, uris: redirectUris, scope, logoUrl, brandColor, thumbprint })}
+            onClick={() => {
+              const fields: SaveFields = {};
+              if (
+                name !== (client.client_name ?? "") ||
+                redirectUris !== client.redirect_uris.join("\n") ||
+                scope !== client.allowed_scope
+              ) {
+                fields.details = { name, uris: redirectUris, scope };
+              }
+              if (showBranding && (logoUrl !== (client.logo_url ?? "") || brandColor !== (client.brand_color ?? ""))) {
+                fields.branding = { logoUrl, brandColor };
+              }
+              if (thumbprint !== (client.mtls_cert_thumbprint ?? "")) {
+                fields.thumbprint = thumbprint;
+              }
+              if (!fields.details && !fields.branding && fields.thumbprint === undefined) {
+                show("Nothing to save");
+                return;
+              }
+              onSave(fields);
+            }}
           >
             Save changes
           </button>
