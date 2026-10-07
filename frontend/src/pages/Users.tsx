@@ -15,6 +15,8 @@ export function Users() {
   const [modalOpen, setModalOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [emailVerified, setEmailVerified] = useState(true);
   const [userPool, setUserPool] = useState("default");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -41,13 +43,24 @@ export function Users() {
 
   const onCreate = async (e: FormEvent) => {
     e.preventDefault();
-    setSubmitting(true);
     setError(null);
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
+    setSubmitting(true);
     try {
-      await api.post("/users", { email, password, user_pool: userPool });
+      await api.post("/users", {
+        email,
+        password,
+        confirm_password: confirmPassword,
+        user_pool: userPool,
+        email_verified: emailVerified,
+      });
       setModalOpen(false);
       setEmail("");
       setPassword("");
+      setConfirmPassword("");
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -225,6 +238,16 @@ export function Users() {
               />
             </div>
             <div className="field">
+              <label htmlFor="add-confirm-password">Confirm password</label>
+              <PasswordInput
+                id="add-confirm-password"
+                required
+                minLength={8}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </div>
+            <div className="field">
               <label htmlFor="add-pool">Login group</label>
               <input
                 id="add-pool"
@@ -235,6 +258,13 @@ export function Users() {
               />
               <span className="field__hint">Must match the group the application uses, so this user can log into it.</span>
             </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginBottom: 16 }}>
+              <input type="checkbox" checked={emailVerified} onChange={(e) => setEmailVerified(e.target.checked)} />
+              Treat their email as already verified
+            </label>
+            <span className="field__hint" style={{ display: "block", marginTop: -12, marginBottom: 16 }}>
+              Off: they get the same "Unverified" badge and verification email a self-signup gets.
+            </span>
             <button type="submit" className="btn btn--primary btn--block" disabled={submitting}>
               Add user
             </button>

@@ -16,7 +16,7 @@ from app.auth.password_reset import create_email_verification_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, get_session_user
 from app.config import get_settings
-from app.db.models import Client, Consent, User
+from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, User, UserRoleAssignment
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import set_tenant_pool
@@ -70,6 +70,24 @@ async def _load_client(db: AsyncSession, client_id: str) -> Client:
     if not client.enabled:
         raise HTTPException(400, "invalid_client")
     return client
+
+
+async def _signup_roles(db: AsyncSession, client: Client) -> list[str]:
+    if not (client.roles_enabled and client.allow_signup_role_selection):
+        return []
+    result = await db.execute(
+        select(ClientRole.name).where(ClientRole.client_id == client.client_id).order_by(ClientRole.name)
+    )
+    return [name for (name,) in result.all()]
+
+
+async def _has_client_access(db: AsyncSession, client_id: str, user_id: str) -> bool:
+    result = await db.execute(
+        select(ClientAccessGrant).where(
+            ClientAccessGrant.client_id == client_id, ClientAccessGrant.user_id == uuid.UUID(user_id)
+        )
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _branding(client: Client) -> dict:
@@ -256,10 +274,11 @@ async def signup_page(
     client = await _get_flow_client(db, redis, flow_id)
     if not client.allow_signup:
         raise HTTPException(403, "signup_disabled")
+    roles = await _signup_roles(db, client)
     return templates.TemplateResponse(
         request,
         "signup.html",
-        {"flow_id": flow_id, "client_id": client.client_id, **_branding(client), "error": None},
+        {"flow_id": flow_id, "client_id": client.client_id, **_branding(client), "roles": roles, "error": None},
     )
 
 
@@ -270,6 +289,7 @@ async def signup(
     email: str = Form(...),
     password: str = Form(...),
     confirm_password: str = Form(...),
+    role: str = Form(""),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
@@ -278,6 +298,7 @@ async def signup(
     if not client.allow_signup:
         raise HTTPException(403, "signup_disabled")
     await set_tenant_pool(db, client.user_pool_id)
+    roles = await _signup_roles(db, client)
 
     def error(message: str, status_code: int = 400):
         return templates.TemplateResponse(
@@ -287,6 +308,7 @@ async def signup(
                 "flow_id": flow_id,
                 "client_id": client.client_id,
                 **_branding(client),
+                "roles": roles,
                 "error": message,
                 "email": email,
             },
@@ -306,6 +328,15 @@ async def signup(
 
     user = User(user_pool_id=client.user_pool_id, email=email, password_hash=hash_password(password))
     db.add(user)
+    await db.flush()  # populates user.id, generated at flush time, not construction
+    if client.restrict_access:
+        # They signed up through this app's own signup page -- that's
+        # itself the act of requesting access to it, so grant it
+        # immediately rather than leaving a freshly-created account locked
+        # out of the one app it just signed up for.
+        db.add(ClientAccessGrant(client_id=client.client_id, user_id=user.id))
+    if role and role in roles:
+        db.add(UserRoleAssignment(user_id=user.id, client_id=client.client_id, role=role))
     await db.commit()
     await db.refresh(user)
     log_event("signup_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
@@ -339,6 +370,27 @@ async def _continue_flow(
 
     client = await _load_client(db, flow["client_id"])
     requested_scopes = set(flow["scope"].split()) if flow["scope"] else set()
+
+    if client.restrict_access and not await _has_client_access(db, client.client_id, user_id):
+        log_event(
+            "access_denied_not_assigned",
+            level=logging.WARNING,
+            client_id=client.client_id,
+            user_id=user_id,
+        )
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "flow_id": flow_id,
+                "client_id": client.client_id,
+                **_branding(client),
+                "allow_signup": client.allow_signup,
+                "show_totp": False,
+                "error": "Your account doesn't have access to this application. Contact an administrator.",
+            },
+            status_code=403,
+        )
 
     result = await db.execute(
         select(Consent).where(

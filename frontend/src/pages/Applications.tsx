@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Modal } from "../components/Modal";
-import { Drawer } from "../components/Drawer";
 import { Badge } from "../components/Badge";
 import { Menu } from "../components/Menu";
 import { CopyableId } from "../components/CopyableId";
@@ -9,7 +8,7 @@ import { PasswordInput } from "../components/PasswordInput";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { AppsIcon, PlusIcon } from "../components/Icons";
-import { api, ApiError, Client } from "../api";
+import { AccessGrant, api, ApiError, AppUser, Client, UserRoleRow } from "../api";
 
 const GRANT_LABELS: Record<string, string> = {
   authorization_code: "Let a person log in",
@@ -163,20 +162,40 @@ export function Applications() {
     load();
   };
 
-  const saveMtls = async (client: Client, thumbprint: string) => {
-    await api.post(`/clients/${client.client_id}/mtls`, { thumbprint });
-    show("mTLS thumbprint saved");
+  const toggleRestrictAccess = async (client: Client) => {
+    await api.post(`/clients/${client.client_id}/toggle-restrict-access`);
     load();
   };
 
-  const saveBranding = async (client: Client, logoUrl: string, brandColor: string) => {
-    await api.post(`/clients/${client.client_id}/branding`, { logo_url: logoUrl, brand_color: brandColor });
-    show("Branding saved");
+  const toggleRolesEnabled = async (client: Client) => {
+    await api.post(`/clients/${client.client_id}/toggle-roles-enabled`);
     load();
   };
 
-  const saveClientEdit = async (client: Client, name: string, uris: string, scopeValue: string) => {
-    await api.patch(`/clients/${client.client_id}`, { client_name: name, redirect_uris: uris, scope: scopeValue });
+  const toggleSignupRoleSelection = async (client: Client) => {
+    await api.post(`/clients/${client.client_id}/toggle-signup-role-selection`);
+    load();
+  };
+
+  // One button in the Manage modal saves everything at once -- the fact
+  // that this is three separate API calls under the hood is not the
+  // admin's problem.
+  const saveAll = async (
+    client: Client,
+    fields: { name: string; uris: string; scope: string; logoUrl: string; brandColor: string; thumbprint: string },
+  ) => {
+    await Promise.all([
+      api.patch(`/clients/${client.client_id}`, {
+        client_name: fields.name,
+        redirect_uris: fields.uris,
+        scope: fields.scope,
+      }),
+      api.post(`/clients/${client.client_id}/branding`, {
+        logo_url: fields.logoUrl,
+        brand_color: fields.brandColor,
+      }),
+      api.post(`/clients/${client.client_id}/mtls`, { thumbprint: fields.thumbprint }),
+    ]);
     show("Saved");
     load();
   };
@@ -456,9 +475,10 @@ export function Applications() {
         <ManageDrawer
           client={managing}
           onClose={() => setManaging(null)}
-          onSaveMtls={(t) => saveMtls(managing, t)}
-          onSaveBranding={(logoUrl, brandColor) => saveBranding(managing, logoUrl, brandColor)}
-          onSaveEdit={(name, uris, scopeValue) => saveClientEdit(managing, name, uris, scopeValue)}
+          onSave={(fields) => saveAll(managing, fields)}
+          onToggleRestrictAccess={() => toggleRestrictAccess(managing)}
+          onToggleRolesEnabled={() => toggleRolesEnabled(managing)}
+          onToggleSignupRoleSelection={() => toggleSignupRoleSelection(managing)}
           onDelete={() =>
             confirm({
               title: `Delete ${displayName(managing)}?`,
@@ -571,44 +591,83 @@ function ClientRow({
   );
 }
 
+interface SaveFields {
+  name: string;
+  uris: string;
+  scope: string;
+  logoUrl: string;
+  brandColor: string;
+  thumbprint: string;
+}
+
 function ManageDrawer({
   client,
   onClose,
-  onSaveMtls,
-  onSaveBranding,
-  onSaveEdit,
+  onSave,
   onDelete,
+  onToggleRestrictAccess,
+  onToggleRolesEnabled,
+  onToggleSignupRoleSelection,
 }: {
   client: Client;
   onClose: () => void;
-  onSaveMtls: (thumbprint: string) => void;
-  onSaveBranding: (logoUrl: string, brandColor: string) => void;
-  onSaveEdit: (name: string, redirectUris: string, scope: string) => void;
+  onSave: (fields: SaveFields) => void;
   onDelete: () => void;
+  onToggleRestrictAccess: () => void;
+  onToggleRolesEnabled: () => void;
+  onToggleSignupRoleSelection: () => void;
 }) {
+  const editable = client.registration_method !== "cimd";
+  const showBranding = editable && client.grant_types.includes("authorization_code");
+
   const [thumbprint, setThumbprint] = useState(client.mtls_cert_thumbprint ?? "");
   const [logoUrl, setLogoUrl] = useState(client.logo_url ?? "");
   const [brandColor, setBrandColor] = useState(client.brand_color ?? "");
   const [name, setName] = useState(client.client_name ?? "");
   const [redirectUris, setRedirectUris] = useState(client.redirect_uris.join("\n"));
   const [scope, setScope] = useState(client.allowed_scope);
+  const [grants, setGrants] = useState<AccessGrant[] | null>(null);
+  const [poolUsers, setPoolUsers] = useState<AppUser[]>([]);
+  const [grantUserId, setGrantUserId] = useState("");
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [roleNames, setRoleNames] = useState<string[]>([]);
+  const [userRoles, setUserRoles] = useState<UserRoleRow[] | null>(null);
+  const [newRoleName, setNewRoleName] = useState("");
+  const [roleBusy, setRoleBusy] = useState(false);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [userEmail, setUserEmail] = useState("");
   const [userPassword, setUserPassword] = useState("");
+  const [userConfirmPassword, setUserConfirmPassword] = useState("");
+  const [userEmailVerified, setUserEmailVerified] = useState(true);
   const [userError, setUserError] = useState<string | null>(null);
   const [addingUser, setAddingUser] = useState(false);
   const { show } = useToast();
 
   const onAddUser = async (e: FormEvent) => {
     e.preventDefault();
-    setAddingUser(true);
     setUserError(null);
+    if (userPassword !== userConfirmPassword) {
+      setUserError("Passwords do not match");
+      return;
+    }
+    setAddingUser(true);
     try {
-      await api.post("/users", { email: userEmail, password: userPassword, user_pool: client.pool_name });
+      const created = await api.post<{ id: string }>("/users", {
+        email: userEmail,
+        password: userPassword,
+        confirm_password: userConfirmPassword,
+        user_pool: client.pool_name,
+        email_verified: userEmailVerified,
+      });
+      if (client.restrict_access) {
+        await api.post(`/clients/${client.client_id}/access`, { user_id: created.id });
+      }
       setAddUserOpen(false);
       setUserEmail("");
       setUserPassword("");
+      setUserConfirmPassword("");
       show(`${userEmail} can now log into ${displayName(client)}`);
+      loadAccess();
     } catch (err) {
       setUserError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
@@ -616,8 +675,69 @@ function ManageDrawer({
     }
   };
 
+  const loadAccess = () => {
+    if (client.restrict_access) api.get<AccessGrant[]>(`/clients/${client.client_id}/access`).then(setGrants);
+  };
+
+  const loadRoles = () => {
+    if (!client.roles_enabled) return;
+    api.get<string[]>(`/clients/${client.client_id}/roles`).then(setRoleNames);
+    api.get<UserRoleRow[]>(`/clients/${client.client_id}/user-roles`).then(setUserRoles);
+  };
+
+  useEffect(() => {
+    api.get<AppUser[]>(`/users?pool=${encodeURIComponent(client.pool_name)}`).then(setPoolUsers);
+    loadAccess();
+    loadRoles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client.restrict_access, client.roles_enabled, client.client_id, client.pool_name]);
+
+  const grantAccess = async () => {
+    if (!grantUserId) return;
+    setGrantBusy(true);
+    try {
+      await api.post(`/clients/${client.client_id}/access`, { user_id: grantUserId });
+      setGrantUserId("");
+      loadAccess();
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const revokeAccess = async (userId: string) => {
+    await api.delete(`/clients/${client.client_id}/access/${userId}`);
+    loadAccess();
+  };
+
+  const addRole = async () => {
+    const name = newRoleName.trim();
+    if (!name) return;
+    setRoleBusy(true);
+    try {
+      await api.post(`/clients/${client.client_id}/roles`, { name });
+      setNewRoleName("");
+      loadRoles();
+    } finally {
+      setRoleBusy(false);
+    }
+  };
+
+  const removeRole = async (name: string) => {
+    await api.delete(`/clients/${client.client_id}/roles/${encodeURIComponent(name)}`);
+    loadRoles();
+  };
+
+  const toggleUserRole = async (userId: string, roleName: string, has: boolean) => {
+    if (has) {
+      await api.delete(`/users/${userId}/roles/${client.client_id}/${encodeURIComponent(roleName)}`);
+    } else {
+      await api.post(`/users/${userId}/roles`, { client_id: client.client_id, role: roleName });
+    }
+    loadRoles();
+  };
+
   return (
-    <Drawer title={displayName(client)} onClose={onClose}>
+    <Modal title={displayName(client)} wide onClose={onClose}>
       <div className="field">
         <label>Client ID</label>
         <CopyableId value={client.client_id} max={9999} />
@@ -625,6 +745,10 @@ function ManageDrawer({
       <div className="field">
         <label>Type</label>
         <span style={{ fontSize: 14 }}>{CLIENT_TYPE_LABELS[client.client_type] ?? client.client_type}</span>
+      </div>
+      <div className="field">
+        <label>Grant types</label>
+        <span style={{ fontSize: 14 }}>{client.grant_types.map((g) => GRANT_LABELS[g] ?? g).join(", ")}</span>
       </div>
       <div className="field">
         <label>Login group</label>
@@ -635,9 +759,151 @@ function ManageDrawer({
           </button>
         </div>
         <span className="field__hint">
-          Anyone added here can log into this app. Users in other login groups can't.
+          {client.restrict_access
+            ? "Users in other login groups can't log in here — and within this group, only the people granted access below can."
+            : "Anyone added here can log into this app. Users in other login groups can't."}
         </span>
       </div>
+
+      {editable && (
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={client.restrict_access} onChange={onToggleRestrictAccess} />
+            Restrict which users in this group can use this app
+          </label>
+          <span className="field__hint">
+            Off (default): everyone in <strong>{client.pool_name}</strong> can log in here. On: only
+            people explicitly granted below can — same group, same passwords, but this one app is
+            locked down to a subset. The same pattern as Okta's or Entra ID's "app assignment."
+          </span>
+
+          {client.restrict_access && (
+            <div style={{ marginTop: 12 }}>
+              {grants === null ? (
+                <p className="field__hint">Loading...</p>
+              ) : grants.length === 0 ? (
+                <p className="field__hint">No one has been granted access yet — this app is unreachable until you add someone below.</p>
+              ) : (
+                <ul style={{ listStyle: "none", margin: "0 0 10px", padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {grants.map((g) => (
+                    <li key={g.user_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13.5 }}>
+                      {g.email}
+                      <button type="button" className="btn btn--secondary" onClick={() => revokeAccess(g.user_id)}>
+                        Revoke
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <select value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">Choose a user from {client.pool_name}...</option>
+                  {poolUsers
+                    .filter((u) => !grants?.some((g) => g.user_id === u.id))
+                    .map((u) => (
+                      <option value={u.id} key={u.id}>
+                        {u.email}
+                      </option>
+                    ))}
+                </select>
+                <button type="button" className="btn btn--secondary" disabled={!grantUserId || grantBusy} onClick={grantAccess}>
+                  Grant
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {editable && (
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={client.roles_enabled} onChange={onToggleRolesEnabled} />
+            Use custom roles for this app
+          </label>
+          <span className="field__hint">
+            Off (default). On: define role names below (e.g. "editor", "billing") and assign them
+            to users. This service only reports a user's roles to your app — as a "roles" claim
+            from /userinfo — it never decides what a role is allowed to do. That's up to your app.
+          </span>
+
+          {client.roles_enabled && (
+            <div style={{ marginTop: 12 }}>
+              {client.allow_signup && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, marginBottom: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={client.allow_signup_role_selection}
+                    onChange={onToggleSignupRoleSelection}
+                  />
+                  Let people choose a role when they sign up (off by default — otherwise an admin assigns it here)
+                </label>
+              )}
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input
+                  placeholder="Role name, e.g. editor"
+                  value={newRoleName}
+                  onChange={(e) => setNewRoleName(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <button type="button" className="btn btn--secondary" disabled={!newRoleName.trim() || roleBusy} onClick={addRole}>
+                  Add role
+                </button>
+              </div>
+
+              {roleNames.length === 0 ? (
+                <p className="field__hint">No roles defined yet.</p>
+              ) : userRoles === null ? (
+                <p className="field__hint">Loading...</p>
+              ) : (
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        {roleNames.map((r) => (
+                          <th key={r}>
+                            {r}{" "}
+                            <button
+                              type="button"
+                              className="btn btn--ghost"
+                              title={`Delete role "${r}"`}
+                              onClick={() => removeRole(r)}
+                            >
+                              ×
+                            </button>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userRoles.map((row) => (
+                        <tr key={row.user_id}>
+                          <td style={{ fontSize: 13.5 }}>{row.email}</td>
+                          {roleNames.map((r) => {
+                            const has = row.roles.includes(r);
+                            return (
+                              <td key={r} style={{ textAlign: "center" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={has}
+                                  onChange={() => toggleUserRole(row.user_id, r, has)}
+                                />
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {addUserOpen && (
         <Modal title={`Add a user to ${client.pool_name}`} onClose={() => setAddUserOpen(false)}>
@@ -668,17 +934,38 @@ function ManageDrawer({
                 onChange={(e) => setUserPassword(e.target.value)}
               />
             </div>
+            <div className="field">
+              <label htmlFor="drawer-add-confirm-password">Confirm password</label>
+              <PasswordInput
+                id="drawer-add-confirm-password"
+                required
+                minLength={8}
+                value={userConfirmPassword}
+                onChange={(e) => setUserConfirmPassword(e.target.value)}
+              />
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginBottom: 16 }}>
+              <input
+                type="checkbox"
+                checked={userEmailVerified}
+                onChange={(e) => setUserEmailVerified(e.target.checked)}
+              />
+              Treat their email as already verified
+            </label>
+            <span className="field__hint" style={{ display: "block", marginTop: -12, marginBottom: 16 }}>
+              Off: they get the same "Unverified" badge and verification email a self-signup gets.
+            </span>
             <button type="submit" className="btn btn--primary btn--block" disabled={addingUser}>
               Add user
             </button>
           </form>
         </Modal>
       )}
-      {client.registration_method !== "cimd" && (
-        <details style={{ marginTop: 8 }} open>
-          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 10 }}>
-            Details
-          </summary>
+
+      {editable && (
+        <>
+          <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "20px 0" }} />
+
           <div className="field">
             <label htmlFor="edit-name">Name</label>
             <input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Unnamed application" />
@@ -703,50 +990,26 @@ function ManageDrawer({
             </label>
             <input id="edit-scope" value={scope} onChange={(e) => setScope(e.target.value)} placeholder="openid profile email" />
           </div>
-          <button
-            type="button"
-            className="btn btn--secondary"
-            onClick={() => onSaveEdit(name, redirectUris, scope)}
-          >
-            Save
-          </button>
-        </details>
-      )}
-      <div className="field">
-        <label>Grant types</label>
-        <span style={{ fontSize: 14 }}>{client.grant_types.map((g) => GRANT_LABELS[g] ?? g).join(", ")}</span>
-      </div>
 
-      {client.grant_types.includes("authorization_code") && client.registration_method !== "cimd" && (
-        <details style={{ marginTop: 8 }} open>
-          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 10 }}>
-            Branding
-          </summary>
-          <p className="field__hint" style={{ marginTop: -4 }}>
-            Applied to this app's login, signup, and consent pages — useful if you're embedding
-            them with the popup widget and want them to feel like part of your site.
-          </p>
-          <div className="field">
-            <label htmlFor="logo_url">Logo URL</label>
-            <input id="logo_url" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} placeholder="https://yourapp.com/logo.png" />
-          </div>
-          <div className="field">
-            <label htmlFor="brand_color">Brand color</label>
-            <input id="brand_color" value={brandColor} onChange={(e) => setBrandColor(e.target.value)} placeholder="#1d4ed8" />
-          </div>
-          <button type="button" className="btn btn--secondary" onClick={() => onSaveBranding(logoUrl, brandColor)}>
-            Save
-          </button>
-        </details>
-      )}
+          {showBranding && (
+            <>
+              <div className="field">
+                <label htmlFor="logo_url">
+                  Logo URL <span className="field__hint">(shown on this app's login/signup/consent pages)</span>
+                </label>
+                <input id="logo_url" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} placeholder="https://yourapp.com/logo.png" />
+              </div>
+              <div className="field">
+                <label htmlFor="brand_color">Brand color</label>
+                <input id="brand_color" value={brandColor} onChange={(e) => setBrandColor(e.target.value)} placeholder="#1d4ed8" />
+              </div>
+            </>
+          )}
 
-      {client.registration_method !== "cimd" && (
-        <details style={{ marginTop: 8 }} open>
-          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 10 }}>
-            Advanced
-          </summary>
           <div className="field">
-            <label htmlFor="mtls">mTLS certificate thumbprint</label>
+            <label htmlFor="mtls">
+              mTLS certificate thumbprint <span className="field__hint">(rarely needed)</span>
+            </label>
             <input
               id="mtls"
               value={thumbprint}
@@ -759,22 +1022,25 @@ function ManageDrawer({
               through a browser) — leave blank unless you've set up mutual TLS for it.
             </span>
           </div>
-          <button type="button" className="btn btn--secondary" onClick={() => onSaveMtls(thumbprint)}>
-            Save
-          </button>
-        </details>
-      )}
 
-      {client.registration_method !== "cimd" && (
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-          <button type="button" className="btn btn--danger" onClick={onDelete}>
-            Delete application
+          <button
+            type="button"
+            className="btn btn--primary btn--block"
+            onClick={() => onSave({ name, uris: redirectUris, scope, logoUrl, brandColor, thumbprint })}
+          >
+            Save changes
           </button>
-          <p className="field__hint" style={{ marginTop: 6 }}>
-            Blocks all logins immediately. History is kept, not erased.
-          </p>
-        </div>
+
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+            <button type="button" className="btn btn--danger" onClick={onDelete}>
+              Delete application
+            </button>
+            <p className="field__hint" style={{ marginTop: 6 }}>
+              Blocks all logins immediately. History is kept, not erased.
+            </p>
+          </div>
+        </>
       )}
-    </Drawer>
+    </Modal>
   );
 }

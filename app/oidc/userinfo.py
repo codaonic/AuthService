@@ -2,10 +2,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from jose import JWTError, jwt
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import User
+from app.db.models import Client, User, UserRoleAssignment
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
 from app.oidc.keys import get_key_manager
@@ -53,4 +54,20 @@ async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
     if user is None or user.status != "active":
         raise HTTPException(401, "invalid_token")
 
-    return {"sub": str(user.id), "email": user.email}
+    response = {"sub": str(user.id), "email": user.email}
+
+    # Only when this specific client opted into roles at all -- most
+    # clients never define any, and shouldn't see an empty "roles": []
+    # cluttering a response they never asked for.
+    client_id = claims.get("client_id")
+    if client_id:
+        client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+        if client is not None and client.roles_enabled:
+            role_names = await db.execute(
+                select(UserRoleAssignment.role).where(
+                    UserRoleAssignment.user_id == user.id, UserRoleAssignment.client_id == client_id
+                )
+            )
+            response["roles"] = [name for (name,) in role_names.all()]
+
+    return response

@@ -69,9 +69,23 @@ export interface Client {
   mtls_cert_thumbprint: string | null;
   logo_url: string | null;
   brand_color: string | null;
+  restrict_access: boolean;
+  roles_enabled: boolean;
+  allow_signup_role_selection: boolean;
   cimd_fetched_at: string | null;
   pool_name: string;
   client_secret?: string;
+}
+
+export interface AccessGrant {
+  user_id: string;
+  email: string;
+}
+
+export interface UserRoleRow {
+  user_id: string;
+  email: string;
+  roles: string[];
 }
 
 export interface AppUser {

@@ -11,15 +11,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.auth import get_current_admin
 from app.audit import client_ip, log_event, record_failed_login, recent_events
-from app.auth.password_reset import create_password_reset_token
+from app.auth.password_reset import create_email_verification_token, create_password_reset_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, delete_session, revoke_all_sessions_for_user
 from app.config import get_settings
-from app.db.models import AdminUser, Client, Resource, User, UserPool
+from app.db.models import (
+    AdminUser,
+    Client,
+    ClientAccessGrant,
+    ClientRole,
+    Resource,
+    User,
+    UserPool,
+    UserRoleAssignment,
+)
 from app.db.pools import get_or_create_pool
 from app.db.redis_client import get_redis
 from app.db.session import get_db
-from app.email import send_password_reset_email
+from app.email import send_password_reset_email, send_verification_email
 from app.middleware.rate_limit import limiter
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
@@ -58,6 +67,9 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "mtls_cert_thumbprint": client.mtls_cert_thumbprint,
         "logo_url": client.logo_url,
         "brand_color": client.brand_color,
+        "restrict_access": client.restrict_access,
+        "roles_enabled": client.roles_enabled,
+        "allow_signup_role_selection": client.allow_signup_role_selection,
         "cimd_fetched_at": client.cimd_fetched_at.isoformat() if client.cimd_fetched_at else None,
         "pool_name": pool_name,
     }
@@ -451,6 +463,266 @@ async def api_toggle_client_enabled(
     return _client_json(client, pool.name)
 
 
+@router.post("/clients/{client_id}/toggle-restrict-access")
+async def api_toggle_client_restrict_access(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.restrict_access = not client.restrict_access
+    await db.commit()
+    log_event(
+        "client_restrict_access_" + ("enabled" if client.restrict_access else "disabled"),
+        client_id=client_id,
+        admin_id=str(admin.id),
+    )
+    pool = await db.get(UserPool, client.user_pool_id)
+    return _client_json(client, pool.name)
+
+
+@router.get("/clients/{client_id}/access")
+async def api_list_client_access(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(User.id, User.email)
+        .join(ClientAccessGrant, ClientAccessGrant.user_id == User.id)
+        .where(ClientAccessGrant.client_id == client_id, User.deleted_at.is_(None))
+        .order_by(User.email)
+    )
+    return [{"user_id": str(user_id), "email": email} for user_id, email in result.all()]
+
+
+class ClientAccessBody(BaseModel):
+    user_id: str
+
+
+@router.post("/clients/{client_id}/access", status_code=201)
+async def api_grant_client_access(
+    client_id: str, body: ClientAccessBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    user = await db.get(User, uuid.UUID(body.user_id))
+    if user is None or user.user_pool_id != client.user_pool_id:
+        raise HTTPException(400, "That user isn't in this app's login group")
+
+    existing = await db.execute(
+        select(ClientAccessGrant).where(
+            ClientAccessGrant.client_id == client_id, ClientAccessGrant.user_id == user.id
+        )
+    )
+    if existing.scalar_one_or_none() is None:
+        db.add(ClientAccessGrant(client_id=client_id, user_id=user.id))
+        await db.commit()
+        log_event("client_access_granted", client_id=client_id, user_id=str(user.id), admin_id=str(admin.id))
+    return {"user_id": str(user.id), "email": user.email}
+
+
+@router.delete("/clients/{client_id}/access/{user_id}", status_code=204)
+async def api_revoke_client_access(
+    client_id: str, user_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(ClientAccessGrant).where(
+            ClientAccessGrant.client_id == client_id, ClientAccessGrant.user_id == uuid.UUID(user_id)
+        )
+    )
+    grant = result.scalar_one_or_none()
+    if grant is None:
+        raise HTTPException(404, "not_granted")
+    await db.delete(grant)
+    await db.commit()
+    log_event("client_access_revoked", client_id=client_id, user_id=user_id, admin_id=str(admin.id))
+
+
+# --- Roles ---
+# This service only stores and reports role assignments (see the "roles"
+# claim added to /userinfo in app/oidc/userinfo.py) -- it never decides
+# what a role is allowed to do. That's entirely up to the application.
+
+
+@router.post("/clients/{client_id}/toggle-roles-enabled")
+async def api_toggle_client_roles_enabled(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.roles_enabled = not client.roles_enabled
+    await db.commit()
+    pool = await db.get(UserPool, client.user_pool_id)
+    return _client_json(client, pool.name)
+
+
+@router.post("/clients/{client_id}/toggle-signup-role-selection")
+async def api_toggle_signup_role_selection(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.allow_signup_role_selection = not client.allow_signup_role_selection
+    await db.commit()
+    pool = await db.get(UserPool, client.user_pool_id)
+    return _client_json(client, pool.name)
+
+
+@router.get("/clients/{client_id}/roles")
+async def api_list_client_roles(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(ClientRole.name).where(ClientRole.client_id == client_id).order_by(ClientRole.name)
+    )
+    return [name for (name,) in result.all()]
+
+
+class CreateRoleBody(BaseModel):
+    name: str
+
+
+@router.post("/clients/{client_id}/roles", status_code=201)
+async def api_create_client_role(
+    client_id: str, body: CreateRoleBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Role name can't be empty")
+
+    existing = await db.execute(
+        select(ClientRole).where(ClientRole.client_id == client_id, ClientRole.name == name)
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(400, f"Role '{name}' already exists for this app")
+
+    db.add(ClientRole(client_id=client_id, name=name))
+    await db.commit()
+    return {"name": name}
+
+
+@router.delete("/clients/{client_id}/roles/{name}", status_code=204)
+async def api_delete_client_role(
+    client_id: str, name: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(ClientRole).where(ClientRole.client_id == client_id, ClientRole.name == name)
+    )
+    role = result.scalar_one_or_none()
+    if role is None:
+        raise HTTPException(404, "unknown_role")
+
+    assignments = await db.execute(
+        select(UserRoleAssignment).where(
+            UserRoleAssignment.client_id == client_id, UserRoleAssignment.role == name
+        )
+    )
+    for assignment in assignments.scalars().all():
+        await db.delete(assignment)
+    await db.delete(role)
+    await db.commit()
+    log_event("client_role_deleted", client_id=client_id, role=name, admin_id=str(admin.id))
+
+
+@router.get("/clients/{client_id}/user-roles")
+async def api_list_client_user_roles(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    """Every user in this client's login group, with the role names (from
+    this client's own roles) each currently holds -- the data behind the
+    admin's role-assignment grid.
+    """
+    client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+
+    users = await db.execute(
+        select(User)
+        .where(User.user_pool_id == client.user_pool_id, User.deleted_at.is_(None))
+        .order_by(User.email)
+    )
+    assignments = await db.execute(
+        select(UserRoleAssignment.user_id, UserRoleAssignment.role).where(
+            UserRoleAssignment.client_id == client_id
+        )
+    )
+    roles_by_user: dict[uuid.UUID, list[str]] = {}
+    for user_id, role in assignments.all():
+        roles_by_user.setdefault(user_id, []).append(role)
+
+    return [
+        {"user_id": str(u.id), "email": u.email, "roles": roles_by_user.get(u.id, [])}
+        for u in users.scalars().all()
+    ]
+
+
+class AssignRoleBody(BaseModel):
+    client_id: str
+    role: str
+
+
+@router.post("/users/{user_id}/roles", status_code=201)
+async def api_assign_user_role(
+    user_id: str, body: AssignRoleBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is None:
+        raise HTTPException(404, "unknown_user")
+    role = (
+        await db.execute(
+            select(ClientRole).where(ClientRole.client_id == body.client_id, ClientRole.name == body.role)
+        )
+    ).scalar_one_or_none()
+    if role is None:
+        raise HTTPException(404, "unknown_role")
+
+    role_client = (
+        await db.execute(select(Client).where(Client.client_id == body.client_id))
+    ).scalar_one_or_none()
+    if role_client is None or role_client.user_pool_id != user.user_pool_id:
+        raise HTTPException(400, "That role belongs to an app outside this user's login group")
+
+    existing = await db.execute(
+        select(UserRoleAssignment).where(
+            UserRoleAssignment.user_id == user.id,
+            UserRoleAssignment.client_id == body.client_id,
+            UserRoleAssignment.role == body.role,
+        )
+    )
+    if existing.scalar_one_or_none() is None:
+        db.add(UserRoleAssignment(user_id=user.id, client_id=body.client_id, role=body.role))
+        await db.commit()
+        log_event("user_role_assigned", user_id=user_id, client_id=body.client_id, role=body.role, admin_id=str(admin.id))
+    return {"user_id": user_id, "client_id": body.client_id, "role": body.role}
+
+
+@router.delete("/users/{user_id}/roles/{client_id}/{role}", status_code=204)
+async def api_unassign_user_role(
+    user_id: str, client_id: str, role: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(UserRoleAssignment).where(
+            UserRoleAssignment.user_id == uuid.UUID(user_id),
+            UserRoleAssignment.client_id == client_id,
+            UserRoleAssignment.role == role,
+        )
+    )
+    assignment = result.scalar_one_or_none()
+    if assignment is None:
+        raise HTTPException(404, "not_assigned")
+    await db.delete(assignment)
+    await db.commit()
+    log_event("user_role_unassigned", user_id=user_id, client_id=client_id, role=role, admin_id=str(admin.id))
+
+
 # --- Users ---
 
 
@@ -468,21 +740,45 @@ async def api_list_users(
 class CreateUserBody(BaseModel):
     email: str
     password: str
+    confirm_password: str
     user_pool: str = "default"
+    email_verified: bool = True
 
 
 @router.post("/users", status_code=201)
 async def api_create_user(
-    body: CreateUserBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    body: CreateUserBody,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
+    if body.password != body.confirm_password:
+        raise HTTPException(400, "Passwords do not match")
+    if len(body.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+
     pool = await get_or_create_pool(db, body.user_pool)
     existing = await db.execute(select(User).where(User.email == body.email, User.user_pool_id == pool.id))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(400, f"'{body.email}' already exists in pool '{body.user_pool}'")
 
-    user = User(user_pool_id=pool.id, email=body.email, password_hash=hash_password(body.password))
+    user = User(
+        user_pool_id=pool.id,
+        email=body.email,
+        password_hash=hash_password(body.password),
+        # An admin vouching for someone is itself a form of verification --
+        # unlike self-service signup, which always starts unverified and
+        # sends a confirmation email (see below).
+        email_verified=body.email_verified,
+    )
     db.add(user)
     await db.commit()
+    await db.refresh(user)
+
+    if not body.email_verified:
+        token = await create_email_verification_token(redis, str(user.id))
+        await send_verification_email(user.email, token)
+
     return _user_json(user, pool.name)
 
 

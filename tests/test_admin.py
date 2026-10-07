@@ -180,6 +180,120 @@ async def test_toggle_client_signup(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_toggle_client_restrict_access(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="default")
+
+    resp = await client.post("/admin/api/clients/acme-web/toggle-restrict-access")
+    assert resp.status_code == 200
+    assert resp.json()["restrict_access"] is True
+
+
+@pytest.mark.asyncio
+async def test_cannot_grant_access_to_a_user_from_a_different_pool(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme", restrict_access=True)
+    outsider = await create_user(db_session, email="outsider@example.com", pool_name="other-pool")
+
+    resp = await client.post("/admin/api/clients/acme-web/access", json={"user_id": str(outsider.id)})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_grant_and_list_and_revoke_client_access(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme", restrict_access=True)
+    user = await create_user(db_session, email="member@example.com", pool_name="acme")
+
+    resp = await client.post("/admin/api/clients/acme-web/access", json={"user_id": str(user.id)})
+    assert resp.status_code == 201
+
+    listing = await client.get("/admin/api/clients/acme-web/access")
+    assert listing.json() == [{"user_id": str(user.id), "email": "member@example.com"}]
+
+    resp = await client.delete(f"/admin/api/clients/acme-web/access/{user.id}")
+    assert resp.status_code == 204
+
+    listing = await client.get("/admin/api/clients/acme-web/access")
+    assert listing.json() == []
+
+
+@pytest.mark.asyncio
+async def test_create_list_and_delete_client_role(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme")
+
+    resp = await client.post("/admin/api/clients/acme-web/roles", json={"name": "editor"})
+    assert resp.status_code == 201
+    assert resp.json() == {"name": "editor"}
+
+    # Duplicate name for the same app is rejected.
+    resp = await client.post("/admin/api/clients/acme-web/roles", json={"name": "editor"})
+    assert resp.status_code == 400
+
+    listing = await client.get("/admin/api/clients/acme-web/roles")
+    assert listing.json() == ["editor"]
+
+    resp = await client.delete("/admin/api/clients/acme-web/roles/editor")
+    assert resp.status_code == 204
+    listing = await client.get("/admin/api/clients/acme-web/roles")
+    assert listing.json() == []
+
+
+@pytest.mark.asyncio
+async def test_assign_and_unassign_user_role(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme")
+    user = await create_user(db_session, email="member@example.com", pool_name="acme")
+    await client.post("/admin/api/clients/acme-web/roles", json={"name": "editor"})
+
+    resp = await client.post(f"/admin/api/users/{user.id}/roles", json={"client_id": "acme-web", "role": "editor"})
+    assert resp.status_code == 201
+
+    listing = await client.get("/admin/api/clients/acme-web/user-roles")
+    row = next(r for r in listing.json() if r["user_id"] == str(user.id))
+    assert row["roles"] == ["editor"]
+
+    resp = await client.delete(f"/admin/api/users/{user.id}/roles/acme-web/editor")
+    assert resp.status_code == 204
+    listing = await client.get("/admin/api/clients/acme-web/user-roles")
+    row = next(r for r in listing.json() if r["user_id"] == str(user.id))
+    assert row["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_cannot_assign_a_role_from_a_different_login_group(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme")
+    outsider = await create_user(db_session, email="outsider@example.com", pool_name="other-pool")
+    await client.post("/admin/api/clients/acme-web/roles", json={"name": "editor"})
+
+    resp = await client.post(
+        f"/admin/api/users/{outsider.id}/roles", json={"client_id": "acme-web", "role": "editor"}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_role_removes_its_assignments(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme")
+    user = await create_user(db_session, email="member@example.com", pool_name="acme")
+    await client.post("/admin/api/clients/acme-web/roles", json={"name": "editor"})
+    await client.post(f"/admin/api/users/{user.id}/roles", json={"client_id": "acme-web", "role": "editor"})
+
+    resp = await client.delete("/admin/api/clients/acme-web/roles/editor")
+    assert resp.status_code == 204
+
+    from sqlalchemy import select
+
+    from app.db.models import UserRoleAssignment
+
+    remaining = await db_session.execute(select(UserRoleAssignment))
+    assert remaining.scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_edit_client(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="acme-web")
@@ -224,12 +338,61 @@ async def test_create_user_via_admin(client, db_session):
 
     resp = await client.post(
         "/admin/api/users",
-        json={"email": "newuser@example.com", "password": "s3cret-password!", "user_pool": "default"},
+        json={
+            "email": "newuser@example.com",
+            "password": "s3cret-password!",
+            "confirm_password": "s3cret-password!",
+            "user_pool": "default",
+        },
     )
     assert resp.status_code == 201
 
     result = await db_session.execute(select(User).where(User.email == "newuser@example.com"))
-    assert result.scalar_one() is not None
+    saved = result.scalar_one()
+    assert saved is not None
+    # Defaults to verified -- an admin adding someone is itself vouching for them.
+    assert saved.email_verified is True
+
+
+@pytest.mark.asyncio
+async def test_create_user_rejects_mismatched_passwords(client, db_session):
+    await _login_admin(client, db_session)
+
+    resp = await client.post(
+        "/admin/api/users",
+        json={
+            "email": "newuser@example.com",
+            "password": "s3cret-password!",
+            "confirm_password": "something-else!",
+            "user_pool": "default",
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_user_unverified_sends_verification_email(client, db_session, monkeypatch):
+    await _login_admin(client, db_session)
+
+    sent = {}
+
+    async def fake_send(email, token):
+        sent["email"] = email
+
+    monkeypatch.setattr("app.admin.api.send_verification_email", fake_send)
+
+    resp = await client.post(
+        "/admin/api/users",
+        json={
+            "email": "unverified@example.com",
+            "password": "s3cret-password!",
+            "confirm_password": "s3cret-password!",
+            "user_pool": "default",
+            "email_verified": False,
+        },
+    )
+    assert resp.status_code == 201
+    assert sent.get("email") == "unverified@example.com"
 
 
 @pytest.mark.asyncio

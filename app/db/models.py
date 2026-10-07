@@ -1,7 +1,19 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -71,6 +83,23 @@ class Client(Base):
     # logo_url is rendered as an <img src>, brand_color as a CSS color value.
     logo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     brand_color: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Off (default): every user in this client's login group can log into
+    # it -- today's behavior, unchanged. On: only users with a matching
+    # ClientAccessGrant row may, even though they're still in the same
+    # group (same shared identity/password) as everyone else. This is the
+    # identity-vs-authorization split real IdPs call "app assignment"
+    # (Okta's per-app user assignment, Entra ID's "assignment required").
+    restrict_access: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Off (default) everywhere, set per application: this service only
+    # defines roles and reports them (see ClientRole / UserRoleAssignment,
+    # and the "roles" claim added to /userinfo) -- it never enforces what a
+    # role can do. That's deliberately left to the application itself.
+    roles_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Off (default): new self-signups get no role, an admin assigns one
+    # later. On: the signup page itself offers a role picker from this
+    # client's defined roles. Meaningless unless roles_enabled and
+    # allow_signup are both also on.
+    allow_signup_role_selection: Mapped[bool] = mapped_column(Boolean, default=False)
     # Soft delete: set instead of removing the row, since refresh tokens,
     # consents, and audit history reference this client_id. Deleted clients
     # are also force-disabled (see api_delete_client) and filtered out of
@@ -110,6 +139,56 @@ class Consent(Base):
     client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"))
     scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClientAccessGrant(Base):
+    """Who may log into a `restrict_access` client -- the per-app allow-list
+    layered on top of a shared login group, same idea as Okta/Entra ID "app
+    assignment". Irrelevant for a client with restrict_access=False, where
+    anyone in the group can log in without needing a row here.
+    """
+
+    __tablename__ = "client_access_grants"
+    __table_args__ = (UniqueConstraint("client_id", "user_id", name="uq_client_access_grants_client_user"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClientRole(Base):
+    """A role name an admin defines for one application -- just the string
+    itself, no separate id; (client_id, name) together are the identity.
+    This service only stores and reports these (see UserRoleAssignment and
+    /userinfo's "roles" claim) -- what each role is allowed to do is
+    entirely up to that application, not something enforced here.
+    """
+
+    __tablename__ = "client_roles"
+
+    client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"), primary_key=True)
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserRoleAssignment(Base):
+    """One user holding one role (by name) on one client -- a user can hold
+    several roles on the same client at once. (client_id, role) must be a
+    role that client has defined (see ClientRole).
+    """
+
+    __tablename__ = "user_role_assignments"
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_id", "role", name="uq_user_role_assignments"),
+        ForeignKeyConstraint(["client_id", "role"], ["client_roles.client_id", "client_roles.name"]),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    client_id: Mapped[str] = mapped_column(String, index=True)
+    role: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class RefreshToken(Base):
