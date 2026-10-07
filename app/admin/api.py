@@ -283,12 +283,18 @@ async def api_create_resource(
 
 @router.get("/clients")
 async def api_list_clients(admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Client, UserPool.name).join(UserPool).order_by(Client.client_id))
+    result = await db.execute(
+        select(Client, UserPool.name)
+        .join(UserPool)
+        .where(Client.deleted_at.is_(None))
+        .order_by(Client.client_id)
+    )
     return [_client_json(c, pool_name) for c, pool_name in result.all()]
 
 
 class CreateClientBody(BaseModel):
     client_id: str
+    client_name: str = ""
     client_type: str
     redirect_uris: str = ""
     grant_types: list[str] = []
@@ -315,6 +321,7 @@ async def api_create_client(
     client = Client(
         user_pool_id=pool.id,
         client_id=body.client_id,
+        client_name=body.client_name.strip() or None,
         client_secret_hash=hash_password(client_secret) if client_secret else None,
         client_type=body.client_type,
         redirect_uris=[u.strip() for u in body.redirect_uris.splitlines() if u.strip()],
@@ -331,6 +338,42 @@ async def api_create_client(
 
     result = {**_client_json(client, pool.name), "client_secret": client_secret}
     return result
+
+
+class EditClientBody(BaseModel):
+    client_name: str = ""
+    redirect_uris: str = ""
+    scope: str = ""
+
+
+@router.patch("/clients/{client_id}")
+async def api_edit_client(
+    client_id: str, body: EditClientBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Client).where(Client.client_id == client_id, Client.deleted_at.is_(None)))
+    client = result.scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.client_name = body.client_name.strip() or None
+    client.redirect_uris = [u.strip() for u in body.redirect_uris.splitlines() if u.strip()]
+    client.allowed_scope = body.scope
+    await db.commit()
+    pool = await db.get(UserPool, client.user_pool_id)
+    return _client_json(client, pool.name)
+
+
+@router.delete("/clients/{client_id}", status_code=204)
+async def api_delete_client(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Client).where(Client.client_id == client_id, Client.deleted_at.is_(None)))
+    client = result.scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.deleted_at = datetime.now(timezone.utc)
+    client.enabled = False
+    await db.commit()
+    log_event("client_deleted", client_id=client_id, admin_id=str(admin.id))
 
 
 class MtlsBody(BaseModel):
@@ -415,7 +458,7 @@ async def api_toggle_client_enabled(
 async def api_list_users(
     pool: str | None = None, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    query = select(User, UserPool.name).join(UserPool).order_by(User.email)
+    query = select(User, UserPool.name).join(UserPool).where(User.deleted_at.is_(None)).order_by(User.email)
     if pool:
         query = query.where(UserPool.name == pool)
     result = await db.execute(query)
@@ -464,6 +507,50 @@ async def api_toggle_user_status(
 
     pool = await db.get(UserPool, user.user_pool_id)
     return _user_json(user, pool.name)
+
+
+class EditUserBody(BaseModel):
+    email: str
+
+
+@router.patch("/users/{user_id}")
+async def api_edit_user(
+    user_id: str, body: EditUserBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is None or user.deleted_at is not None:
+        raise HTTPException(404, "unknown_user")
+
+    existing = await db.execute(
+        select(User).where(
+            User.email == body.email, User.user_pool_id == user.user_pool_id, User.id != user.id
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(400, f"'{body.email}' already exists in this login group")
+
+    user.email = body.email
+    await db.commit()
+    pool = await db.get(UserPool, user.user_pool_id)
+    return _user_json(user, pool.name)
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def api_delete_user(
+    user_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is None:
+        raise HTTPException(404, "unknown_user")
+    user.deleted_at = datetime.now(timezone.utc)
+    user.status = "disabled"
+    await db.commit()
+    await revoke_all_sessions_for_user(redis, str(user.id))
+    await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
+    log_event("user_deleted", user_id=str(user.id), email=user.email, admin_id=str(admin.id))
 
 
 @router.post("/users/{user_id}/sign-out", status_code=204)

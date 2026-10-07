@@ -35,6 +35,8 @@ class User(Base):
     mfa_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="active")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Soft delete -- see Client.deleted_at for why this isn't a hard DELETE.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -69,6 +71,11 @@ class Client(Base):
     # logo_url is rendered as an <img src>, brand_color as a CSS color value.
     logo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     brand_color: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Soft delete: set instead of removing the row, since refresh tokens,
+    # consents, and audit history reference this client_id. Deleted clients
+    # are also force-disabled (see api_delete_client) and filtered out of
+    # every admin listing -- this column only matters for data retention.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

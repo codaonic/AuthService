@@ -180,6 +180,45 @@ async def test_toggle_client_signup(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_edit_client(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web")
+
+    resp = await client.patch(
+        "/admin/api/clients/acme-web",
+        json={"client_name": "Acme Web", "redirect_uris": "https://acme.example.com/cb", "scope": "openid email"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["client_name"] == "Acme Web"
+    assert body["redirect_uris"] == ["https://acme.example.com/cb"]
+    assert body["allowed_scope"] == "openid email"
+
+
+@pytest.mark.asyncio
+async def test_delete_client_is_soft_delete_and_disables_it(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web")
+
+    resp = await client.delete("/admin/api/clients/acme-web")
+    assert resp.status_code == 204
+
+    # Hidden from the admin listing...
+    listing = await client.get("/admin/api/clients")
+    assert all(c["client_id"] != "acme-web" for c in listing.json())
+
+    # ...but the row still exists, soft-deleted and disabled, not erased.
+    result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
+    saved = result.scalar_one()
+    assert saved.deleted_at is not None
+    assert saved.enabled is False
+
+    # Deleting again (already gone) is a 404, not a silent no-op.
+    resp = await client.delete("/admin/api/clients/acme-web")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_create_user_via_admin(client, db_session):
     await _login_admin(client, db_session)
 
@@ -191,6 +230,37 @@ async def test_create_user_via_admin(client, db_session):
 
     result = await db_session.execute(select(User).where(User.email == "newuser@example.com"))
     assert result.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_edit_user_email(client, db_session):
+    await _login_admin(client, db_session)
+    user = await create_user(db_session, email="old@example.com")
+
+    resp = await client.patch(f"/admin/api/users/{user.id}", json={"email": "new@example.com"})
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "new@example.com"
+
+    # Can't collide with another user already in the same login group.
+    other = await create_user(db_session, email="taken@example.com")
+    resp = await client.patch(f"/admin/api/users/{user.id}", json={"email": other.email})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_user_is_soft_delete_and_disables_it(client, db_session):
+    await _login_admin(client, db_session)
+    user = await create_user(db_session, email="gone@example.com")
+
+    resp = await client.delete(f"/admin/api/users/{user.id}")
+    assert resp.status_code == 204
+
+    listing = await client.get("/admin/api/users")
+    assert all(u["email"] != "gone@example.com" for u in listing.json())
+
+    await db_session.refresh(user)
+    assert user.deleted_at is not None
+    assert user.status == "disabled"
 
 
 @pytest.mark.asyncio

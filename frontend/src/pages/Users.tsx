@@ -1,6 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
 import { Badge } from "../components/Badge";
+import { Menu } from "../components/Menu";
+import { useConfirmDialog } from "../components/ConfirmDialog";
+import { useToast } from "../components/ToastProvider";
 import { PasswordInput } from "../components/PasswordInput";
 import { PlusIcon, UsersIcon } from "../components/Icons";
 import { api, ApiError, AppUser, Pool } from "../api";
@@ -15,6 +18,12 @@ export function Users() {
   const [userPool, setUserPool] = useState("default");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [editing, setEditing] = useState<AppUser | null>(null);
+  const [editEmail, setEditEmail] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const { confirm, dialog } = useConfirmDialog();
+  const { show } = useToast();
 
   const load = (pool = poolFilter) =>
     api.get<AppUser[]>(`/users${pool ? `?pool=${encodeURIComponent(pool)}` : ""}`).then(setUsers);
@@ -54,10 +63,34 @@ export function Users() {
 
   const signOut = async (id: string) => {
     await api.post(`/users/${id}/sign-out`);
+    show("Signed out everywhere");
   };
 
   const sendReset = async (id: string) => {
     await api.post(`/users/${id}/send-reset`);
+    show("Password reset email sent");
+  };
+
+  const deleteUser = async (u: AppUser) => {
+    await api.delete(`/users/${u.id}`);
+    show(`${u.email} deleted`);
+    load();
+  };
+
+  const onEditSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editing) return;
+    setEditSubmitting(true);
+    setEditError(null);
+    try {
+      await api.patch(`/users/${editing.id}`, { email: editEmail });
+      setEditing(null);
+      load();
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setEditSubmitting(false);
+    }
   };
 
   return (
@@ -128,12 +161,33 @@ export function Users() {
                   <button type="button" className="btn btn--secondary" onClick={() => toggleStatus(u.id)}>
                     {u.status === "active" ? "Disable" : "Re-enable"}
                   </button>
-                  <button type="button" className="btn btn--secondary" onClick={() => signOut(u.id)}>
-                    Sign out everywhere
-                  </button>
-                  <button type="button" className="btn btn--secondary" onClick={() => sendReset(u.id)}>
-                    Send password reset
-                  </button>
+                  <Menu
+                    items={[
+                      {
+                        label: "Edit email",
+                        onSelect: () => {
+                          setEditEmail(u.email);
+                          setEditError(null);
+                          setEditing(u);
+                        },
+                      },
+                      { label: "Sign out everywhere", onSelect: () => signOut(u.id) },
+                      { label: "Send password reset", onSelect: () => sendReset(u.id) },
+                      {
+                        label: "Delete",
+                        danger: true,
+                        onSelect: () =>
+                          confirm({
+                            title: `Delete ${u.email}?`,
+                            description:
+                              "Removes them from this list and immediately blocks all logins and revokes their sessions. Their history is kept, not erased — contact support if you ever need it restored.",
+                            danger: true,
+                            confirmLabel: "Delete",
+                            onConfirm: () => deleteUser(u),
+                          }),
+                      },
+                    ]}
+                  />
                 </div>
               </td>
             </tr>
@@ -187,6 +241,31 @@ export function Users() {
           </form>
         </Modal>
       )}
+
+      {editing && (
+        <Modal title={`Edit ${editing.email}`} onClose={() => setEditing(null)}>
+          {editError && <div className="alert alert--error">{editError}</div>}
+          <form onSubmit={onEditSubmit}>
+            <div className="field">
+              <label htmlFor="edit-email">Email</label>
+              <input
+                id="edit-email"
+                type="email"
+                required
+                autoFocus
+                value={editEmail}
+                onChange={(e) => setEditEmail(e.target.value)}
+              />
+              <span className="field__hint">Their login group ({editing.pool_name}) stays the same.</span>
+            </div>
+            <button type="submit" className="btn btn--primary btn--block" disabled={editSubmitting}>
+              Save
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {dialog}
     </>
   );
 }

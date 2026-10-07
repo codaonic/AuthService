@@ -5,10 +5,11 @@ import { Badge } from "../components/Badge";
 import { Menu } from "../components/Menu";
 import { CopyableId } from "../components/CopyableId";
 import { EmptyState } from "../components/EmptyState";
+import { PasswordInput } from "../components/PasswordInput";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { AppsIcon, PlusIcon } from "../components/Icons";
-import { api, ApiError, Client, Pool } from "../api";
+import { api, ApiError, Client } from "../api";
 
 const GRANT_LABELS: Record<string, string> = {
   authorization_code: "Let a person log in",
@@ -16,8 +17,13 @@ const GRANT_LABELS: Record<string, string> = {
   client_credentials: "Talk directly to the server with no person involved",
 };
 
+const CLIENT_TYPE_LABELS: Record<string, string> = {
+  confidential: "Confidential — runs on your own server, can keep a secret safely",
+  public: "Public — runs in a browser or on a device, can't keep a secret safely",
+};
+
 type Preset = "website" | "native" | "service";
-type Sharing = "shared" | "isolated" | "custom";
+type Sharing = "shared" | "separate";
 
 const PRESET_DEFAULTS: Record<Preset, { clientType: string; applicationType: string; grants: string[] }> = {
   website: { clientType: "confidential", applicationType: "web", grants: ["authorization_code", "refresh_token"] },
@@ -27,7 +33,6 @@ const PRESET_DEFAULTS: Record<Preset, { clientType: string; applicationType: str
 
 export function Applications() {
   const [clients, setClients] = useState<Client[] | null>(null);
-  const [pools, setPools] = useState<Pool[]>([]);
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [created, setCreated] = useState<Client | null>(null);
@@ -41,7 +46,7 @@ export function Applications() {
   const [clientId, setClientId] = useState("");
   const [redirectUris, setRedirectUris] = useState("");
   const [sharing, setSharing] = useState<Sharing>("shared");
-  const [customPool, setCustomPool] = useState("");
+  const [sharedPool, setSharedPool] = useState("");
   const [allowSignup, setAllowSignup] = useState(true);
   const [clientType, setClientType] = useState("confidential");
   const [grants, setGrants] = useState<string[]>(PRESET_DEFAULTS.website.grants);
@@ -53,7 +58,6 @@ export function Applications() {
 
   useEffect(() => {
     load();
-    api.get<Pool[]>("/pools").then(setPools);
   }, []);
 
   // Keep the drawer in sync with the underlying row after a toggle/save.
@@ -61,6 +65,30 @@ export function Applications() {
     if (managing) setManaging((prev) => clients?.find((c) => c.id === prev?.id) ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clients]);
+
+  // Which existing login groups are available to join, described by the
+  // app(s) already using them -- so picking one reads as "sign in with the
+  // same account as App X" instead of naming an abstract group.
+  const sharablePools = useMemo(() => {
+    if (!clients) return [];
+    const byPool = new Map<string, string[]>();
+    for (const c of clients) {
+      const label = c.client_name || "Unnamed application";
+      byPool.set(c.pool_name, [...(byPool.get(c.pool_name) ?? []), label]);
+    }
+    return Array.from(byPool.entries()).map(([poolName, names]) => ({ poolName, label: names.join(", ") }));
+  }, [clients]);
+
+  // Default to "separate" when there's nothing yet to share with, and once
+  // apps exist, default the picker to the first one.
+  useEffect(() => {
+    if (sharablePools.length === 0) {
+      setSharing("separate");
+    } else if (!sharedPool) {
+      setSharedPool(sharablePools[0].poolName);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharablePools]);
 
   const filtered = useMemo(() => {
     if (!clients) return clients;
@@ -83,9 +111,8 @@ export function Applications() {
   };
 
   const resolvedPool = () => {
-    if (sharing === "shared") return "default";
-    if (sharing === "isolated") return clientId.trim() || "default";
-    return customPool.trim() || "default";
+    if (sharing === "separate") return clientId.trim() || "default";
+    return sharedPool || sharablePools[0]?.poolName || "default";
   };
 
   const toggleGrant = (g: string) => {
@@ -99,6 +126,7 @@ export function Applications() {
     try {
       const result = await api.post<Client>("/clients", {
         client_id: clientId,
+        client_name: clientId,
         client_type: clientType,
         redirect_uris: redirectUris,
         grant_types: grants,
@@ -144,6 +172,19 @@ export function Applications() {
   const saveBranding = async (client: Client, logoUrl: string, brandColor: string) => {
     await api.post(`/clients/${client.client_id}/branding`, { logo_url: logoUrl, brand_color: brandColor });
     show("Branding saved");
+    load();
+  };
+
+  const saveClientEdit = async (client: Client, name: string, uris: string, scopeValue: string) => {
+    await api.patch(`/clients/${client.client_id}`, { client_name: name, redirect_uris: uris, scope: scopeValue });
+    show("Saved");
+    load();
+  };
+
+  const deleteClient = async (client: Client) => {
+    await api.delete(`/clients/${client.client_id}`);
+    show(`${displayName(client)} deleted`);
+    setManaging(null);
     load();
   };
 
@@ -224,6 +265,16 @@ export function Applications() {
                       onConfirm: () => toggleEnabled(c),
                     })
                   }
+                  onDelete={() =>
+                    confirm({
+                      title: `Delete ${displayName(c)}?`,
+                      description:
+                        "Removes it from this list and immediately blocks all logins and token refreshes. Its history is kept, not erased — contact support if you ever need it restored.",
+                      danger: true,
+                      confirmLabel: "Delete",
+                      onConfirm: () => deleteClient(c),
+                    })
+                  }
                 />
               ))}
             </tbody>
@@ -278,43 +329,48 @@ export function Applications() {
                 <SharingCard
                   checked={sharing === "shared"}
                   onSelect={() => setSharing("shared")}
-                  title="Share logins with my other apps"
-                  desc="One account works everywhere — recommended for most apps in the same company. Also covers AI assistants that connect automatically."
+                  disabled={sharablePools.length === 0}
+                  title="Use accounts from an existing application (single sign-on)"
+                  desc={
+                    sharablePools.length > 0
+                      ? "One account works for both — picking a person's existing login, not creating a new kind of account."
+                      : "No other applications yet — add this one as separate, then new apps can share its accounts."
+                  }
                 />
+                {sharing === "shared" && sharablePools.length > 0 && (
+                  <select
+                    style={{ marginLeft: 26, maxWidth: 320 }}
+                    value={sharedPool || sharablePools[0].poolName}
+                    onChange={(e) => setSharedPool(e.target.value)}
+                  >
+                    {sharablePools.map((p) => (
+                      <option value={p.poolName} key={p.poolName}>
+                        Same accounts as: {p.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <SharingCard
-                  checked={sharing === "isolated"}
-                  onSelect={() => setSharing("isolated")}
+                  checked={sharing === "separate"}
+                  onSelect={() => setSharing("separate")}
                   title="Keep this app's users separate"
                   desc="Its own private list of accounts — good for an internal admin tool or a client-specific deployment."
                 />
-                <SharingCard
-                  checked={sharing === "custom"}
-                  onSelect={() => setSharing("custom")}
-                  title="Use a specific existing group"
-                  desc="Pick this if you've already set up a named login group for a subset of your apps."
-                />
               </div>
-              {sharing === "custom" && (
-                <input
-                  style={{ marginTop: 10 }}
-                  list="pool-options"
-                  placeholder="group name"
-                  value={customPool}
-                  onChange={(e) => setCustomPool(e.target.value)}
-                />
-              )}
-              <datalist id="pool-options">
-                {pools.map((p) => (
-                  <option value={p.name} key={p.id} />
-                ))}
-              </datalist>
             </div>
 
             {preset !== "service" && (
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-                <input type="checkbox" checked={allowSignup} onChange={(e) => setAllowSignup(e.target.checked)} />
-                Let new users sign themselves up (turn off if only you should add users, in Users)
-              </label>
+              <div className="field">
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                  <input type="checkbox" checked={allowSignup} onChange={(e) => setAllowSignup(e.target.checked)} />
+                  Let people create their own account from this app's login page
+                </label>
+                <span className="field__hint">
+                  On: anyone can sign up themselves (from this app, or any other app in the same
+                  login group). Off: only you can add users — from Manage on this app, or the
+                  Users page.
+                </span>
+              </div>
             )}
 
             <details>
@@ -402,6 +458,17 @@ export function Applications() {
           onClose={() => setManaging(null)}
           onSaveMtls={(t) => saveMtls(managing, t)}
           onSaveBranding={(logoUrl, brandColor) => saveBranding(managing, logoUrl, brandColor)}
+          onSaveEdit={(name, uris, scopeValue) => saveClientEdit(managing, name, uris, scopeValue)}
+          onDelete={() =>
+            confirm({
+              title: `Delete ${displayName(managing)}?`,
+              description:
+                "Removes it from this list and immediately blocks all logins and token refreshes. Its history is kept, not erased — contact support if you ever need it restored.",
+              danger: true,
+              confirmLabel: "Delete",
+              onConfirm: () => deleteClient(managing),
+            })
+          }
         />
       )}
 
@@ -419,11 +486,13 @@ function SharingCard({
   onSelect,
   title,
   desc,
+  disabled,
 }: {
   checked: boolean;
   onSelect: () => void;
   title: string;
   desc: string;
+  disabled?: boolean;
 }) {
   return (
     <label
@@ -435,11 +504,12 @@ function SharingCard({
         border: `1px solid ${checked ? "var(--brand-600)" : "var(--border)"}`,
         background: checked ? "var(--brand-soft)" : "transparent",
         borderRadius: "var(--radius-sm)",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.55 : 1,
       }}
     >
       <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <input type="radio" checked={checked} onChange={onSelect} />
+        <input type="radio" checked={checked} onChange={onSelect} disabled={disabled} />
         <span style={{ fontWeight: 600, fontSize: 13.5 }}>{title}</span>
       </span>
       <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{desc}</span>
@@ -452,11 +522,13 @@ function ClientRow({
   onManage,
   onToggleSignup,
   onDisable,
+  onDelete,
 }: {
   client: Client;
   onManage: () => void;
   onToggleSignup: () => void;
   onDisable: () => void;
+  onDelete: () => void;
 }) {
   return (
     <tr style={{ opacity: client.enabled ? 1 : 0.55 }}>
@@ -490,6 +562,7 @@ function ClientRow({
                 ? [{ label: client.allow_signup ? "Disable signup" : "Enable signup", onSelect: onToggleSignup }]
                 : []),
               { label: client.enabled ? "Disable" : "Re-enable", onSelect: onDisable, danger: client.enabled },
+              { label: "Delete", onSelect: onDelete, danger: true },
             ]}
           />
         </div>
@@ -503,15 +576,45 @@ function ManageDrawer({
   onClose,
   onSaveMtls,
   onSaveBranding,
+  onSaveEdit,
+  onDelete,
 }: {
   client: Client;
   onClose: () => void;
   onSaveMtls: (thumbprint: string) => void;
   onSaveBranding: (logoUrl: string, brandColor: string) => void;
+  onSaveEdit: (name: string, redirectUris: string, scope: string) => void;
+  onDelete: () => void;
 }) {
   const [thumbprint, setThumbprint] = useState(client.mtls_cert_thumbprint ?? "");
   const [logoUrl, setLogoUrl] = useState(client.logo_url ?? "");
   const [brandColor, setBrandColor] = useState(client.brand_color ?? "");
+  const [name, setName] = useState(client.client_name ?? "");
+  const [redirectUris, setRedirectUris] = useState(client.redirect_uris.join("\n"));
+  const [scope, setScope] = useState(client.allowed_scope);
+  const [addUserOpen, setAddUserOpen] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
+  const [userPassword, setUserPassword] = useState("");
+  const [userError, setUserError] = useState<string | null>(null);
+  const [addingUser, setAddingUser] = useState(false);
+  const { show } = useToast();
+
+  const onAddUser = async (e: FormEvent) => {
+    e.preventDefault();
+    setAddingUser(true);
+    setUserError(null);
+    try {
+      await api.post("/users", { email: userEmail, password: userPassword, user_pool: client.pool_name });
+      setAddUserOpen(false);
+      setUserEmail("");
+      setUserPassword("");
+      show(`${userEmail} can now log into ${displayName(client)}`);
+    } catch (err) {
+      setUserError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setAddingUser(false);
+    }
+  };
 
   return (
     <Drawer title={displayName(client)} onClose={onClose}>
@@ -521,21 +624,93 @@ function ManageDrawer({
       </div>
       <div className="field">
         <label>Type</label>
-        <span style={{ fontSize: 14 }}>{client.client_type}</span>
+        <span style={{ fontSize: 14 }}>{CLIENT_TYPE_LABELS[client.client_type] ?? client.client_type}</span>
       </div>
       <div className="field">
         <label>Login group</label>
-        <span style={{ fontSize: 14 }}>{client.pool_name}</span>
-      </div>
-      {client.redirect_uris.length > 0 && (
-        <div className="field">
-          <label>Redirect URIs</label>
-          {client.redirect_uris.map((uri) => (
-            <div key={uri} style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--text-muted)" }}>
-              {uri}
-            </div>
-          ))}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 14 }}>{client.pool_name}</span>
+          <button type="button" className="btn btn--secondary" onClick={() => setAddUserOpen(true)}>
+            + Add user
+          </button>
         </div>
+        <span className="field__hint">
+          Anyone added here can log into this app. Users in other login groups can't.
+        </span>
+      </div>
+
+      {addUserOpen && (
+        <Modal title={`Add a user to ${client.pool_name}`} onClose={() => setAddUserOpen(false)}>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
+            This user will be able to log into <strong>{displayName(client)}</strong> (and any other
+            app in the <strong>{client.pool_name}</strong> login group).
+          </p>
+          {userError && <div className="alert alert--error">{userError}</div>}
+          <form onSubmit={onAddUser}>
+            <div className="field">
+              <label htmlFor="drawer-add-email">Email</label>
+              <input
+                id="drawer-add-email"
+                type="email"
+                required
+                autoFocus
+                value={userEmail}
+                onChange={(e) => setUserEmail(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="drawer-add-password">Password</label>
+              <PasswordInput
+                id="drawer-add-password"
+                required
+                minLength={8}
+                value={userPassword}
+                onChange={(e) => setUserPassword(e.target.value)}
+              />
+            </div>
+            <button type="submit" className="btn btn--primary btn--block" disabled={addingUser}>
+              Add user
+            </button>
+          </form>
+        </Modal>
+      )}
+      {client.registration_method !== "cimd" && (
+        <details style={{ marginTop: 8 }} open>
+          <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)", marginBottom: 10 }}>
+            Details
+          </summary>
+          <div className="field">
+            <label htmlFor="edit-name">Name</label>
+            <input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Unnamed application" />
+          </div>
+          {client.application_type !== "service" && (
+            <div className="field">
+              <label htmlFor="edit-redirects">
+                Redirect URIs <span className="field__hint">(one per line)</span>
+              </label>
+              <textarea
+                id="edit-redirects"
+                rows={2}
+                style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}
+                value={redirectUris}
+                onChange={(e) => setRedirectUris(e.target.value)}
+              />
+            </div>
+          )}
+          <div className="field">
+            <label htmlFor="edit-scope">
+              Allowed scopes <span className="field__hint">(space-separated)</span>
+            </label>
+            <input id="edit-scope" value={scope} onChange={(e) => setScope(e.target.value)} placeholder="openid profile email" />
+          </div>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            onClick={() => onSaveEdit(name, redirectUris, scope)}
+          >
+            Save
+          </button>
+        </details>
       )}
       <div className="field">
         <label>Grant types</label>
@@ -588,6 +763,17 @@ function ManageDrawer({
             Save
           </button>
         </details>
+      )}
+
+      {client.registration_method !== "cimd" && (
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+          <button type="button" className="btn btn--danger" onClick={onDelete}>
+            Delete application
+          </button>
+          <p className="field__hint" style={{ marginTop: 6 }}>
+            Blocks all logins immediately. History is kept, not erased.
+          </p>
+        </div>
       )}
     </Drawer>
   );
