@@ -287,7 +287,66 @@ async def api_create_resource(
     resource = Resource(resource_id=body.resource_id, name=body.name, metadata_url=body.metadata_url or None)
     db.add(resource)
     await db.commit()
+    log_event("resource_created", resource_id=body.resource_id, admin_id=str(admin.id))
     return _resource_json(resource)
+
+
+class EditResourceBody(BaseModel):
+    name: str = ""
+    metadata_url: str = ""
+
+
+@router.patch("/resources/{resource_id:path}")
+async def api_edit_resource(
+    resource_id: str,
+    body: EditResourceBody,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Resource).where(Resource.resource_id == resource_id))
+    resource = result.scalar_one_or_none()
+    if resource is None:
+        raise HTTPException(404, "unknown_resource")
+    if body.name.strip():
+        resource.name = body.name.strip()
+    resource.metadata_url = body.metadata_url.strip() or None
+    await db.commit()
+    log_event("resource_updated", resource_id=resource_id, admin_id=str(admin.id))
+    return _resource_json(resource)
+
+
+@router.delete("/resources/{resource_id:path}", status_code=204)
+async def api_delete_resource(
+    resource_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Resource).where(Resource.resource_id == resource_id))
+    resource = result.scalar_one_or_none()
+    if resource is None:
+        raise HTTPException(404, "unknown_resource")
+    await db.delete(resource)
+    await db.commit()
+    log_event("resource_deleted", resource_id=resource_id, admin_id=str(admin.id))
+
+
+@router.get("/system/endpoints")
+async def api_system_endpoints(admin: AdminUser = Depends(require_admin)):
+    settings = get_settings()
+    issuer = settings.issuer.rstrip("/")
+    return {
+        "issuer": settings.issuer_url,
+        "authorization_endpoint": f"{issuer}/authorize",
+        "token_endpoint": f"{issuer}/token",
+        "registration_endpoint": f"{issuer}/register",
+        "userinfo_endpoint": f"{issuer}/userinfo",
+        "revocation_endpoint": f"{issuer}/revoke",
+        "jwks_uri": f"{issuer}/jwks.json",
+        "prm_endpoint": f"{issuer}/.well-known/oauth-protected-resource",
+        "openid_configuration": f"{issuer}/.well-known/openid-configuration",
+        "oauth_authorization_server": f"{issuer}/.well-known/oauth-authorization-server",
+        "auth_widget_js": f"{issuer}/static/js/auth-widget.js",
+    }
 
 
 # --- Clients (applications) ---

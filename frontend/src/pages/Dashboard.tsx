@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, DashboardData } from "../api";
 import { ActivityIcon, AppsIcon, DashboardIcon, GroupsIcon, ResourcesIcon, UsersIcon } from "../components/Icons";
 
@@ -44,6 +45,38 @@ export function Dashboard() {
             </div>
           );
         })}
+      </div>
+
+      <div
+        style={{
+          marginTop: 20,
+          padding: "16px 20px",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-lg)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 16,
+        }}
+      >
+        <div>
+          <h3 style={{ margin: "0 0 4px", fontSize: 14.5, fontWeight: 600 }}>
+            Quick Setup: Connect an MCP Server or Application
+          </h3>
+          <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted)" }}>
+            Register your MCP server as a resource, connect your AI assistant or web app, and get ready-to-copy code.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Link to="/admin/resources" className="btn btn--secondary" style={{ fontSize: 13 }}>
+            Register MCP Server
+          </Link>
+          <Link to="/admin/clients" className="btn btn--primary" style={{ fontSize: 13 }}>
+            Add Application
+          </Link>
+        </div>
       </div>
 
       <h2 style={{ fontSize: 15, margin: "32px 0 12px", display: "flex", alignItems: "center", gap: 8 }}>

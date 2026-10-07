@@ -54,6 +54,20 @@ export interface Resource {
   metadata_url: string | null;
 }
 
+export interface SystemEndpoints {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  registration_endpoint: string;
+  userinfo_endpoint: string;
+  revocation_endpoint: string;
+  jwks_uri: string;
+  prm_endpoint: string;
+  openid_configuration: string;
+  oauth_authorization_server: string;
+  auth_widget_js: string;
+}
+
 export interface Client {
   id: string;
   client_id: string;

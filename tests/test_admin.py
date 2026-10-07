@@ -77,6 +77,47 @@ async def test_create_resource_via_admin(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_edit_resource_via_admin(client, db_session):
+    await _login_admin(client, db_session)
+    await client.post(
+        "/admin/api/resources", json={"resource_id": "https://api.example.com", "name": "Old API"}
+    )
+    resp = await client.patch(
+        "/admin/api/resources/https://api.example.com",
+        json={"name": "New API", "metadata_url": "https://api.example.com/meta"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "New API"
+    assert resp.json()["metadata_url"] == "https://api.example.com/meta"
+
+
+@pytest.mark.asyncio
+async def test_delete_resource_via_admin(client, db_session):
+    await _login_admin(client, db_session)
+    await client.post(
+        "/admin/api/resources", json={"resource_id": "https://api.example.com", "name": "API"}
+    )
+    resp = await client.delete("/admin/api/resources/https://api.example.com")
+    assert resp.status_code == 204
+
+    result = await db_session.execute(select(Resource).where(Resource.resource_id == "https://api.example.com"))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_system_endpoints(client, db_session):
+    await _login_admin(client, db_session)
+    resp = await client.get("/admin/api/system/endpoints")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "issuer" in data
+    assert "authorization_endpoint" in data
+    assert "token_endpoint" in data
+    assert "jwks_uri" in data
+    assert "prm_endpoint" in data
+
+
+@pytest.mark.asyncio
 async def test_create_public_client_via_admin(client, db_session):
     await _login_admin(client, db_session)
 

@@ -8,6 +8,7 @@ import { PasswordInput } from "../components/PasswordInput";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { AppsIcon, PlusIcon } from "../components/Icons";
+import { IntegrationModal } from "../components/IntegrationModal";
 import { AccessGrant, api, ApiError, AppUser, Client, UserRoleRow } from "../api";
 
 const GRANT_LABELS: Record<string, string> = {
@@ -36,6 +37,7 @@ export function Applications() {
   const [modalOpen, setModalOpen] = useState(false);
   const [created, setCreated] = useState<Client | null>(null);
   const [managing, setManaging] = useState<Client | null>(null);
+  const [guideClient, setGuideClient] = useState<Client | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const { confirm, dialog } = useConfirmDialog();
@@ -271,6 +273,7 @@ export function Applications() {
                 <ClientRow
                   key={c.id}
                   client={c}
+                  onIntegrationGuide={() => setGuideClient(c)}
                   onManage={() => setManaging(c)}
                   onToggleSignup={() => toggleSignup(c)}
                   onDisable={() =>
@@ -314,12 +317,28 @@ export function Applications() {
               </select>
             </div>
 
+            {preset === "native" && (
+              <div
+                style={{
+                  padding: "10px 14px",
+                  background: "var(--info-bg)",
+                  color: "var(--info-fg)",
+                  borderRadius: "var(--radius-sm)",
+                  fontSize: 12.5,
+                  marginTop: -8,
+                }}
+              >
+                <strong>AI Assistants & MCP Clients:</strong> Public clients use Authorization Code + PKCE (S256).
+                No secret is required or stored. Once created, you will get ready-to-copy configs for Claude Desktop and Cursor.
+              </div>
+            )}
+
             <div className="field">
               <label htmlFor="client_id">Give it a name</label>
               <input
                 id="client_id"
                 required
-                placeholder="e.g. marketing-site, support-bot"
+                placeholder="e.g. marketing-site, support-bot, claude-desktop"
                 value={clientId}
                 onChange={(e) => setClientId(e.target.value)}
               />
@@ -328,9 +347,49 @@ export function Applications() {
 
             {preset !== "service" && (
               <div className="field">
-                <label htmlFor="redirect_uris">
-                  Where should we send people back to after login? <span className="field__hint">(one per line)</span>
-                </label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <label htmlFor="redirect_uris">
+                    Where should we send people back to after login? <span className="field__hint">(one per line)</span>
+                  </label>
+                  {preset === "native" && (
+                    <div style={{ display: "flex", gap: 5, marginBottom: 4 }}>
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        style={{ height: 22, fontSize: 11, padding: "0 6px" }}
+                        onClick={() =>
+                          setRedirectUris((prev) =>
+                            prev ? `${prev}\nhttp://localhost:5173/callback` : "http://localhost:5173/callback"
+                          )
+                        }
+                      >
+                        + Localhost:5173
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        style={{ height: 22, fontSize: 11, padding: "0 6px" }}
+                        onClick={() =>
+                          setRedirectUris((prev) =>
+                            prev ? `${prev}\nhttp://127.0.0.1:8080/callback` : "http://127.0.0.1:8080/callback"
+                          )
+                        }
+                      >
+                        + 127.0.0.1:8080
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        style={{ height: 22, fontSize: 11, padding: "0 6px" }}
+                        onClick={() =>
+                          setRedirectUris((prev) => (prev ? `${prev}\nvscode://callback` : "vscode://callback"))
+                        }
+                      >
+                        + VS Code
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <textarea
                   id="redirect_uris"
                   rows={2}
@@ -454,7 +513,7 @@ export function Applications() {
       )}
 
       {created && (
-        <Modal title="Application created" onClose={() => setCreated(null)}>
+        <Modal title="Application created" wide onClose={() => setCreated(null)}>
           <p className="field__hint" style={{ marginTop: -8 }}>
             <strong>{created.client_id}</strong> was added.
           </p>
@@ -465,9 +524,23 @@ export function Applications() {
               <span className="field__hint">Shown once — copy it now, it can't be recovered later.</span>
             </div>
           )}
-          <button type="button" className="btn btn--primary btn--block" onClick={() => setCreated(null)}>
-            Done
-          </button>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button
+              type="button"
+              className="btn btn--primary"
+              style={{ flex: 1 }}
+              onClick={() => {
+                const c = created;
+                setCreated(null);
+                setGuideClient(c);
+              }}
+            >
+              View Integration Guide & Code
+            </button>
+            <button type="button" className="btn btn--secondary" onClick={() => setCreated(null)}>
+              Done
+            </button>
+          </div>
         </Modal>
       )}
 
@@ -475,6 +548,7 @@ export function Applications() {
         <ManageDrawer
           client={managing}
           onClose={() => setManaging(null)}
+          onOpenGuide={() => setGuideClient(managing)}
           onSave={(fields) => saveAll(managing, fields)}
           onToggleRestrictAccess={() => toggleRestrictAccess(managing)}
           onToggleRolesEnabled={() => toggleRolesEnabled(managing)}
@@ -489,6 +563,14 @@ export function Applications() {
               onConfirm: () => deleteClient(managing),
             })
           }
+        />
+      )}
+
+      {guideClient && (
+        <IntegrationModal
+          client={guideClient}
+          clientSecret={guideClient.client_secret}
+          onClose={() => setGuideClient(null)}
         />
       )}
 
@@ -539,12 +621,14 @@ function SharingCard({
 
 function ClientRow({
   client,
+  onIntegrationGuide,
   onManage,
   onToggleSignup,
   onDisable,
   onDelete,
 }: {
   client: Client;
+  onIntegrationGuide: () => void;
   onManage: () => void;
   onToggleSignup: () => void;
   onDisable: () => void;
@@ -573,11 +657,15 @@ function ClientRow({
       </td>
       <td>
         <div className="row-actions">
+          <button type="button" className="btn btn--secondary" onClick={onIntegrationGuide}>
+            Guide
+          </button>
           <button type="button" className="btn btn--secondary" onClick={onManage}>
             Manage
           </button>
           <Menu
             items={[
+              { label: "Integration guide & snippets", onSelect: onIntegrationGuide },
               ...(client.registration_method !== "cimd"
                 ? [{ label: client.allow_signup ? "Disable signup" : "Enable signup", onSelect: onToggleSignup }]
                 : []),
@@ -603,6 +691,7 @@ interface SaveFields {
 function ManageDrawer({
   client,
   onClose,
+  onOpenGuide,
   onSave,
   onDelete,
   onToggleRestrictAccess,
@@ -611,6 +700,7 @@ function ManageDrawer({
 }: {
   client: Client;
   onClose: () => void;
+  onOpenGuide: () => void;
   onSave: (fields: SaveFields) => void;
   onDelete: () => void;
   onToggleRestrictAccess: () => void;
@@ -738,6 +828,15 @@ function ManageDrawer({
 
   return (
     <Modal title={displayName(client)} wide onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -12, marginBottom: 12 }}>
+        <button
+          type="button"
+          className="btn btn--secondary"
+          onClick={onOpenGuide}
+        >
+          Integration Guide & Code
+        </button>
+      </div>
       <div className="field">
         <label>Client ID</label>
         <CopyableId value={client.client_id} max={9999} />
