@@ -9,7 +9,7 @@ import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { AppsIcon, PlusIcon } from "../components/Icons";
 import { IntegrationModal } from "../components/IntegrationModal";
-import { AccessGrant, api, ApiError, AppUser, Client, UserRoleRow } from "../api";
+import { AccessGrant, api, ApiError, AppUser, Client, UserPage, UserRoleRow } from "../api";
 
 const GRANT_LABELS: Record<string, string> = {
   authorization_code: "Let a person log in",
@@ -38,6 +38,7 @@ export function Applications() {
   const [created, setCreated] = useState<Client | null>(null);
   const [managing, setManaging] = useState<Client | null>(null);
   const [guideClient, setGuideClient] = useState<Client | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const { confirm, dialog } = useConfirmDialog();
@@ -74,6 +75,7 @@ export function Applications() {
     if (!clients) return [];
     const byPool = new Map<string, string[]>();
     for (const c of clients) {
+      if (!c.pool_name) continue; // standalone clients can't be shared
       const label = c.client_name || "Unnamed application";
       byPool.set(c.pool_name, [...(byPool.get(c.pool_name) ?? []), label]);
     }
@@ -112,8 +114,8 @@ export function Applications() {
   };
 
   const resolvedPool = () => {
-    if (sharing === "separate") return clientId.trim() || "default";
-    return sharedPool || sharablePools[0]?.poolName || "default";
+    if (sharing === "separate") return ""; // standalone — no pool
+    return sharedPool || sharablePools[0]?.poolName || "";
   };
 
   const toggleGrant = (g: string) => {
@@ -226,9 +228,21 @@ export function Applications() {
           </span>
           <h1 className="title">Applications</h1>
         </div>
-        <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          <PlusIcon width={16} height={16} /> Add application
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            onClick={() => {
+              setGuideClient(clients && clients.length > 0 ? clients[0] : null);
+              setGuideOpen(true);
+            }}
+          >
+            Integration Guide
+          </button>
+          <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
+            <PlusIcon width={16} height={16} /> Add application
+          </button>
+        </div>
       </div>
 
       <p className="lead">
@@ -281,7 +295,6 @@ export function Applications() {
                 <ClientRow
                   key={c.id}
                   client={c}
-                  onIntegrationGuide={() => setGuideClient(c)}
                   onManage={() => setManaging(c)}
                   onToggleSignup={() => toggleSignup(c)}
                   onDisable={() =>
@@ -297,11 +310,11 @@ export function Applications() {
                   }
                   onDelete={() =>
                     confirm({
-                      title: `Delete ${displayName(c)}?`,
+                      title: `Remove ${displayName(c)}?`,
                       description:
-                        "Removes it from this list and immediately blocks all logins and token refreshes. Its history is kept, not erased — contact support if you ever need it restored.",
+                        "Permanently removes this application and immediately blocks all logins and token refreshes. This cannot be undone.",
                       danger: true,
-                      confirmLabel: "Delete",
+                      confirmLabel: "Remove",
                       onConfirm: () => deleteClient(c),
                     })
                   }
@@ -541,6 +554,7 @@ export function Applications() {
                 const c = created;
                 setCreated(null);
                 setGuideClient(c);
+                setGuideOpen(true);
               }}
             >
               View Integration Guide & Code
@@ -556,29 +570,24 @@ export function Applications() {
         <ManageDrawer
           client={managing}
           onClose={() => setManaging(null)}
-          onOpenGuide={() => setGuideClient(managing)}
           onSave={(fields) => saveAll(managing, fields)}
           onToggleRestrictAccess={() => toggleRestrictAccess(managing)}
           onToggleRolesEnabled={() => toggleRolesEnabled(managing)}
           onToggleSignupRoleSelection={() => toggleSignupRoleSelection(managing)}
-          onDelete={() =>
-            confirm({
-              title: `Delete ${displayName(managing)}?`,
-              description:
-                "Removes it from this list and immediately blocks all logins and token refreshes. Its history is kept, not erased — contact support if you ever need it restored.",
-              danger: true,
-              confirmLabel: "Delete",
-              onConfirm: () => deleteClient(managing),
-            })
-          }
         />
       )}
 
-      {guideClient && (
+      {guideOpen && (
         <IntegrationModal
           client={guideClient}
-          clientSecret={guideClient.client_secret}
-          onClose={() => setGuideClient(null)}
+          allClients={clients ?? []}
+          clientSecret={guideClient?.client_secret}
+          onSelectClient={(c) => setGuideClient(c)}
+          appOnly
+          onClose={() => {
+            setGuideOpen(false);
+            setGuideClient(null);
+          }}
         />
       )}
 
@@ -629,14 +638,12 @@ function SharingCard({
 
 function ClientRow({
   client,
-  onIntegrationGuide,
   onManage,
   onToggleSignup,
   onDisable,
   onDelete,
 }: {
   client: Client;
-  onIntegrationGuide: () => void;
   onManage: () => void;
   onToggleSignup: () => void;
   onDisable: () => void;
@@ -654,7 +661,7 @@ function ClientRow({
         {client.registration_method === "dcr" && <Badge variant="neutral">DCR</Badge>}
         {client.registration_method === "static" && <Badge variant="neutral">Added by you</Badge>}
       </td>
-      <td>{client.pool_name}</td>
+      <td>{client.pool_name ?? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>Standalone</span>}</td>
       <td>
         <Badge variant={client.enabled ? "success" : "neutral"}>{client.enabled ? "Active" : "Disabled"}</Badge>
       </td>
@@ -665,20 +672,18 @@ function ClientRow({
       </td>
       <td>
         <div className="row-actions">
-          <button type="button" className="btn btn--secondary" onClick={onIntegrationGuide}>
-            Guide
-          </button>
           <button type="button" className="btn btn--secondary" onClick={onManage}>
             Manage
           </button>
+          <button type="button" className="btn btn--danger" onClick={onDelete}>
+            Remove
+          </button>
           <Menu
             items={[
-              { label: "Integration guide & snippets", onSelect: onIntegrationGuide },
               ...(client.registration_method !== "cimd"
                 ? [{ label: client.allow_signup ? "Disable signup" : "Enable signup", onSelect: onToggleSignup }]
                 : []),
               { label: client.enabled ? "Disable" : "Re-enable", onSelect: onDisable, danger: client.enabled },
-              { label: "Delete", onSelect: onDelete, danger: true },
             ]}
           />
         </div>
@@ -700,18 +705,14 @@ interface SaveFields {
 function ManageDrawer({
   client,
   onClose,
-  onOpenGuide,
   onSave,
-  onDelete,
   onToggleRestrictAccess,
   onToggleRolesEnabled,
   onToggleSignupRoleSelection,
 }: {
   client: Client;
   onClose: () => void;
-  onOpenGuide: () => void;
   onSave: (fields: SaveFields) => void;
-  onDelete: () => void;
   onToggleRestrictAccess: () => void;
   onToggleRolesEnabled: () => void;
   onToggleSignupRoleSelection: () => void;
@@ -755,7 +756,7 @@ function ManageDrawer({
         email: userEmail,
         password: userPassword,
         confirm_password: userConfirmPassword,
-        user_pool: client.pool_name,
+        client_id: client.client_id,
         email_verified: userEmailVerified,
       });
       if (client.restrict_access) {
@@ -785,7 +786,10 @@ function ManageDrawer({
   };
 
   useEffect(() => {
-    api.get<AppUser[]>(`/users?pool=${encodeURIComponent(client.pool_name)}`).then(setPoolUsers);
+    const userParam = client.pool_name
+      ? `pool=${encodeURIComponent(client.pool_name)}`
+      : `client=${encodeURIComponent(client.client_id)}`;
+    api.get<UserPage>(`/users?${userParam}&page_size=500`).then((p) => setPoolUsers(p.items));
     loadAccess();
     loadRoles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -837,15 +841,6 @@ function ManageDrawer({
 
   return (
     <Modal title={displayName(client)} wide onClose={onClose}>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -12, marginBottom: 12 }}>
-        <button
-          type="button"
-          className="btn btn--secondary"
-          onClick={onOpenGuide}
-        >
-          Integration Guide & Code
-        </button>
-      </div>
       <div className="field">
         <label>Client ID</label>
         <CopyableId value={client.client_id} max={9999} />
@@ -861,15 +856,19 @@ function ManageDrawer({
       <div className="field">
         <label>Login group</label>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <span style={{ fontSize: 14 }}>{client.pool_name}</span>
+          <span style={{ fontSize: 14 }}>{client.pool_name ?? <em style={{ color: "var(--text-muted)" }}>None (standalone)</em>}</span>
           <button type="button" className="btn btn--secondary" onClick={() => setAddUserOpen(true)}>
             + Add user
           </button>
         </div>
         <span className="field__hint">
           {client.restrict_access
-            ? "Users in other login groups can't log in here — and within this group, only the people granted access below can."
-            : "Anyone added here can log into this app. Users in other login groups can't."}
+            ? client.pool_name
+              ? "Users in other login groups can't log in here — and within this group, only the people granted access below can."
+              : "Only the users explicitly granted access below can log in."
+            : client.pool_name
+              ? "Anyone added here can log into this app. Users in other login groups can't."
+              : "Any user of this application can log in."}
         </span>
       </div>
 
@@ -880,9 +879,12 @@ function ManageDrawer({
             Restrict which users in this group can use this app
           </label>
           <span className="field__hint">
-            Off (default): everyone in <strong>{client.pool_name}</strong> can log in here. On: only
-            people explicitly granted below can — same group, same passwords, but this one app is
-            locked down to a subset. The same pattern as Okta's or Entra ID's "app assignment."
+            {client.pool_name
+              ? <>Off (default): everyone in <strong>{client.pool_name}</strong> can log in here. On: only
+                people explicitly granted below can — same group, same passwords, but this one app is
+                locked down to a subset. The same pattern as Okta's or Entra ID's "app assignment."</>
+              : <>Off (default): all users of this app can log in. On: only people explicitly granted
+                below can — useful for keeping most accounts out of a privileged interface.</>}
           </span>
 
           {client.restrict_access && (
@@ -906,7 +908,7 @@ function ManageDrawer({
 
               <div style={{ display: "flex", gap: 8 }}>
                 <select value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} style={{ flex: 1 }}>
-                  <option value="">Choose a user from {client.pool_name}...</option>
+                  <option value="">Choose a user{client.pool_name ? ` from ${client.pool_name}` : ""}...</option>
                   {poolUsers
                     .filter((u) => !grants?.some((g) => g.user_id === u.id))
                     .map((u) => (
@@ -1014,10 +1016,12 @@ function ManageDrawer({
       )}
 
       {addUserOpen && (
-        <Modal title={`Add a user to ${client.pool_name}`} onClose={() => setAddUserOpen(false)}>
+        <Modal title={`Add a user to ${displayName(client)}`} onClose={() => setAddUserOpen(false)}>
           <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
-            This user will be able to log into <strong>{displayName(client)}</strong> (and any other
-            app in the <strong>{client.pool_name}</strong> login group).
+            {client.pool_name
+              ? <>This user will be able to log into <strong>{displayName(client)}</strong> (and any other
+                app in the <strong>{client.pool_name}</strong> login group).</>
+              : <>This user will be able to log into <strong>{displayName(client)}</strong>.</>}
           </p>
           {userError && <div className="alert alert--error">{userError}</div>}
           <form onSubmit={onAddUser}>
@@ -1159,14 +1163,6 @@ function ManageDrawer({
             Save changes
           </button>
 
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-            <button type="button" className="btn btn--danger" onClick={onDelete}>
-              Delete application
-            </button>
-            <p className="field__hint" style={{ marginTop: 6 }}>
-              Blocks all logins immediately. History is kept, not erased.
-            </p>
-          </div>
         </>
       )}
     </Modal>

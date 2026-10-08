@@ -10,6 +10,10 @@ interface IntegrationModalProps {
   resource?: Resource | null;
   client?: Client | null;
   clientSecret?: string | null;
+  allClients?: Client[];
+  onSelectClient?: (client: Client | null) => void;
+  /** When true, hides the MCP resource selector — used from the Applications page */
+  appOnly?: boolean;
 }
 
 export function IntegrationModal({
@@ -17,18 +21,24 @@ export function IntegrationModal({
   resource,
   client,
   clientSecret,
+  allClients: initialClients,
+  onSelectClient,
+  appOnly,
 }: IntegrationModalProps) {
   const [endpoints, setEndpoints] = useState<SystemEndpoints | null>(null);
   const [allResources, setAllResources] = useState<Resource[]>([]);
+  const [availableClients, setAvailableClients] = useState<Client[]>(initialClients ?? []);
+  const [activeClient, setActiveClient] = useState<Client | null>(client ?? null);
   const [selectedResourceId, setSelectedResourceId] = useState<string>("");
   const [tab, setTab] = useState<string>("");
-  // client_secret only ever comes back from the one-time create response --
-  // GET /clients never includes it again. Reopening this guide later for an
-  // existing client has nothing to prefill, so let the admin paste their
-  // own saved secret back in rather than silently printing a fake one.
   const [pastedSecret, setPastedSecret] = useState("");
-  const isPublicClient = client?.client_type === "public";
-  const effectiveSecret = clientSecret || pastedSecret;
+
+  // Sync client prop if changed externally
+  useEffect(() => {
+    if (client !== undefined) {
+      setActiveClient(client);
+    }
+  }, [client]);
 
   useEffect(() => {
     api.get<SystemEndpoints>("/system/endpoints").then(setEndpoints);
@@ -38,22 +48,36 @@ export function IntegrationModal({
         setSelectedResourceId(res[0].resource_id);
       }
     });
-  }, []);
+    if (!initialClients || initialClients.length === 0) {
+      api.get<Client[]>("/clients").then((cls) => {
+        setAvailableClients(cls);
+        if (!client && !resource && cls.length > 0) {
+          setActiveClient(cls[0]);
+        }
+      });
+    } else if (!client && !resource && initialClients.length > 0) {
+      setActiveClient(initialClients[0]);
+    }
+  }, [initialClients, client, resource]);
 
-  // Determine initial tab once data or mode is ready
+  // Set default tab
   useEffect(() => {
     if (resource) {
       setTab("fastmcp");
-    } else if (client) {
-      if (client.application_type === "native") {
+    } else if (appOnly) {
+      setTab(activeClient?.application_type === "service" ? "curl" : "widget");
+    } else if (activeClient) {
+      if (activeClient.application_type === "native") {
         setTab("claude");
-      } else if (client.application_type === "service") {
+      } else if (activeClient.application_type === "service") {
         setTab("curl");
       } else {
-        setTab("widget");
+        setTab("claude");
       }
+    } else {
+      setTab("claude");
     }
-  }, [resource, client]);
+  }, [resource, activeClient, appOnly]);
 
   if (!endpoints) {
     return (
@@ -65,19 +89,32 @@ export function IntegrationModal({
     );
   }
 
+  const isPublicClient = activeClient?.client_type === "public";
+  const effectiveSecret = clientSecret || pastedSecret;
+
   const activeResourceId = resource
     ? resource.resource_id
     : selectedResourceId || "https://mcp.yourdomain.com";
 
   const prmUrl = `${endpoints.prm_endpoint}?resource=${encodeURIComponent(activeResourceId)}`;
 
+  const currentClientId = activeClient?.client_id || "YOUR_CLIENT_ID";
+  const currentRedirectUri = activeClient?.redirect_uris?.[0] || "https://yourapp.com/callback";
+  const clientDisplayName = activeClient?.client_name || activeClient?.client_id || "Your Application";
+
+  const handleClientChange = (clientId: string) => {
+    const found = availableClients.find((c) => c.id === clientId) ?? null;
+    setActiveClient(found);
+    onSelectClient?.(found);
+  };
+
   return (
     <Modal
       title={
         resource
           ? `Integration Guide: ${resource.name}`
-          : client
-          ? `Integration Guide: ${client.client_name || client.client_id}`
+          : activeClient
+          ? `Integration Guide: ${clientDisplayName}`
           : "Integration Guide"
       }
       wide
@@ -93,7 +130,7 @@ export function IntegrationModal({
           background: "var(--surface-2)",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius-md)",
-          marginBottom: 20,
+          marginBottom: 16,
           fontSize: 12.5,
         }}
       >
@@ -117,9 +154,33 @@ export function IntegrationModal({
         </div>
       </div>
 
-      {/* Target Resource selector if configuring an Application */}
-      {client && allResources.length > 0 && (
-        <div className="field" style={{ marginBottom: 16 }}>
+      {/* Select Application Dropdown (only in application mode) */}
+      {!resource && availableClients.length > 0 && (
+        <div className="field" style={{ marginBottom: 14 }}>
+          <label htmlFor="active-app-picker" style={{ fontWeight: 600 }}>
+            Application to Configure
+          </label>
+          <select
+            id="active-app-picker"
+            value={activeClient?.id ?? ""}
+            onChange={(e) => handleClientChange(e.target.value)}
+          >
+            {availableClients.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.client_name || c.client_id} ({c.client_type}, {c.pool_name})
+              </option>
+            ))}
+            <option value="">Generic Reference (Placeholder values)</option>
+          </select>
+          <span className="field__hint">
+            Selecting an application pre-fills its Client ID, redirect URIs, and credentials in the snippets below.
+          </span>
+        </div>
+      )}
+
+      {/* Target Resource selector if configuring an Application (hidden in app-only mode) */}
+      {!resource && !appOnly && allResources.length > 0 && (
+        <div className="field" style={{ marginBottom: 14 }}>
           <label htmlFor="target-resource-select">Target MCP Server / API (Resource Indicator)</label>
           <select
             id="target-resource-select"
@@ -139,7 +200,8 @@ export function IntegrationModal({
         </div>
       )}
 
-      {client && !isPublicClient && (
+      {/* Client secret handling for confidential applications */}
+      {!resource && activeClient && !isPublicClient && (
         <div className="field" style={{ marginBottom: 16 }}>
           <label htmlFor="guide-secret">Client secret</label>
           {clientSecret ? (
@@ -147,7 +209,7 @@ export function IntegrationModal({
           ) : (
             <input
               id="guide-secret"
-              placeholder="Paste the secret you saved when this app was created"
+              placeholder="Paste the secret you saved when this app was created to fill snippets"
               value={pastedSecret}
               onChange={(e) => setPastedSecret(e.target.value)}
             />
@@ -155,7 +217,7 @@ export function IntegrationModal({
           <span className="field__hint">
             {clientSecret
               ? "Shown once, right after creation — already filled in below."
-              : "Not retrievable after creation and never sent back by this page. Paste it here only to fill in the snippets below for copying — it's not saved anywhere."}
+              : "Client secrets are hashed and cannot be retrieved after creation. Paste it here to fill in the snippets for copying — it is never sent back to the server."}
           </span>
         </div>
       )}
@@ -184,7 +246,7 @@ export function IntegrationModal({
           </>
         ) : (
           <>
-            {client?.application_type === "native" && (
+            {!appOnly && (
               <>
                 <TabButton active={tab === "claude"} onClick={() => setTab("claude")}>
                   Claude Desktop
@@ -192,47 +254,27 @@ export function IntegrationModal({
                 <TabButton active={tab === "cursor"} onClick={() => setTab("cursor")}>
                   Cursor MCP
                 </TabButton>
-                <TabButton active={tab === "pkce"} onClick={() => setTab("pkce")}>
-                  PKCE Auth Flow
+                <TabButton active={tab === "python_agent"} onClick={() => setTab("python_agent")}>
+                  Python AI Agent
                 </TabButton>
               </>
             )}
-            {client?.application_type === "web" && (
-              <>
-                <TabButton active={tab === "widget"} onClick={() => setTab("widget")}>
-                  Popup Widget (HTML)
-                </TabButton>
-                <TabButton active={tab === "bff"} onClick={() => setTab("bff")}>
-                  BFF Backend (Python)
-                </TabButton>
-                <TabButton active={tab === "pkce"} onClick={() => setTab("pkce")}>
-                  OAuth Endpoints
-                </TabButton>
-              </>
-            )}
-            {client?.application_type === "service" && (
-              <>
-                <TabButton active={tab === "curl"} onClick={() => setTab("curl")}>
-                  cURL Command
-                </TabButton>
-                <TabButton active={tab === "mtls"} onClick={() => setTab("mtls")}>
-                  Mutual TLS (mTLS)
-                </TabButton>
-                <TabButton active={tab === "python"} onClick={() => setTab("python")}>
-                  Python HTTPX
-                </TabButton>
-              </>
-            )}
-            {/* Fallback tabs if generic */}
-            {!["native", "web", "service"].includes(client?.application_type ?? "") && (
-              <>
-                <TabButton active={tab === "curl"} onClick={() => setTab("curl")}>
-                  cURL
-                </TabButton>
-                <TabButton active={tab === "pkce"} onClick={() => setTab("pkce")}>
-                  PKCE Flow
-                </TabButton>
-              </>
+            <TabButton active={tab === "curl"} onClick={() => setTab("curl")}>
+              cURL (Token Request)
+            </TabButton>
+            <TabButton active={tab === "widget"} onClick={() => setTab("widget")}>
+              Popup Widget (HTML)
+            </TabButton>
+            <TabButton active={tab === "bff"} onClick={() => setTab("bff")}>
+              BFF Backend (Python)
+            </TabButton>
+            <TabButton active={tab === "pkce"} onClick={() => setTab("pkce")}>
+              OAuth Endpoints & PKCE
+            </TabButton>
+            {activeClient?.application_type === "service" && (
+              <TabButton active={tab === "mtls"} onClick={() => setTab("mtls")}>
+                Mutual TLS (mTLS)
+              </TabButton>
             )}
           </>
         )}
@@ -343,8 +385,8 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
         </div>
       )}
 
-      {/* Tab Contents: Client Mode */}
-      {client && (
+      {/* Tab Contents: Application Mode */}
+      {!resource && (
         <div>
           {tab === "claude" && (
             <div>
@@ -357,12 +399,12 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
                 title="claude_desktop_config.json"
                 code={`{
   "mcpServers": {
-    "${client.client_id}": {
+    "${currentClientId}": {
       "url": "${activeResourceId}/sse",
       "auth": {
         "type": "oauth2",
         "issuer": "${endpoints.issuer}",
-        "client_id": "${client.client_id}",
+        "client_id": "${currentClientId}",
         "resource": "${activeResourceId}",
         "scopes": ["openid", "profile"]
       }
@@ -380,7 +422,7 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
                 }}
               >
                 <strong>Security Protocol Note:</strong> Claude Desktop executes the PKCE (S256) flow
-                automatically. As a public client, no client secret is needed or allowed.
+                automatically. Under OAuth 2.1, native desktop clients do not use client secrets.
               </div>
             </div>
           )}
@@ -388,7 +430,7 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
           {tab === "cursor" && (
             <div>
               <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Add this to your Cursor MCP settings:
+                Add this to your Cursor MCP settings (in Settings → Features → MCP):
               </p>
               <CodeBlock
                 language="json"
@@ -396,11 +438,11 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
                 code={`{
   "mcp": {
     "servers": {
-      "${client.client_id}": {
+      "${currentClientId}": {
         "transport": "sse",
         "url": "${activeResourceId}/sse",
         "oauth": {
-          "clientId": "${client.client_id}",
+          "clientId": "${currentClientId}",
           "issuer": "${endpoints.issuer}",
           "resource": "${activeResourceId}"
         }
@@ -408,6 +450,75 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
     }
   }
 }`}
+              />
+            </div>
+          )}
+
+          {tab === "python_agent" && (
+            <div>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
+                Python AI Agent / Backend client calling an MCP Server using tokens minted for{" "}
+                <strong>{currentClientId}</strong>:
+              </p>
+              <CodeBlock
+                language="python"
+                title="Python AI Agent Token & Tool Call"
+                code={`import httpx
+
+ISSUER = "${endpoints.issuer}"
+CLIENT_ID = "${currentClientId}"
+CLIENT_SECRET = "${effectiveSecret || "<paste-your-client-secret>"}"
+RESOURCE_ID = "${activeResourceId}"
+
+async def get_access_token():
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{ISSUER}/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": CLIENT_ID,${
+                  isPublicClient
+                    ? ""
+                    : `\n                "client_secret": CLIENT_SECRET,`
+                }
+                "resource": RESOURCE_ID,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+
+async def call_mcp_tool(tool_name: str, arguments: dict):
+    token = await get_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{RESOURCE_ID}/mcp/tools/call",
+            headers=headers,
+            json={"name": tool_name, "arguments": arguments},
+        )
+        resp.raise_for_status()
+        return resp.json()`}
+              />
+            </div>
+          )}
+
+          {tab === "curl" && (
+            <div>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
+                Direct token exchange request via cURL:
+              </p>
+              <CodeBlock
+                language="bash"
+                title="Token Request cURL"
+                code={`curl -X POST "${endpoints.token_endpoint}" \\
+  -H "Content-Type: application/x-www-form-urlencoded" \\
+  -d "grant_type=client_credentials" \\
+  -d "client_id=${currentClientId}" \\${
+    isPublicClient
+      ? ""
+      : `\n  -d "client_secret=${effectiveSecret || "<paste-your-client-secret>"}" \\`
+  }
+  -d "resource=${activeResourceId}"`}
               />
             </div>
           )}
@@ -422,7 +533,7 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
                 language="html"
                 title="Embedded Popup Widget"
                 code={`<script src="${endpoints.auth_widget_js}"></script>
-<button id="sign-in-btn">Sign in</button>
+<button id="sign-in-btn">Sign in with ${clientDisplayName}</button>
 
 <script>
   document.getElementById("sign-in-btn").addEventListener("click", () => {
@@ -454,38 +565,48 @@ async def handle_callback(code: str, code_verifier: str):
             "${endpoints.token_endpoint}",
             data={
                 "grant_type": "authorization_code",
-                "client_id": "${client.client_id}",${
-                  isPublicClient
-                    ? ""
-                    : `\n                "client_secret": "${effectiveSecret || "<paste-your-client-secret>"}",`
-                }
+                "client_id": "${currentClientId}",
+                "client_secret": "${effectiveSecret || "<paste-your-client-secret>"}",
                 "code": code,
                 "code_verifier": code_verifier,
-                "redirect_uri": "${client.redirect_uris[0] || "https://yourapp.com/callback"}",
+                "redirect_uri": "${currentRedirectUri}",
                 "resource": "${activeResourceId}",
             },
         )
         tokens = resp.json()
-        return tokens # Store tokens server-side in user session`}
+        return tokens  # Store tokens server-side in user session`}
               />
             </div>
           )}
 
-          {tab === "curl" && (
+          {tab === "pkce" && (
             <div>
               <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Service-to-service <code>client_credentials</code> grant request:
+                Full OAuth 2.1 Authorization Code + PKCE (S256) Flow:
               </p>
               <CodeBlock
-                language="bash"
-                title="Token Request cURL"
-                code={`curl -X POST "${endpoints.token_endpoint}" \\
-  -H "Content-Type: application/x-www-form-urlencoded" \\
-  -d "grant_type=client_credentials" \\
-  -d "client_id=${client.client_id}" \\${
-    isPublicClient ? "" : `\n  -d "client_secret=${effectiveSecret || "<paste-your-client-secret>"}" \\`
-  }
-  -d "resource=${activeResourceId}"`}
+                language="http"
+                title="1. Authorization Request"
+                code={`GET ${endpoints.authorization_endpoint}?
+  response_type=code
+  &client_id=${currentClientId}
+  &redirect_uri=${encodeURIComponent(currentRedirectUri)}
+  &scope=openid%20profile
+  &resource=${encodeURIComponent(activeResourceId)}
+  &code_challenge=BASE64URL_SHA256_VERIFIER
+  &code_challenge_method=S256`}
+              />
+              <CodeBlock
+                language="http"
+                title="2. Token Exchange (POST /token)"
+                code={`POST ${endpoints.token_endpoint}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&client_id=${currentClientId}
+&code=AUTHORIZATION_CODE
+&code_verifier=RAW_CODE_VERIFIER
+&redirect_uri=${currentRedirectUri}`}
               />
             </div>
           )}
@@ -504,38 +625,6 @@ async def handle_callback(code: str, code_verifier: str):
                 Paste the resulting thumbprint into this app's "mTLS certificate thumbprint" field.
                 Once configured, client certificate authentication is enforced on <code>/token</code>.
               </p>
-            </div>
-          )}
-
-          {tab === "pkce" && (
-            <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Full OAuth 2.1 Authorization Code + PKCE (S256) Flow:
-              </p>
-              <CodeBlock
-                language="http"
-                title="1. Authorization Request"
-                code={`GET ${endpoints.authorization_endpoint}?
-  response_type=code
-  &client_id=${client.client_id}
-  &redirect_uri=${encodeURIComponent(client.redirect_uris[0] || "https://yourapp.com/callback")}
-  &scope=openid%20profile
-  &resource=${encodeURIComponent(activeResourceId)}
-  &code_challenge=BASE64URL_SHA256_VERIFIER
-  &code_challenge_method=S256`}
-              />
-              <CodeBlock
-                language="http"
-                title="2. Token Exchange (POST /token)"
-                code={`POST ${endpoints.token_endpoint}
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=authorization_code
-&client_id=${client.client_id}
-&code=AUTHORIZATION_CODE
-&code_verifier=RAW_CODE_VERIFIER
-&redirect_uri=${client.redirect_uris[0] || "https://yourapp.com/callback"}`}
-              />
             </div>
           )}
         </div>

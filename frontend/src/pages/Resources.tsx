@@ -90,14 +90,14 @@ export function Resources() {
 
   const onDelete = (r: Resource) => {
     confirm({
-      title: `Delete resource ${r.name}?`,
+      title: `Remove ${r.name}?`,
       description:
-        "Removes this MCP server or API from the discovery catalog. Any tokens previously issued for it remain valid until expiration.",
+        "Permanently deletes this resource from the database — not a disable, there's no undo. Any tokens previously issued for it remain valid until they expire. If you just want to block new tokens without losing the record, use Disable instead.",
       danger: true,
-      confirmLabel: "Delete",
+      confirmLabel: "Remove",
       onConfirm: async () => {
         await api.delete(`/resources/${encodeURIComponent(r.resource_id)}`);
-        show(`Deleted ${r.name}`);
+        show(`${r.name} removed`);
         load();
       },
     });
@@ -128,9 +128,20 @@ export function Resources() {
           </span>
           <h1 className="title">APIs & MCP servers</h1>
         </div>
-        <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Register MCP server or API
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          {resources && resources.length > 0 && (
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => setGuideResource(resources[0])}
+            >
+              Integration Guide
+            </button>
+          )}
+          <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
+            <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Register MCP server or API
+          </button>
+        </div>
       </div>
 
       <p className="lead">
@@ -183,23 +194,19 @@ export function Resources() {
                   </td>
                   <td>
                     <div className="row-actions">
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        onClick={() => setGuideResource(r)}
-                      >
-                        Integration Guide
+                      <button type="button" className="btn btn--secondary" onClick={() => openEdit(r)}>
+                        Edit
+                      </button>
+                      <button type="button" className="btn btn--danger" onClick={() => onDelete(r)}>
+                        Remove
                       </button>
                       <Menu
                         items={[
-                          { label: "Edit details", onSelect: () => openEdit(r) },
-                          { label: "Integration code & snippets", onSelect: () => setGuideResource(r) },
                           {
                             label: r.enabled ? "Disable" : "Re-enable",
                             onSelect: () => toggleEnabled(r),
                             danger: r.enabled,
                           },
-                          { label: "Delete", onSelect: () => onDelete(r), danger: true },
                         ]}
                       />
                     </div>
