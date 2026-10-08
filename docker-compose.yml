@@ -13,6 +13,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    # Loopback-only, not a public port -- lets a backend you run directly
+    # on this host (outside Docker, for fast --reload iteration) reach this
+    # same database at DB_HOST=localhost, DB_PORT=5434. Safe even if this
+    # compose file runs on a public server: 127.0.0.1 binding is never
+    # internet-reachable regardless of firewall rules, unlike a bare
+    # "5432:5432" would be. Default is 5434, not 5432, since a host often
+    # already has its own Postgres on the standard port.
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5434}:5432"
     networks:
       - nginx-proxy-net
 
@@ -35,6 +44,10 @@ services:
       timeout: 5s
       retries: 5
     volumes: ["./data/redis:/data"]
+    # Same loopback-only reasoning as postgres above -- default 6381, not
+    # 6379, for the same "host already has one" reason.
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6381}:6379"
     networks:
       - nginx-proxy-net
   auth-service:

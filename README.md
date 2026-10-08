@@ -73,13 +73,27 @@ There are two very different setups here — pick based on what you're doing:
 
 ### Local development
 
-Runs the app directly on the host with `uv` — fastest iteration, no Docker involved. Point it at any Postgres/Redis you have available locally (native install, or `docker run`/`docker compose up -d postgres redis` published to host ports).
+Runs the app directly on the host with `uv` — fastest iteration (actual `--reload`, no image rebuild per change), while still using the **same** Postgres/Redis this project's own `docker-compose.yml` manages, so you're not maintaining a second set of data.
+
+`docker-compose.yml` publishes both to **loopback-only** host ports — reachable from this same machine, never from the network, regardless of firewall rules, even if this same compose file is the one running on a real server:
+
+```bash
+docker compose up -d postgres redis   # just these two services, not auth-service
+```
+
+- Postgres: `127.0.0.1:5434` (not the standard `5432` — a host often already has its own)
+- Redis: `127.0.0.1:6381` (likewise, not the standard `6379`)
+
+Override `DB_HOST_PORT`/`REDIS_HOST_PORT` in `.env` if either collides with something else on your machine.
+
+Then run the backend directly on the host, pointed at those ports — `.env`'s own `DB_HOST`/`REDIS_HOST` are for `docker-compose.yml`'s internal container names (`auth_pgsql`/`auth_redis`, unreachable from outside Docker), so override them inline instead of editing the file:
 
 ```bash
 uv sync                          # installs runtime + dev dependencies from uv.lock
-cp .env.example .env             # set DB_HOST/REDIS_HOST to localhost, matching your local services
+cp .env.example .env             # fill in the same DB_*/REDIS_PASSWORD .env already uses for Docker
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
+DB_HOST=127.0.0.1 DB_PORT=5434 REDIS_HOST=127.0.0.1 REDIS_PORT=6381 \
+  uv run uvicorn app.main:app --reload
 ```
 
 Uvicorn defaults to port `8000` here (no `--port` given), so `ISSUER=http://localhost:8000` in `.env.example` is correct as-is for this path.
