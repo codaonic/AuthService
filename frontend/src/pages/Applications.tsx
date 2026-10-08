@@ -278,7 +278,6 @@ export function Applications() {
               <tr>
                 <th>Application</th>
                 <th>Type</th>
-                <th>Source</th>
                 <th>Login group</th>
                 <th>Status</th>
                 <th>Signup</th>
@@ -288,7 +287,7 @@ export function Applications() {
             <tbody>
               {filtered?.length === 0 && (
                 <tr>
-                  <td colSpan={7}>No applications match "{search}".</td>
+                  <td colSpan={6}>No applications match "{search}".</td>
                 </tr>
               )}
               {filtered?.map((c) => (
@@ -656,11 +655,6 @@ function ClientRow({
         <CopyableId value={client.client_id} max={32} />
       </td>
       <td>{client.client_type}</td>
-      <td>
-        {client.registration_method === "cimd" && <Badge variant="neutral">CIMD</Badge>}
-        {client.registration_method === "dcr" && <Badge variant="neutral">DCR</Badge>}
-        {client.registration_method === "static" && <Badge variant="neutral">Added by you</Badge>}
-      </td>
       <td>{client.pool_name ?? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>Standalone</span>}</td>
       <td>
         <Badge variant={client.enabled ? "success" : "neutral"}>{client.enabled ? "Active" : "Disabled"}</Badge>
