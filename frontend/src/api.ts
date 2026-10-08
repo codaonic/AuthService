@@ -88,7 +88,7 @@ export interface Client {
   roles_enabled: boolean;
   allow_signup_role_selection: boolean;
   cimd_fetched_at: string | null;
-  pool_name: string;
+  pool_name: string | null;
   client_secret?: string;
 }
 
@@ -103,10 +103,24 @@ export interface UserRoleRow {
   roles: string[];
 }
 
+export interface UserPage {
+  items: AppUser[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
 export interface AppUser {
   id: string;
   email: string;
-  pool_name: string;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  phone: string | null;
+  client_id: string;
+  client_name: string | null;
+  pool_name: string | null;
   status: string;
   email_verified: boolean;
 }

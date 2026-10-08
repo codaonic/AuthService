@@ -196,3 +196,11 @@ export function CloseIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function ChevronIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
