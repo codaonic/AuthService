@@ -182,20 +182,23 @@ export function Users() {
               </td>
               <td>
                 <div className="row-actions">
+                  <button
+                    type="button"
+                    className="btn btn--secondary"
+                    onClick={() => {
+                      setEditEmail(u.email);
+                      setEditPool("");
+                      setEditError(null);
+                      setEditing(u);
+                    }}
+                  >
+                    Edit
+                  </button>
                   <button type="button" className="btn btn--secondary" onClick={() => toggleStatus(u.id)}>
                     {u.status === "active" ? "Disable" : "Re-enable"}
                   </button>
                   <Menu
                     items={[
-                      {
-                        label: "Edit",
-                        onSelect: () => {
-                          setEditEmail(u.email);
-                          setEditPool("");
-                          setEditError(null);
-                          setEditing(u);
-                        },
-                      },
                       { label: "Sign out everywhere", onSelect: () => signOut(u.id) },
                       { label: "Send password reset", onSelect: () => sendReset(u.id) },
                       {

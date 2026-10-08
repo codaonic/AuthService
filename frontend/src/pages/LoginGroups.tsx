@@ -1,8 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Modal } from "../components/Modal";
 import { Badge } from "../components/Badge";
+import { Menu } from "../components/Menu";
 import { PasswordInput } from "../components/PasswordInput";
 import { EmptyState } from "../components/EmptyState";
+import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { AppsIcon, GroupsIcon, PlusIcon, UsersIcon } from "../components/Icons";
 import { api, ApiError, AppUser, Client, Pool } from "../api";
@@ -20,6 +22,7 @@ export function LoginGroups() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [addUserPool, setAddUserPool] = useState<string | null>(null);
+  const { confirm, dialog } = useConfirmDialog();
   const { show } = useToast();
 
   const load = () => {
@@ -46,6 +49,26 @@ export function LoginGroups() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const toggleUserStatus = async (u: AppUser) => {
+    await api.post(`/users/${u.id}/toggle-status`);
+    load();
+  };
+
+  const removeUser = (u: AppUser) => {
+    confirm({
+      title: `Delete ${u.email}?`,
+      description:
+        "Removes them from this list and immediately blocks all logins and revokes their sessions. Their history is kept, not erased.",
+      danger: true,
+      confirmLabel: "Delete",
+      onConfirm: async () => {
+        await api.delete(`/users/${u.id}`);
+        show(`${u.email} deleted`);
+        load();
+      },
+    });
   };
 
   const byPool = useMemo(() => {
@@ -81,7 +104,7 @@ export function LoginGroups() {
       <p className="lead">
         A <strong>login group</strong> is one shared set of accounts. The applications inside it
         share logins — one account works for all of them — and a user you add to any one of them
-        is added here, to the whole group, not to a single app.
+        is added here, to the whole group, not to a single app. Click a group to expand it.
       </p>
 
       {!loading && byPool.size === 0 && (
@@ -99,61 +122,124 @@ export function LoginGroups() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {Array.from(byPool.entries()).map(([poolName, { apps, users: groupUsers }]) => (
-          <div
+          <details
             key={poolName}
+            open
             style={{
-              padding: 20,
               background: "var(--surface)",
               border: "1px solid var(--border)",
               borderRadius: "var(--radius-lg)",
+              overflow: "hidden",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <h2 style={{ fontSize: 15, margin: 0 }}>{poolName}</h2>
-              <button type="button" className="btn btn--secondary" onClick={() => setAddUserPool(poolName)}>
+            <summary
+              style={{
+                listStyle: "none",
+                cursor: "pointer",
+                padding: 20,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ fontSize: 15, fontWeight: 600 }}>
+                {poolName}
+                <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 13, marginLeft: 10 }}>
+                  {apps.length} application{apps.length === 1 ? "" : "s"} · {groupUsers.length} user
+                  {groupUsers.length === 1 ? "" : "s"}
+                </span>
+              </span>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setAddUserPool(poolName);
+                }}
+              >
                 + Add user
               </button>
-            </div>
+            </summary>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
-                  <AppsIcon width={14} height={14} /> APPLICATIONS ({apps.length})
-                </div>
-                {apps.length === 0 ? (
-                  <p className="field__hint">No applications use this group yet.</p>
-                ) : (
-                  <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-                    {apps.map((c) => (
-                      <li key={c.id} style={{ fontSize: 13.5, opacity: c.enabled ? 1 : 0.55 }}>
-                        {displayName(c)} <span style={{ color: "var(--text-muted)" }}>({c.client_type})</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+            <div style={{ padding: "0 20px 20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
+                <AppsIcon width={14} height={14} /> APPLICATIONS ({apps.length})
               </div>
+              {apps.length === 0 ? (
+                <p className="field__hint" style={{ marginTop: 0 }}>No applications use this group yet.</p>
+              ) : (
+                <div className="table-wrap" style={{ marginBottom: 20 }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Application</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {apps.map((c) => (
+                        <tr key={c.id} style={{ opacity: c.enabled ? 1 : 0.55 }}>
+                          <td>{displayName(c)}</td>
+                          <td>{c.client_type}</td>
+                          <td>
+                            <Badge variant={c.enabled ? "success" : "neutral"}>
+                              {c.enabled ? "Active" : "Disabled"}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
-                  <UsersIcon width={14} height={14} /> USERS ({groupUsers.length})
-                </div>
-                {groupUsers.length === 0 ? (
-                  <p className="field__hint">No users in this group yet.</p>
-                ) : (
-                  <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-                    {groupUsers.map((u) => (
-                      <li key={u.id} style={{ fontSize: 13.5, display: "flex", alignItems: "center", gap: 8, opacity: u.status === "active" ? 1 : 0.55 }}>
-                        {u.email}
-                        <Badge variant={u.status === "active" ? "success" : "neutral"}>
-                          {u.status === "active" ? "Active" : "Disabled"}
-                        </Badge>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>
+                <UsersIcon width={14} height={14} /> USERS ({groupUsers.length})
               </div>
+              {groupUsers.length === 0 ? (
+                <p className="field__hint" style={{ marginTop: 0 }}>No users in this group yet.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Email</th>
+                        <th>Status</th>
+                        <th>Email verified</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupUsers.map((u) => (
+                        <tr key={u.id} style={{ opacity: u.status === "active" ? 1 : 0.55 }}>
+                          <td>{u.email}</td>
+                          <td>
+                            <Badge variant={u.status === "active" ? "success" : "neutral"}>
+                              {u.status === "active" ? "Active" : "Disabled"}
+                            </Badge>
+                          </td>
+                          <td>
+                            <Badge variant={u.email_verified ? "success" : "warning"}>
+                              {u.email_verified ? "Verified" : "Unverified"}
+                            </Badge>
+                          </td>
+                          <td>
+                            <div className="row-actions">
+                              <button type="button" className="btn btn--secondary" onClick={() => toggleUserStatus(u)}>
+                                {u.status === "active" ? "Disable" : "Re-enable"}
+                              </button>
+                              <Menu items={[{ label: "Delete", danger: true, onSelect: () => removeUser(u) }]} />
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-          </div>
+          </details>
         ))}
       </div>
 
@@ -194,6 +280,8 @@ export function LoginGroups() {
           }}
         />
       )}
+
+      {dialog}
     </>
   );
 }

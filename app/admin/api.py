@@ -90,7 +90,12 @@ def _pool_json(pool: UserPool) -> dict:
 
 
 def _resource_json(resource: Resource) -> dict:
-    return {"resource_id": resource.resource_id, "name": resource.name, "metadata_url": resource.metadata_url}
+    return {
+        "resource_id": resource.resource_id,
+        "name": resource.name,
+        "metadata_url": resource.metadata_url,
+        "enabled": resource.enabled,
+    }
 
 
 def _format_events(raw_events: list[dict]) -> list[dict]:
@@ -312,6 +317,26 @@ async def api_edit_resource(
     resource.metadata_url = body.metadata_url.strip() or None
     await db.commit()
     log_event("resource_updated", resource_id=resource_id, admin_id=str(admin.id))
+    return _resource_json(resource)
+
+
+@router.post("/resources/{resource_id:path}/toggle-enabled")
+async def api_toggle_resource_enabled(
+    resource_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Resource).where(Resource.resource_id == resource_id))
+    resource = result.scalar_one_or_none()
+    if resource is None:
+        raise HTTPException(404, "unknown_resource")
+    resource.enabled = not resource.enabled
+    await db.commit()
+    log_event(
+        "resource_" + ("enabled" if resource.enabled else "disabled"),
+        resource_id=resource_id,
+        admin_id=str(admin.id),
+    )
     return _resource_json(resource)
 
 

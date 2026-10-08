@@ -129,6 +129,12 @@ class Resource(Base):
     resource_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     name: Mapped[str] = mapped_column(String)
     metadata_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Off (disabled): /token refuses to mint any access token audience-bound
+    # to this resource, for every client -- see app/oidc/token.py. Clients
+    # requesting a `resource` that was never registered here at all are
+    # unaffected either way; this only gates resources an admin explicitly
+    # catalogued and then explicitly turned off.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Consent(Base):

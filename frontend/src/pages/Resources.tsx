@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
+import { Badge } from "../components/Badge";
 import { CopyableId } from "../components/CopyableId";
 import { EmptyState } from "../components/EmptyState";
 import { Menu } from "../components/Menu";
@@ -102,6 +103,22 @@ export function Resources() {
     });
   };
 
+  const toggleEnabled = (r: Resource) => {
+    confirm({
+      title: `${r.enabled ? "Disable" : "Re-enable"} ${r.name}?`,
+      description: r.enabled
+        ? "Immediately blocks every client from getting a new access token for this resource. Tokens already issued for it keep working until they expire."
+        : "Lets clients request access tokens for this resource again.",
+      danger: r.enabled,
+      confirmLabel: r.enabled ? "Disable" : "Re-enable",
+      onConfirm: async () => {
+        await api.post(`/resources/${encodeURIComponent(r.resource_id)}/toggle-enabled`);
+        show(r.enabled ? `${r.name} disabled` : `${r.name} re-enabled`);
+        load();
+      },
+    });
+  };
+
   return (
     <>
       <div className="header">
@@ -141,12 +158,13 @@ export function Resources() {
                 <th>Resource</th>
                 <th>Audience / Resource ID</th>
                 <th>PRM Metadata</th>
+                <th>Status</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {resources?.map((r) => (
-                <tr key={r.resource_id}>
+                <tr key={r.resource_id} style={{ opacity: r.enabled ? 1 : 0.55 }}>
                   <td>
                     <div style={{ fontWeight: 600 }}>{r.name}</div>
                   </td>
@@ -161,6 +179,9 @@ export function Resources() {
                     )}
                   </td>
                   <td>
+                    <Badge variant={r.enabled ? "success" : "neutral"}>{r.enabled ? "Active" : "Disabled"}</Badge>
+                  </td>
+                  <td>
                     <div className="row-actions">
                       <button
                         type="button"
@@ -173,6 +194,11 @@ export function Resources() {
                         items={[
                           { label: "Edit details", onSelect: () => openEdit(r) },
                           { label: "Integration code & snippets", onSelect: () => setGuideResource(r) },
+                          {
+                            label: r.enabled ? "Disable" : "Re-enable",
+                            onSelect: () => toggleEnabled(r),
+                            danger: r.enabled,
+                          },
                           { label: "Delete", onSelect: () => onDelete(r), danger: true },
                         ]}
                       />

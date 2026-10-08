@@ -2,11 +2,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import client_ip, log_event
 from app.config import get_settings
-from app.db.models import User
+from app.db.models import Resource, User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import set_tenant_pool
@@ -87,6 +88,15 @@ async def token_endpoint(
         user = await db.get(User, uuid.UUID(subject))
         if user is None or user.status != "active":
             raise HTTPException(400, "invalid_grant")
+
+    if resource:
+        # Only gates a resource an admin explicitly catalogued and then
+        # explicitly disabled -- an unregistered `resource` value is
+        # unaffected, same as always (registration here has never been
+        # required, only now optionally enforceable once it exists).
+        registered = (await db.execute(select(Resource).where(Resource.resource_id == resource))).scalar_one_or_none()
+        if registered is not None and not registered.enabled:
+            raise HTTPException(400, "invalid_target: resource is disabled")
 
     access_token, expires_in = mint_access_token(
         sub=subject, aud=resource, client_id=client_id, scope=scope

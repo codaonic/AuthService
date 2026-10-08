@@ -105,6 +105,19 @@ async def test_delete_resource_via_admin(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_toggle_resource_enabled(client, db_session):
+    await _login_admin(client, db_session)
+    await client.post("/admin/api/resources", json={"resource_id": "https://api.example.com", "name": "API"})
+
+    resp = await client.post("/admin/api/resources/https://api.example.com/toggle-enabled")
+    assert resp.status_code == 200
+    assert resp.json()["enabled"] is False
+
+    result = await db_session.execute(select(Resource).where(Resource.resource_id == "https://api.example.com"))
+    assert result.scalar_one().enabled is False
+
+
+@pytest.mark.asyncio
 async def test_system_endpoints(client, db_session):
     await _login_admin(client, db_session)
     resp = await client.get("/admin/api/system/endpoints")

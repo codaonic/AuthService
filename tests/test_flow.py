@@ -176,6 +176,63 @@ async def test_client_credentials_grant(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_token_rejected_for_disabled_resource(client, db_session):
+    from tests.helpers import create_resource
+
+    await create_client(
+        db_session,
+        client_id="service-a",
+        client_type="confidential",
+        grant_types=("client_credentials",),
+        client_secret="service-secret",
+    )
+    await create_resource(db_session, resource_id=RESOURCE)
+
+    from sqlalchemy import select
+
+    from app.db.models import Resource
+
+    resource = (await db_session.execute(select(Resource).where(Resource.resource_id == RESOURCE))).scalar_one()
+    resource.enabled = False
+    await db_session.commit()
+
+    resp = await client.post(
+        "/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": "service-a",
+            "client_secret": "service-secret",
+            "resource": RESOURCE,
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_token_allowed_for_unregistered_resource(client, db_session):
+    """A `resource` that was never catalogued at all is unaffected -- only
+    ones an admin explicitly registered and then explicitly disabled."""
+    await create_client(
+        db_session,
+        client_id="service-a",
+        client_type="confidential",
+        grant_types=("client_credentials",),
+        client_secret="service-secret",
+    )
+
+    resp = await client.post(
+        "/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": "service-a",
+            "client_secret": "service-secret",
+            "resource": "https://never-registered.example.com",
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_client_credentials_scope_narrowed_to_subset(client, db_session):
     await create_client(
         db_session,

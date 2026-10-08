@@ -52,6 +52,7 @@ export interface Resource {
   resource_id: string;
   name: string;
   metadata_url: string | null;
+  enabled: boolean;
 }
 
 export interface SystemEndpoints {
