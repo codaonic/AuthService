@@ -38,10 +38,17 @@ from app.db.models import User, WebAuthnCredential
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
-from app.oidc.authorize import _continue_flow, _find_user_for_client, _get_flow_client, _user_can_access_client
+from app.oidc.authorize import (
+    _continue_flow,
+    _find_user_for_client,
+    _get_flow_client,
+    _user_can_access_client,
+    asset_version,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+templates.env.globals["asset_version"] = asset_version
 
 
 async def _current_user(request: Request, db: AsyncSession, redis: Redis) -> User | None:

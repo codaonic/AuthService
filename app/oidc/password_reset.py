@@ -22,11 +22,12 @@ from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
 from app.email import send_password_reset_email, send_verification_email
 from app.middleware.rate_limit import limiter
-from app.oidc.authorize import _find_user_for_client, _get_flow_client
+from app.oidc.authorize import _find_user_for_client, _get_flow_client, asset_version
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+templates.env.globals["asset_version"] = asset_version
 
 MIN_PASSWORD_LENGTH = 8
 

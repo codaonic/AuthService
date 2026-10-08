@@ -1,6 +1,7 @@
 import logging
 import secrets
 import uuid
+from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -28,6 +29,14 @@ from app.oidc.scope import resolve_scope
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+
+def asset_version() -> str:
+    """Appended to static asset URLs so browsers refetch them after a change."""
+    return str(int(max(p.stat().st_mtime for p in Path("app/static").rglob("*") if p.is_file())))
+
+
+templates.env.globals["asset_version"] = asset_version
 
 FLOW_KEY_PREFIX = "flow:"
 CODE_KEY_PREFIX = "code:"

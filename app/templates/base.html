@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v={{ asset_version() }}">
   {% if brand_color %}
   <style>
     :root {
@@ -40,7 +40,7 @@
     </div>
     <p class="page__footer">{% block footer %}Secured sign-in{% endblock %}</p>
   </main>
-  <script src="{{ url_for('static', path='js/auth.js') }}" defer></script>
+  <script src="{{ url_for('static', path='js/auth.js') }}?v={{ asset_version() }}" defer></script>
   {% block extra_scripts %}{% endblock %}
 </body>
 </html>
