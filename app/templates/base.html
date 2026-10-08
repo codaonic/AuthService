@@ -7,6 +7,9 @@
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}Sign in{% endblock %}</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234f46e5'%3E%3Cpath d='M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 0 1 6 0v3H9z'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}">
   {% if brand_color %}
   <style>
@@ -14,15 +17,16 @@
       --color-primary: {{ brand_color }};
       --color-primary-hover: color-mix(in srgb, {{ brand_color }} 85%, black);
       --color-primary-active: color-mix(in srgb, {{ brand_color }} 70%, black);
-      --color-primary-soft: color-mix(in srgb, {{ brand_color }} 12%, white);
-      --ring: 0 0 0 4px color-mix(in srgb, {{ brand_color }} 18%, transparent);
+      --color-primary-soft: color-mix(in srgb, {{ brand_color }} 12%, transparent);
+      --color-primary-glow: color-mix(in srgb, {{ brand_color }} 30%, transparent);
+      --ring: 0 0 0 3px color-mix(in srgb, {{ brand_color }} 22%, transparent);
     }
   </style>
   {% endif %}
 </head>
 <body>
   <main class="page">
-    <div class="card">
+    <div class="card {% block card_class %}{% endblock %}">
       <div class="card__header">
         {% if logo_url %}
         <img src="{{ logo_url }}" alt="" class="brand-icon brand-icon--logo">

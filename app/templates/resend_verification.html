@@ -19,7 +19,11 @@
 
 {% block content %}
 {% if sent %}
-<div class="alert" role="status">
+<div class="alert alert--success" role="status">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M8 12.5l2.5 2.5L16 9.5"/>
+  </svg>
   <span>If that email needs verifying, we've sent a new link.</span>
 </div>
 <p class="form-switch"><a href="/login?flow_id={{ flow_id }}">Back to sign in</a></p>

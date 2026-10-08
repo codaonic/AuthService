@@ -33,7 +33,7 @@
 <form method="post" action="/signup" class="form" novalidate>
   <input type="hidden" name="flow_id" value="{{ flow_id }}">
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+  <div class="field-row">
     <div class="field">
       <label for="first_name">First name</label>
       <input id="first_name" type="text" name="first_name" required autofocus autocomplete="given-name" placeholder="Jane" value="{{ first_name or '' }}">
