@@ -9,8 +9,6 @@ document.addEventListener("click", (event) => {
   input.type = showing ? "password" : "text";
   toggle.setAttribute("aria-pressed", String(!showing));
   toggle.setAttribute("aria-label", showing ? "Show password" : "Hide password");
-  toggle.querySelector(".icon-eye").hidden = !showing;
-  toggle.querySelector(".icon-eye-off").hidden = showing;
 });
 
 document.querySelectorAll("form.form").forEach((form) => {

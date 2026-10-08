@@ -427,6 +427,19 @@ input:focus {
   transition: color var(--transition), background var(--transition);
 }
 
+.toggle-visibility svg {
+  display: block;
+}
+
+.toggle-visibility .icon-eye-off,
+.toggle-visibility[aria-pressed="true"] .icon-eye {
+  display: none;
+}
+
+.toggle-visibility[aria-pressed="true"] .icon-eye-off {
+  display: block;
+}
+
 .toggle-visibility:hover {
   color: var(--color-text);
   background: var(--color-surface-hover);
@@ -694,4 +707,96 @@ input:focus {
   max-width: 400px;
   line-height: 1.5;
   margin: 0;
+}
+
+/* --- Fluid sizing: spacing and controls scale with the viewport so the
+   card fits short and narrow screens without scrolling, and relaxes back to
+   the full-size layout on tall ones. --- */
+:root {
+  --fit-page-y: clamp(10px, 2.6vh, 32px);
+  --fit-page-x: clamp(12px, 4vw, 20px);
+  --fit-page-gap: clamp(8px, 2vh, 20px);
+  --fit-card-y: clamp(18px, 3.8vh, 38px);
+  --fit-card-x: clamp(18px, 6vw, 34px);
+  --fit-header-gap: clamp(12px, 2.8vh, 28px);
+  --fit-icon: clamp(36px, 6vh, 52px);
+  --fit-title: clamp(19px, 2.9vh, 24px);
+  --fit-form-gap: clamp(10px, 2vh, 18px);
+  --fit-field-gap: clamp(4px, 0.7vh, 6px);
+  --fit-control: clamp(36px, 5vh, 42px);
+  --fit-divider: clamp(8px, 2vh, 18px);
+  --fit-switch: clamp(10px, 2.3vh, 20px);
+}
+
+.page {
+  padding: var(--fit-page-y) var(--fit-page-x);
+  gap: var(--fit-page-gap);
+}
+
+.card {
+  padding: var(--fit-card-y) var(--fit-card-x);
+}
+
+.card__header {
+  margin-bottom: var(--fit-header-gap);
+}
+
+.brand-icon {
+  width: var(--fit-icon);
+  height: var(--fit-icon);
+  margin-bottom: calc(var(--fit-header-gap) * 0.6);
+}
+
+.brand-icon svg {
+  width: 50%;
+  height: 50%;
+}
+
+.card__title {
+  font-size: var(--fit-title);
+  margin-bottom: calc(var(--fit-field-gap) * 1.2);
+}
+
+.alert {
+  margin-bottom: var(--fit-form-gap);
+}
+
+.form {
+  gap: var(--fit-form-gap);
+}
+
+.field {
+  gap: var(--fit-field-gap);
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"],
+input[type="tel"],
+select,
+.btn {
+  height: var(--fit-control);
+}
+
+.auth-divider {
+  margin: var(--fit-divider) 0;
+}
+
+.form-switch {
+  margin-top: var(--fit-switch);
+}
+
+@media (max-height: 640px) {
+  .card__subtitle {
+    font-size: 13px;
+  }
+
+  .alert {
+    padding: 8px 12px;
+  }
+
+  .page__footer {
+    font-size: 12px;
+    line-height: 1.4;
+  }
 }

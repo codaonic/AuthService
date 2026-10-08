@@ -49,10 +49,11 @@
     <input id="email" type="email" name="email" required autocomplete="username" placeholder="you@example.com" value="{{ email or '' }}">
   </div>
 
+  <div class="field-row">
   <div class="field">
     <label for="password">Password</label>
     <div class="input-group">
-      <input id="password" type="password" name="password" required autocomplete="new-password" placeholder="At least 8 characters">
+      <input id="password" type="password" name="password" required autocomplete="new-password" placeholder="8+ characters">
       <button type="button" class="toggle-visibility" data-target="password" aria-label="Show password" aria-pressed="false">
         <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
@@ -84,6 +85,7 @@
       </button>
     </div>
   </div>
+  </div>
 
   {% if roles %}
   <div class="field">
@@ -103,4 +105,4 @@
 <p class="form-switch">Already have an account? <a href="/login?flow_id={{ flow_id }}">Sign in</a></p>
 {% endblock %}
 
-{% block footer %}Your account is created for this application and any others sharing its user pool.{% endblock %}
+{% block footer %}Your account works for {{ client_name or client_id or "this application" }} and any other applications that share its sign-in.{% endblock %}
