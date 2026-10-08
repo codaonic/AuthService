@@ -452,6 +452,53 @@ async def test_edit_user_email(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_edit_user_blank_pool_keeps_current_group(client, db_session):
+    await _login_admin(client, db_session)
+    user = await create_user(db_session, email="alice@example.com", pool_name="acme")
+
+    resp = await client.patch(f"/admin/api/users/{user.id}", json={"email": "alice@example.com", "user_pool": ""})
+    assert resp.status_code == 200
+    assert resp.json()["pool_name"] == "acme"
+
+
+@pytest.mark.asyncio
+async def test_edit_user_moves_pool_and_revokes_sessions_and_tokens(client, db_session, redis_client):
+    await _login_admin(client, db_session)
+    user = await create_user(db_session, email="alice@example.com", pool_name="acme")
+
+    from app.auth.sessions import create_session
+    from app.oidc.refresh import issue_refresh_token
+
+    session_id = await create_session(redis_client, str(user.id))
+    refresh_token = await issue_refresh_token(
+        db_session, redis_client, str(user.id), "test-client", "https://api.example.com", scope="profile"
+    )
+
+    resp = await client.patch(
+        f"/admin/api/users/{user.id}", json={"email": "alice@example.com", "user_pool": "contractors"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["pool_name"] == "contractors"
+
+    import hashlib
+
+    assert await redis_client.exists(f"session:{session_id}") == 0
+    assert await redis_client.exists(f"refresh:{hashlib.sha256(refresh_token.encode()).hexdigest()}") == 0
+
+
+@pytest.mark.asyncio
+async def test_edit_user_cannot_move_into_a_pool_with_email_collision(client, db_session):
+    await _login_admin(client, db_session)
+    user = await create_user(db_session, email="alice@example.com", pool_name="acme")
+    await create_user(db_session, email="alice@example.com", pool_name="contractors")
+
+    resp = await client.patch(
+        f"/admin/api/users/{user.id}", json={"email": "alice@example.com", "user_pool": "contractors"}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_delete_user_is_soft_delete_and_disables_it(client, db_session):
     await _login_admin(client, db_session)
     user = await create_user(db_session, email="gone@example.com")

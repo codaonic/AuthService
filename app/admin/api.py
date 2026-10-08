@@ -866,26 +866,47 @@ async def api_toggle_user_status(
 
 class EditUserBody(BaseModel):
     email: str
+    user_pool: str = ""  # blank = leave their current group unchanged
 
 
 @router.patch("/users/{user_id}")
 async def api_edit_user(
-    user_id: str, body: EditUserBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    user_id: str,
+    body: EditUserBody,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     user = await db.get(User, uuid.UUID(user_id))
     if user is None or user.deleted_at is not None:
         raise HTTPException(404, "unknown_user")
 
+    target_pool_id = user.user_pool_id
+    if body.user_pool.strip():
+        target_pool = await get_or_create_pool(db, body.user_pool.strip())
+        target_pool_id = target_pool.id
+
     existing = await db.execute(
         select(User).where(
-            User.email == body.email, User.user_pool_id == user.user_pool_id, User.id != user.id
+            User.email == body.email, User.user_pool_id == target_pool_id, User.id != user.id
         )
     )
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(400, f"'{body.email}' already exists in this login group")
+        raise HTTPException(400, f"'{body.email}' already exists in that login group")
 
+    pool_changed = target_pool_id != user.user_pool_id
     user.email = body.email
+    user.user_pool_id = target_pool_id
     await db.commit()
+
+    if pool_changed:
+        # Moving pools changes which apps they can reach -- an existing
+        # session or refresh token issued under the old pool must not go
+        # on working as if nothing changed.
+        await revoke_all_sessions_for_user(redis, str(user.id))
+        await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
+        log_event("user_pool_changed", user_id=user_id, admin_id=str(admin.id))
+
     pool = await db.get(UserPool, user.user_pool_id)
     return _user_json(user, pool.name)
 

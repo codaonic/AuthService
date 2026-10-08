@@ -26,6 +26,7 @@ export function Users() {
   const [submitting, setSubmitting] = useState(false);
   const [editing, setEditing] = useState<AppUser | null>(null);
   const [editEmail, setEditEmail] = useState("");
+  const [editPool, setEditPool] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
   const { confirm, dialog } = useConfirmDialog();
@@ -101,8 +102,13 @@ export function Users() {
     setEditSubmitting(true);
     setEditError(null);
     try {
-      await api.patch(`/users/${editing.id}`, { email: editEmail });
+      await api.patch(`/users/${editing.id}`, { email: editEmail, user_pool: editPool.trim() });
       setEditing(null);
+      show(
+        editPool.trim() && editPool.trim() !== editing.pool_name
+          ? `Moved to ${editPool.trim()} — they've been signed out everywhere`
+          : "Saved",
+      );
       load();
     } catch (err) {
       setEditError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -182,9 +188,10 @@ export function Users() {
                   <Menu
                     items={[
                       {
-                        label: "Edit email",
+                        label: "Edit",
                         onSelect: () => {
                           setEditEmail(u.email);
+                          setEditPool("");
                           setEditError(null);
                           setEditing(u);
                         },
@@ -294,7 +301,20 @@ export function Users() {
                 value={editEmail}
                 onChange={(e) => setEditEmail(e.target.value)}
               />
-              <span className="field__hint">Their login group ({editing.pool_name}) stays the same.</span>
+            </div>
+            <div className="field">
+              <label htmlFor="edit-pool">Login group</label>
+              <input
+                id="edit-pool"
+                list="pool-options"
+                placeholder={editing.pool_name}
+                value={editPool}
+                onChange={(e) => setEditPool(e.target.value)}
+              />
+              <span className="field__hint">
+                Currently <strong>{editing.pool_name}</strong>. Leave blank to keep it — moving them to
+                a different group signs them out everywhere and changes which apps they can log into.
+              </span>
             </div>
             <button type="submit" className="btn btn--primary btn--block" disabled={editSubmitting}>
               Save
