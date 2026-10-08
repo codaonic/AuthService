@@ -20,11 +20,16 @@ from app.db.models import (
     Client,
     ClientAccessGrant,
     ClientRole,
+    Contact,
+    Consent,
+    RefreshToken,
     Resource,
     User,
     UserPool,
     UserRoleAssignment,
+    WebAuthnCredential,
 )
+from app.db.contacts import upsert_contact
 from app.db.pools import get_or_create_pool
 from app.db.redis_client import get_redis
 from app.db.session import get_db
@@ -75,10 +80,16 @@ def _client_json(client: Client, pool_name: str) -> dict:
     }
 
 
-def _user_json(user: User, pool_name: str) -> dict:
+def _user_json(user: User, client_name: str | None, pool_name: str | None) -> dict:
     return {
         "id": str(user.id),
         "email": user.email,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "phone": user.phone,
+        "client_id": user.client_id,
+        "client_name": client_name,
         "pool_name": pool_name,
         "status": user.status,
         "email_verified": user.email_verified,
@@ -266,6 +277,117 @@ async def api_create_pool(
     return _pool_json(pool)
 
 
+@router.delete("/pools/{name}", status_code=204)
+async def api_delete_pool(
+    name: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(UserPool).where(UserPool.name == name))
+    pool = result.scalar_one_or_none()
+    if pool is None:
+        raise HTTPException(404)
+    # Detach all clients from this pool (make them standalone) rather than
+    # deleting them -- the pool is just a grouping, not a container.
+    for client in (await db.execute(select(Client).where(Client.user_pool_id == pool.id))).scalars().all():
+        client.user_pool_id = None
+    await db.delete(pool)
+    await db.commit()
+    log_event("pool_deleted", pool_name=name, admin_id=str(admin.id))
+
+
+@router.post("/pools/{name}/assign-client", status_code=200)
+async def api_pool_assign_client(
+    name: str,
+    body: dict,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign an application to this login group (sets client.user_pool_id)."""
+    pool = (await db.execute(select(UserPool).where(UserPool.name == name))).scalar_one_or_none()
+    if pool is None:
+        raise HTTPException(404, "unknown_pool")
+    client_id = body.get("client_id", "").strip()
+    if not client_id:
+        raise HTTPException(400, "client_id required")
+    client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.user_pool_id = pool.id
+    await db.commit()
+    log_event("client_assigned_to_pool", client_id=client_id, pool_name=name, admin_id=str(admin.id))
+    return {"ok": True}
+
+
+@router.post("/pools/{name}/remove-client", status_code=200)
+async def api_pool_remove_client(
+    name: str,
+    body: dict,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an application from this login group (makes it standalone)."""
+    pool = (await db.execute(select(UserPool).where(UserPool.name == name))).scalar_one_or_none()
+    if pool is None:
+        raise HTTPException(404, "unknown_pool")
+    client_id = body.get("client_id", "").strip()
+    client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    client.user_pool_id = None
+    await db.commit()
+    log_event("client_removed_from_pool", client_id=client_id, pool_name=name, admin_id=str(admin.id))
+    return {"ok": True}
+
+
+# --- Maintenance ---
+
+
+@router.post("/maintenance/cleanup-empty-pools", status_code=200)
+async def api_cleanup_empty_pools(
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove all pools that have no applications. Clients are detached (made standalone).
+    Safe to call multiple times — idempotent.
+    """
+    empty_pools = (
+        await db.execute(
+            select(UserPool).where(
+                ~UserPool.id.in_(
+                    select(Client.user_pool_id).where(Client.user_pool_id.is_not(None)).scalar_subquery()
+                )
+            )
+        )
+    ).scalars().all()
+
+    removed = []
+    for pool in empty_pools:
+        await db.delete(pool)
+        removed.append(pool.name)
+
+    await db.commit()
+    log_event("cleanup_empty_pools", removed=removed, admin_id=str(admin.id))
+    return {"removed_pools": removed}
+
+
+# --- Contacts ---
+
+
+@router.get("/contacts")
+async def api_list_contacts(admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Contact).order_by(Contact.first_seen_at.desc()))
+    contacts = result.scalars().all()
+    return [
+        {
+            "id": str(c.id),
+            "email": c.email,
+            "first_seen_at": c.first_seen_at.isoformat(),
+            "first_pool": c.first_pool,
+            "first_app": c.first_app,
+        }
+        for c in contacts
+    ]
+
+
 # --- Resources ---
 
 
@@ -381,11 +503,10 @@ async def api_system_endpoints(admin: AdminUser = Depends(require_admin)):
 async def api_list_clients(admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Client, UserPool.name)
-        .join(UserPool)
-        .where(Client.deleted_at.is_(None))
+        .outerjoin(UserPool, Client.user_pool_id == UserPool.id)
         .order_by(Client.client_id)
     )
-    return [_client_json(c, pool_name) for c, pool_name in result.all()]
+    return [_client_json(c, pool_name or "") for c, pool_name in result.all()]
 
 
 class CreateClientBody(BaseModel):
@@ -396,7 +517,7 @@ class CreateClientBody(BaseModel):
     grant_types: list[str] = []
     scope: str = ""
     application_type: str = "web"
-    user_pool: str = "default"
+    user_pool: str = ""
     allow_signup: bool = False
     logo_url: str = ""
     brand_color: str = ""
@@ -412,10 +533,10 @@ async def api_create_client(
 
     is_public = body.client_type == "public"
     client_secret = None if is_public else secrets.token_urlsafe(32)
-    pool = await get_or_create_pool(db, body.user_pool)
+    pool = await get_or_create_pool(db, body.user_pool.strip()) if body.user_pool.strip() else None
 
     client = Client(
-        user_pool_id=pool.id,
+        user_pool_id=pool.id if pool else None,
         client_id=body.client_id,
         client_name=body.client_name.strip() or None,
         client_secret_hash=hash_password(client_secret) if client_secret else None,
@@ -432,7 +553,7 @@ async def api_create_client(
     db.add(client)
     await db.commit()
 
-    result = {**_client_json(client, pool.name), "client_secret": client_secret}
+    result = {**_client_json(client, pool.name if pool else ""), "client_secret": client_secret}
     return result
 
 
@@ -446,7 +567,7 @@ class EditClientBody(BaseModel):
 async def api_edit_client(
     client_id: str, body: EditClientBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id, Client.deleted_at.is_(None)))
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
     client = result.scalar_one_or_none()
     if client is None:
         raise HTTPException(404, "unknown_client")
@@ -454,20 +575,56 @@ async def api_edit_client(
     client.redirect_uris = [u.strip() for u in body.redirect_uris.splitlines() if u.strip()]
     client.allowed_scope = body.scope
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.delete("/clients/{client_id}", status_code=204)
 async def api_delete_client(
-    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id, Client.deleted_at.is_(None)))
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
     client = result.scalar_one_or_none()
     if client is None:
         raise HTTPException(404, "unknown_client")
-    client.deleted_at = datetime.now(timezone.utc)
-    client.enabled = False
+
+    # A real DELETE, not a soft one -- clear every row that points at this
+    # client_id first, since none of those foreign keys cascade at the DB
+    # level. Order matters: user_role_assignments references client_roles,
+    # so it has to go before client_roles does.
+    for assignment in (
+        await db.execute(select(UserRoleAssignment).where(UserRoleAssignment.client_id == client_id))
+    ).scalars().all():
+        await db.delete(assignment)
+    for role in (await db.execute(select(ClientRole).where(ClientRole.client_id == client_id))).scalars().all():
+        await db.delete(role)
+    for grant in (
+        await db.execute(select(ClientAccessGrant).where(ClientAccessGrant.client_id == client_id))
+    ).scalars().all():
+        await db.delete(grant)
+    for consent in (await db.execute(select(Consent).where(Consent.client_id == client_id))).scalars().all():
+        await db.delete(consent)
+    for token in (await db.execute(select(RefreshToken).where(RefreshToken.client_id == client_id))).scalars().all():
+        await db.delete(token)
+
+    # Delete all users who registered through this client.
+    for u in (await db.execute(select(User).where(User.client_id == client_id))).scalars().all():
+        await _hard_delete_user(db, redis, u)
+
+    pool_id = client.user_pool_id
+    await db.delete(client)
+    await db.flush()
+
+    # If this was the last application in the pool, delete the empty pool.
+    if pool_id is not None:
+        remaining = await db.scalar(
+            select(func.count()).select_from(Client).where(Client.user_pool_id == pool_id)
+        )
+        if not remaining:
+            pool = await db.get(UserPool, pool_id)
+            if pool:
+                await db.delete(pool)
+
     await db.commit()
     log_event("client_deleted", client_id=client_id, admin_id=str(admin.id))
 
@@ -486,8 +643,8 @@ async def api_set_client_mtls(
         raise HTTPException(404, "unknown_client")
     client.mtls_cert_thumbprint = body.thumbprint.strip().upper() or None
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 class BrandingBody(BaseModel):
@@ -509,8 +666,8 @@ async def api_set_client_branding(
     client.logo_url = body.logo_url.strip() or None
     client.brand_color = body.brand_color.strip() or None
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.post("/clients/{client_id}/toggle-signup")
@@ -523,8 +680,8 @@ async def api_toggle_client_signup(
         raise HTTPException(404, "unknown_client")
     client.allow_signup = not client.allow_signup
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.post("/clients/{client_id}/toggle-enabled")
@@ -543,8 +700,8 @@ async def api_toggle_client_enabled(
     log_event(
         "client_" + ("enabled" if client.enabled else "disabled"), client_id=client_id, admin_id=str(admin.id)
     )
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.post("/clients/{client_id}/toggle-restrict-access")
@@ -562,8 +719,8 @@ async def api_toggle_client_restrict_access(
         client_id=client_id,
         admin_id=str(admin.id),
     )
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.get("/clients/{client_id}/access")
@@ -573,7 +730,7 @@ async def api_list_client_access(
     result = await db.execute(
         select(User.id, User.email)
         .join(ClientAccessGrant, ClientAccessGrant.user_id == User.id)
-        .where(ClientAccessGrant.client_id == client_id, User.deleted_at.is_(None))
+        .where(ClientAccessGrant.client_id == client_id)
         .order_by(User.email)
     )
     return [{"user_id": str(user_id), "email": email} for user_id, email in result.all()]
@@ -591,7 +748,15 @@ async def api_grant_client_access(
     if client is None:
         raise HTTPException(404, "unknown_client")
     user = await db.get(User, uuid.UUID(body.user_id))
-    if user is None or user.user_pool_id != client.user_pool_id:
+    if user is None:
+        raise HTTPException(400, "unknown_user")
+    user_client = (await db.execute(select(Client).where(Client.client_id == user.client_id))).scalar_one_or_none()
+    in_same_pool = (
+        client.user_pool_id is not None
+        and user_client is not None
+        and user_client.user_pool_id == client.user_pool_id
+    )
+    if user.client_id != client.client_id and not in_same_pool:
         raise HTTPException(400, "That user isn't in this app's login group")
 
     existing = await db.execute(
@@ -639,8 +804,8 @@ async def api_toggle_client_roles_enabled(
         raise HTTPException(404, "unknown_client")
     client.roles_enabled = not client.roles_enabled
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.post("/clients/{client_id}/toggle-signup-role-selection")
@@ -653,8 +818,8 @@ async def api_toggle_signup_role_selection(
         raise HTTPException(404, "unknown_client")
     client.allow_signup_role_selection = not client.allow_signup_role_selection
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id)
-    return _client_json(client, pool.name)
+    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
+    return _client_json(client, pool.name if pool else "")
 
 
 @router.get("/clients/{client_id}/roles")
@@ -728,11 +893,15 @@ async def api_list_client_user_roles(
     if client is None:
         raise HTTPException(404, "unknown_client")
 
-    users = await db.execute(
-        select(User)
-        .where(User.user_pool_id == client.user_pool_id, User.deleted_at.is_(None))
-        .order_by(User.email)
-    )
+    if client.user_pool_id is not None:
+        pool_client_ids = select(Client.client_id).where(Client.user_pool_id == client.user_pool_id)
+        users = await db.execute(
+            select(User).where(User.client_id.in_(pool_client_ids)).order_by(User.email)
+        )
+    else:
+        users = await db.execute(
+            select(User).where(User.client_id == client.client_id).order_by(User.email)
+        )
     assignments = await db.execute(
         select(UserRoleAssignment.user_id, UserRoleAssignment.role).where(
             UserRoleAssignment.client_id == client_id
@@ -771,7 +940,15 @@ async def api_assign_user_role(
     role_client = (
         await db.execute(select(Client).where(Client.client_id == body.client_id))
     ).scalar_one_or_none()
-    if role_client is None or role_client.user_pool_id != user.user_pool_id:
+    if role_client is None:
+        raise HTTPException(400, "That role belongs to an unknown app")
+    user_client = (await db.execute(select(Client).where(Client.client_id == user.client_id))).scalar_one_or_none()
+    in_same_pool = (
+        role_client.user_pool_id is not None
+        and user_client is not None
+        and user_client.user_pool_id == role_client.user_pool_id
+    )
+    if user.client_id != role_client.client_id and not in_same_pool:
         raise HTTPException(400, "That role belongs to an app outside this user's login group")
 
     existing = await db.execute(
@@ -812,20 +989,64 @@ async def api_unassign_user_role(
 
 @router.get("/users")
 async def api_list_users(
-    pool: str | None = None, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    pool: str | None = None,
+    client: str | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ):
-    query = select(User, UserPool.name).join(UserPool).where(User.deleted_at.is_(None)).order_by(User.email)
+    page_size = max(1, min(page_size, 200))
+    page = max(1, page)
+
+    base = (
+        select(User, Client.client_name, UserPool.name)
+        .join(Client, User.client_id == Client.client_id)
+        .outerjoin(UserPool, Client.user_pool_id == UserPool.id)
+        .order_by(User.email, User.client_id)
+    )
     if pool:
-        query = query.where(UserPool.name == pool)
-    result = await db.execute(query)
-    return [_user_json(u, pool_name) for u, pool_name in result.all()]
+        base = base.where(UserPool.name == pool)
+    if client:
+        base = base.where(User.client_id == client)
+    if search:
+        q = f"%{search.strip()}%"
+        from sqlalchemy import or_
+        base = base.where(
+            or_(
+                User.email.ilike(q),
+                User.first_name.ilike(q),
+                User.last_name.ilike(q),
+                User.username.ilike(q),
+                Client.client_name.ilike(q),
+                User.client_id.ilike(q),
+            )
+        )
+
+    total: int = (await db.scalar(
+        select(func.count()).select_from(base.subquery())
+    )) or 0
+
+    rows = (await db.execute(base.offset((page - 1) * page_size).limit(page_size))).all()
+    return {
+        "items": [_user_json(u, client_name, pool_name) for u, client_name, pool_name in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, -(-total // page_size)),  # ceiling division
+    }
 
 
 class CreateUserBody(BaseModel):
     email: str
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
     password: str
     confirm_password: str
-    user_pool: str = "default"
+    client_id: str  # the application to add this user to
     email_verified: bool = True
 
 
@@ -841,21 +1062,32 @@ async def api_create_user(
     if len(body.password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
-    pool = await get_or_create_pool(db, body.user_pool)
-    existing = await db.execute(select(User).where(User.email == body.email, User.user_pool_id == pool.id))
+    app_client = (await db.execute(select(Client).where(Client.client_id == body.client_id))).scalar_one_or_none()
+    if app_client is None:
+        raise HTTPException(400, f"Application '{body.client_id}' not found")
+
+    existing = await db.execute(select(User).where(User.email == body.email, User.client_id == body.client_id))
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(400, f"'{body.email}' already exists in pool '{body.user_pool}'")
+        raise HTTPException(400, f"'{body.email}' already exists in this application")
 
     user = User(
-        user_pool_id=pool.id,
+        client_id=body.client_id,
         email=body.email,
+        username=body.username or None,
+        first_name=body.first_name or None,
+        last_name=body.last_name or None,
+        phone=body.phone or None,
         password_hash=hash_password(body.password),
-        # An admin vouching for someone is itself a form of verification --
-        # unlike self-service signup, which always starts unverified and
-        # sends a confirmation email (see below).
         email_verified=body.email_verified,
     )
     db.add(user)
+    pool = await db.get(UserPool, app_client.user_pool_id) if app_client.user_pool_id else None
+    await upsert_contact(
+        db,
+        email=body.email,
+        pool_name=pool.name if pool else None,
+        app_name=app_client.client_name or app_client.client_id,
+    )
     await db.commit()
     await db.refresh(user)
 
@@ -863,7 +1095,7 @@ async def api_create_user(
         token = await create_email_verification_token(redis, str(user.id))
         await send_verification_email(user.email, token)
 
-    return _user_json(user, pool.name)
+    return _user_json(user, app_client.client_name, pool.name if pool else None)
 
 
 @router.post("/users/{user_id}/toggle-status")
@@ -885,13 +1117,18 @@ async def api_toggle_user_status(
         await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
     log_event("user_" + user.status, user_id=str(user.id), email=user.email, admin_id=str(admin.id))
 
-    pool = await db.get(UserPool, user.user_pool_id)
-    return _user_json(user, pool.name)
+    app_client = (await db.execute(select(Client).where(Client.client_id == user.client_id))).scalar_one_or_none()
+    pool = await db.get(UserPool, app_client.user_pool_id) if app_client and app_client.user_pool_id else None
+    return _user_json(user, app_client.client_name if app_client else user.client_id, pool.name if pool else None)
 
 
 class EditUserBody(BaseModel):
     email: str
-    user_pool: str = ""  # blank = leave their current group unchanged
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
+    client_id: str = ""  # blank = leave their current application unchanged
 
 
 @router.patch("/users/{user_id}")
@@ -903,37 +1140,63 @@ async def api_edit_user(
     redis: Redis = Depends(get_redis),
 ):
     user = await db.get(User, uuid.UUID(user_id))
-    if user is None or user.deleted_at is not None:
+    if user is None:
         raise HTTPException(404, "unknown_user")
 
-    target_pool_id = user.user_pool_id
-    if body.user_pool.strip():
-        target_pool = await get_or_create_pool(db, body.user_pool.strip())
-        target_pool_id = target_pool.id
+    target_client_id = user.client_id
+    target_client = None
+    if body.client_id.strip():
+        target_client = (
+            await db.execute(select(Client).where(Client.client_id == body.client_id.strip()))
+        ).scalar_one_or_none()
+        if target_client is None:
+            raise HTTPException(400, f"Application '{body.client_id}' not found")
+        target_client_id = target_client.client_id
+    else:
+        target_client = (
+            await db.execute(select(Client).where(Client.client_id == user.client_id))
+        ).scalar_one_or_none()
 
     existing = await db.execute(
         select(User).where(
-            User.email == body.email, User.user_pool_id == target_pool_id, User.id != user.id
+            User.email == body.email, User.client_id == target_client_id, User.id != user.id
         )
     )
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(400, f"'{body.email}' already exists in that login group")
+        raise HTTPException(400, f"'{body.email}' already exists in that application")
 
-    pool_changed = target_pool_id != user.user_pool_id
+    client_changed = target_client_id != user.client_id
     user.email = body.email
-    user.user_pool_id = target_pool_id
+    user.username = body.username or None
+    user.first_name = body.first_name or None
+    user.last_name = body.last_name or None
+    user.phone = body.phone or None
+    user.client_id = target_client_id
     await db.commit()
 
-    if pool_changed:
-        # Moving pools changes which apps they can reach -- an existing
-        # session or refresh token issued under the old pool must not go
-        # on working as if nothing changed.
+    if client_changed:
         await revoke_all_sessions_for_user(redis, str(user.id))
         await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
-        log_event("user_pool_changed", user_id=user_id, admin_id=str(admin.id))
+        log_event("user_client_changed", user_id=user_id, admin_id=str(admin.id))
 
-    pool = await db.get(UserPool, user.user_pool_id)
-    return _user_json(user, pool.name)
+    pool = await db.get(UserPool, target_client.user_pool_id) if target_client and target_client.user_pool_id else None
+    return _user_json(user, target_client.client_name if target_client else user.client_id, pool.name if pool else None)
+
+
+async def _hard_delete_user(db: AsyncSession, redis: Redis, user: User) -> None:
+    """Cascade-delete all rows pointing at this user then hard-delete the user row."""
+    uid = user.id
+    for model, col in [
+        (UserRoleAssignment, UserRoleAssignment.user_id),
+        (ClientAccessGrant, ClientAccessGrant.user_id),
+        (Consent, Consent.user_id),
+        (WebAuthnCredential, WebAuthnCredential.user_id),
+    ]:
+        for row in (await db.execute(select(model).where(col == uid))).scalars().all():
+            await db.delete(row)
+    await revoke_all_sessions_for_user(redis, str(uid))
+    await revoke_all_refresh_tokens_for_user(db, redis, str(uid))
+    await db.delete(user)
 
 
 @router.delete("/users/{user_id}", status_code=204)
@@ -946,12 +1209,10 @@ async def api_delete_user(
     user = await db.get(User, uuid.UUID(user_id))
     if user is None:
         raise HTTPException(404, "unknown_user")
-    user.deleted_at = datetime.now(timezone.utc)
-    user.status = "disabled"
+    email = user.email
+    await _hard_delete_user(db, redis, user)
     await db.commit()
-    await revoke_all_sessions_for_user(redis, str(user.id))
-    await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
-    log_event("user_deleted", user_id=str(user.id), email=user.email, admin_id=str(admin.id))
+    log_event("user_deleted", user_id=user_id, email=email, admin_id=str(admin.id))
 
 
 @router.post("/users/{user_id}/sign-out", status_code=204)

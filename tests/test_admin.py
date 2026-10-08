@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from sqlalchemy import select
 
@@ -364,26 +366,56 @@ async def test_edit_client(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_delete_client_is_soft_delete_and_disables_it(client, db_session):
+async def test_delete_client_is_a_real_delete(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="acme-web")
 
     resp = await client.delete("/admin/api/clients/acme-web")
     assert resp.status_code == 204
 
-    # Hidden from the admin listing...
     listing = await client.get("/admin/api/clients")
     assert all(c["client_id"] != "acme-web" for c in listing.json())
 
-    # ...but the row still exists, soft-deleted and disabled, not erased.
     result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
-    saved = result.scalar_one()
-    assert saved.deleted_at is not None
-    assert saved.enabled is False
+    assert result.scalar_one_or_none() is None
 
     # Deleting again (already gone) is a 404, not a silent no-op.
     resp = await client.delete("/admin/api/clients/acme-web")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_client_cascades_through_dependents(client, db_session):
+    """A real DELETE on a client must not 500 with a foreign-key violation
+    just because it has roles, access grants, consents, or tokens."""
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", restrict_access=True)
+    user = await create_user(db_session, email="member@example.com", pool_name="default")
+
+    await client.post("/admin/api/clients/acme-web/access", json={"user_id": str(user.id)})
+    await client.post("/admin/api/clients/acme-web/roles", json={"name": "editor"})
+    await client.post(f"/admin/api/users/{user.id}/roles", json={"client_id": "acme-web", "role": "editor"})
+
+    from app.db.models import Consent, RefreshToken
+    from app.auth.passwords import hash_password
+
+    db_session.add(Consent(user_id=user.id, client_id="acme-web", scopes=["openid"]))
+    db_session.add(
+        RefreshToken(
+            user_id=str(user.id),
+            client_id="acme-web",
+            resource_id="https://api.example.com",
+            token_hash=hash_password("irrelevant-raw-token-value"),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.delete("/admin/api/clients/acme-web")
+    assert resp.status_code == 204
+
+    result = await db_session.execute(select(Client).where(Client.client_id == "acme-web"))
+    assert result.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
@@ -512,9 +544,10 @@ async def test_edit_user_cannot_move_into_a_pool_with_email_collision(client, db
 
 
 @pytest.mark.asyncio
-async def test_delete_user_is_soft_delete_and_disables_it(client, db_session):
+async def test_delete_user_hard_deletes(client, db_session):
     await _login_admin(client, db_session)
     user = await create_user(db_session, email="gone@example.com")
+    user_id = user.id
 
     resp = await client.delete(f"/admin/api/users/{user.id}")
     assert resp.status_code == 204
@@ -522,9 +555,8 @@ async def test_delete_user_is_soft_delete_and_disables_it(client, db_session):
     listing = await client.get("/admin/api/users")
     assert all(u["email"] != "gone@example.com" for u in listing.json())
 
-    await db_session.refresh(user)
-    assert user.deleted_at is not None
-    assert user.status == "disabled"
+    from app.db.models import User as UserModel
+    assert (await db_session.get(UserModel, user_id)) is None
 
 
 @pytest.mark.asyncio
