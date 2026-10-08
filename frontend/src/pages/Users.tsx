@@ -17,7 +17,11 @@ export function Users() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [emailVerified, setEmailVerified] = useState(true);
-  const [userPool, setUserPool] = useState("default");
+  // Empty, not "default" -- a pre-filled value is what the datalist below
+  // matches against, so starting non-empty silently hid every other group
+  // (the browser only suggests datalist entries that match the current
+  // text as a prefix). Falls back to "default" on submit instead.
+  const [userPool, setUserPool] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [editing, setEditing] = useState<AppUser | null>(null);
@@ -54,13 +58,14 @@ export function Users() {
         email,
         password,
         confirm_password: confirmPassword,
-        user_pool: userPool,
+        user_pool: userPool.trim() || "default",
         email_verified: emailVerified,
       });
       setModalOpen(false);
       setEmail("");
       setPassword("");
       setConfirmPassword("");
+      setUserPool("");
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -252,11 +257,14 @@ export function Users() {
               <input
                 id="add-pool"
                 list="pool-options"
-                required
+                placeholder="default"
                 value={userPool}
                 onChange={(e) => setUserPool(e.target.value)}
               />
-              <span className="field__hint">Must match the group the application uses, so this user can log into it.</span>
+              <span className="field__hint">
+                Must match the group the application uses, so this user can log into it. Leave blank
+                for the default group, or click in to see every existing group.
+              </span>
             </div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginBottom: 16 }}>
               <input type="checkbox" checked={emailVerified} onChange={(e) => setEmailVerified(e.target.checked)} />
