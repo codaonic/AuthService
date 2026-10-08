@@ -13,7 +13,7 @@ how something works or where to change it.
 - [3. Data model](#3-data-model)
 - [4. Storage: what lives in Postgres vs. Redis](#4-storage-what-lives-in-postgres-vs-redis)
 - [5. Request flows](#5-request-flows)
-- [6. Multi-tenancy: user pools](#6-multi-tenancy-user-pools)
+- [6. Identity model: applications, users, and login groups](#6-identity-model-applications-users-and-login-groups)
 - [7. Token lifecycle](#7-token-lifecycle)
 - [8. Client authentication methods](#8-client-authentication-methods)
 - [9. Session model](#9-session-model)
@@ -23,6 +23,7 @@ how something works or where to change it.
 - [13. Deployment topology](#13-deployment-topology)
 - [14. Trust boundaries](#14-trust-boundaries)
 - [15. Extension points](#15-extension-points)
+- [16. Known limitations](#16-known-limitations)
 
 ---
 
@@ -79,7 +80,7 @@ app/
 ├── oidc/        the standard-compliant OAuth/OIDC surface, mounted at root
 ├── auth/        low-level auth primitives (hashing, sessions, tokens) -- no HTTP here
 ├── admin/       the operator-facing setup UI, mounted under /admin
-├── db/          SQLAlchemy models + session/pool/Redis plumbing
+├── db/          SQLAlchemy models, session/Redis plumbing, login-group lookup, RLS scope helpers, contacts
 ├── audit.py     structured logging + failed-login anomaly tracking
 ├── email.py     SMTP sending
 ├── config.py    all settings, one place
@@ -90,7 +91,7 @@ Every file in `app/oidc/` maps to one concern:
 
 | File | Owns |
 |---|---|
-| `authorize.py` | `/authorize`, `/login`, `/signup`, `/consent` — the whole interactive login+consent flow, plus `_load_client`/`_get_flow_client` (used by every other module that needs "which client is this request for") |
+| `authorize.py` | `/authorize`, `/login`, `/signup`, `/consent` — the whole interactive login+consent flow, plus `_load_client`/`_get_flow_client` (used by every other module that needs "which client is this request for") and `_find_user_for_client`/`_user_can_access_client` (the single definition of which users may sign in to which application — see [§6](#6-identity-model-applications-users-and-login-groups)) |
 | `token.py` | `/token` — all three grant types share this one endpoint |
 | `refresh.py` | Refresh token issuance, rotation, revocation (the logic; `revoke.py` is the HTTP wrapper) |
 | `revoke.py` | `POST /revoke` |
@@ -110,36 +111,72 @@ Every file in `app/oidc/` maps to one concern:
 so it's testable without a request/response cycle, and reusable from both
 `oidc/` and `admin/`.
 
+`app/db/` holds the persistence plumbing:
+
+| File | Owns |
+|---|---|
+| `models.py` | Every table, as SQLAlchemy models — Alembic autogenerates against this |
+| `session.py` | Two engines: an owner-privileged one for migrations, the CLI, and first-boot bootstrap, and a runtime one for serving requests (optionally a restricted role, see [§6.3](#63-row-level-security)); also `wait_for_database()` and `init_db_schema()` |
+| `pools.py` | `get_or_create_pool()` — login groups are looked up, and created on first use, by name |
+| `tenant.py` | The transaction-scoped session variables the Row-Level Security policy on `users` reads |
+| `contacts.py` | `upsert_contact()` — the insert-once, first-seen record per email |
+| `redis_client.py` | The Redis connection |
+
+`app/admin/api.py` is the JSON API behind the React console in `frontend/`.
+It is the only writer for login-group membership, access grants, and roles,
+and it serves the user list with server-side search and pagination
+(`GET /admin/api/users` returns `{items, total, page, page_size, pages}`;
+`page_size` is capped at 200).
+
 ## 3. Data model
 
 ```
-UserPool ──┬──< User ──< Consent >── Client >── RefreshToken
-           │              (user_id,             (client_id FK,
-           │               client_id FK)          user_id as plain
-           │                                       string, see below)
-           └──< Client
+UserPool  (login group -- optional)
+   ▲
+   │ 0..1     clients.user_pool_id, nullable: NULL = standalone application
+   │
+Client  (application) ──────────< User ──────────< WebAuthnCredential
+   │            users.client_id      │
+   │                                 │
+   ├──< Consent >────────────────────┤   user × client: scopes approved
+   ├──< ClientAccessGrant >──────────┤   user × client: allow-list entry
+   ├──< ClientRole                   │
+   │        └──< UserRoleAssignment >┘   user × client × role
+   └──< RefreshToken                     user_id is a plain string, see below
 
-User ──< WebAuthnCredential
-
-AdminUser                    Resource
-(entirely separate --        (standalone -- no FK
- not scoped to a pool)         to anything; resource_id
-                                is just a string every
-                                other table references
-                                by value, e.g. RefreshToken
-                                .resource_id, never a FK)
+AdminUser              Resource                    Contact
+(global to the         (no FK to anything;         (one row per email ever
+ deployment, not        resource_id is referenced   seen; no FK to anything,
+ tied to any            by value in RefreshToken    so it outlives users,
+ application)           and in JWT `aud`)           applications, and groups)
 ```
+
+The central relationship is **`users.client_id`**: every account is owned by
+exactly one application. A login group does not own users — it only links
+applications together, and [§6](#6-identity-model-applications-users-and-login-groups)
+describes how that link widens who can sign in where.
 
 | Table | Key columns beyond the obvious | Notes |
 |---|---|---|
-| `user_pools` | `name` | The unit of identity isolation — see [§6](#6-multi-tenancy-user-pools) |
-| `users` | `user_pool_id`, unique `(user_pool_id, email)`, `email_verified`, `mfa_secret` | Same email can exist in two different pools as two different accounts |
-| `clients` | `user_pool_id`, `client_type` (public/confidential), `registration_method` (static/dcr/cimd), `mtls_cert_thumbprint`, `cimd_fetched_at` | One table for every registration path — static (CLI/admin), DCR, and CIMD all produce the same row shape |
-| `admin_users` | — | Not pool-scoped at all; admins are global to the deployment, not per-tenant |
-| `resources` | `resource_id` (the audience string) | No FK from anywhere — `resource_id` is referenced by value in `RefreshToken` and in JWT `aud` claims |
+| `clients` | `client_id` (unique), `user_pool_id` (nullable), `client_type` (public/confidential), `registration_method` (static/dcr/cimd), `enabled`, `allow_signup`, `restrict_access`, `roles_enabled`, `allow_signup_role_selection`, `mtls_cert_thumbprint`, `cimd_fetched_at`, `logo_url`, `brand_color` | One table for every registration path — static (CLI/admin), DCR, and CIMD all produce the same row shape. DCR and CIMD rows are always created standalone |
+| `users` | `client_id` (FK → `clients.client_id`), unique `(client_id, email)`, partial unique `(client_id, username) WHERE username IS NOT NULL`, `first_name`, `last_name`, `phone`, `status`, `email_verified`, `mfa_secret` | The same email can be two different accounts in two applications. Username and phone are optional; first and last name are required by the self-signup form but nullable in the schema, since admin- and CLI-created users may omit them |
+| `user_pools` | `name` | A login group. Nothing but a name — membership is the `clients.user_pool_id` pointer. The name is not unique at the database level; `get_or_create_pool` is what keeps it unique in practice |
+| `contacts` | `email` (unique), `first_seen_at`, `first_app`, `first_pool` | Insert-once: written the first time an email is seen at self-signup or admin user creation, never updated. `first_pool` is only filled in for admin-created users. Not written by the CLI's `create-user` |
+| `admin_users` | `must_change_password` | Global to the deployment; no relationship to applications or groups |
+| `resources` | `resource_id` (the audience string), `enabled` | No FK from anywhere — `resource_id` is referenced by value in `RefreshToken` and in JWT `aud` claims. A disabled resource makes `/token` refuse to mint tokens for that audience |
 | `consents` | `user_id` FK, `client_id` FK, `scopes` (JSON list) | One row per user×client the first time they approve; checked on every subsequent `/authorize` to skip the consent screen |
+| `client_access_grants` | unique `(client_id, user_id)` | The allow-list for an application with `restrict_access` on. Ignored otherwise |
+| `client_roles` | composite PK `(client_id, name)` | A role name defined for one application. This service stores and reports roles; it never enforces what a role may do |
+| `user_role_assignments` | unique `(user_id, client_id, role)`, composite FK → `client_roles` | A user can hold several roles on one application. Reported as the `roles` claim in `/userinfo` when the application has `roles_enabled` |
 | `refresh_tokens` | `token_hash` (never the raw token), `rotated_from`, `revoked_at` | `user_id` is a plain string column, not a FK — it holds either a real user's UUID *or*, for `client_credentials` tokens, the client_id itself, since `sub` in that grant is the client |
 | `webauthn_credentials` | `credential_id` (bytes, unique), `public_key` (bytes), `sign_count` | `sign_count` increments on every use — a value that goes *backwards* is the classic sign of a cloned authenticator |
+
+Deletes are hard deletes. Removing an application removes its users and
+every row that references either; removing a user removes their consents,
+access grants, role assignments, and passkeys and revokes their sessions and
+refresh tokens. The admin API performs these cascades explicitly
+(`api_delete_client`, `_hard_delete_user` in `admin/api.py`) rather than
+relying on database-level `ON DELETE` behaviour.
 
 Full column-level detail is the migration history in `alembic/versions/` —
 that's the authoritative source; this table is the "why," not a copy of
@@ -152,7 +189,7 @@ queried later; Redis holds anything short-lived or purely for fast lookup.**
 
 | In Postgres | In Redis (all namespaced by key prefix, all TTL'd) |
 |---|---|
-| Users, clients, consents, admin users, resources | `session:` / `admin_session:` — login sessions (`sessions.py`) |
+| Applications, users, login groups, consents, access grants, roles and role assignments, admin users, resources, contacts | `session:` / `admin_session:` — login sessions (`sessions.py`) |
 | Refresh token records (hash, rotation chain, revocation) | `flow:` — an in-progress `/authorize` attempt (client, PKCE challenge, requested scope) |
 | WebAuthn credentials | `code:` — an issued-but-not-yet-exchanged authorization code |
 | Everything CIMD/DCR clients resolve to | `refresh:` — the *live* refresh token record, mirroring the Postgres row for O(1) lookup without a DB round-trip; deleted on rotation/revocation, Postgres keeps the historical row |
@@ -178,7 +215,7 @@ Browser                    Auth Service                  Redis        Postgres
    │                                          │◄─ load client ─────────────┤
    │  ◄─────────────── login.html (flow_id) ──┤              │             │
    │  POST /login (email, password)           │              │             │
-   ├─────────────────────────────────────────►│─ verify against users ────►│
+   ├─────────────────────────────────────────►│─ resolve user (§6), verify ►│
    │                                          │─ create_session ───────────►│
    │  ◄──── consent.html (or skip if consented already) ─────┤             │
    │  POST /consent (approve)                 │              │             │
@@ -191,6 +228,22 @@ Browser                    Auth Service                  Redis        Postgres
    │                                          │─ mint JWT, issue refresh ──►│
    │  ◄──────── access_token, refresh_token ──┤              │             │
 ```
+
+Two details the diagram compresses:
+
+- **"Resolve user"** is `_find_user_for_client`: the email is looked up among
+  the application's own users, or — if the application is in a login group —
+  among the users of every application in that group.
+- **An existing session is re-checked, not trusted.** If the browser already
+  carries a session cookie, `/authorize` loads that user and asks
+  `_user_can_access_client` whether they are eligible for *this*
+  application. If not, the cookie is ignored and the login page is shown; it
+  is never an error and never grants access across the boundary.
+
+After authentication, `_continue_flow` applies the application's own gate
+(`restrict_access` → must hold a `client_access_grants` row, otherwise a 403
+on the login page and an `access_denied_not_assigned` audit event) before
+consent.
 
 ### 5.2 Authorization Code + PKCE (passkey login)
 
@@ -263,7 +316,7 @@ Client (with cert) → nginx (verifies cert against ssl_client_certificate CA)
                                                    came from nginx, not a
                                                    spoofed direct request>
                         X-Client-Cert-Verify: SUCCESS
-                        X-Client-Cert-Fingerprint: <sha-256 of the cert>
+                        X-Client-Cert-Fingerprint: <cert thumbprint -- SHA-1 from stock nginx>
 App: if client.mtls_cert_thumbprint is set, ALL THREE headers must check out
      (proxy secret matches config, verify=SUCCESS, fingerprint matches) --
      otherwise reject, even if a valid client_secret was also sent
@@ -286,7 +339,26 @@ POST /reset-password (token, new password) → consume token (single-use) →
     of every other session/device, on purpose
 ```
 
-### 5.8 Email verification
+### 5.8 Signup
+
+```
+GET  /signup?flow_id=...   → 403 signup_disabled unless the application has allow_signup
+POST /signup (first_name, last_name, email, password, confirm_password, [role])
+     → validate: names non-empty, passwords match, minimum length
+     → reject if (this application, email) already exists
+     → INSERT users (client_id = this application, names, Argon2 hash)
+     → upsert_contact(email)                       -- insert-once, see §3
+     → if restrict_access: INSERT client_access_grants   (signing up through
+          an application's own page is the request for access to it)
+     → if a role was picked and role selection is enabled: INSERT user_role_assignments
+     → create session, send verification email, continue to consent
+```
+
+The account is owned by the application whose signup page was used, even
+when that application is in a login group. The duplicate check is against
+that application only — see [§16](#16-known-limitations).
+
+### 5.9 Email verification
 
 ```
 Signup → create_email_verification_token() + send it (24h TTL), immediately
@@ -296,26 +368,148 @@ Signup → create_email_verification_token() + send it (24h TTL), immediately
 GET /verify-email?token=... → consume token → users.email_verified = true
 ```
 
-## 6. Multi-tenancy: user pools
+## 6. Identity model: applications, users, and login groups
 
-A **pool** is the unit of identity isolation. Every `User` and every
-`Client` belongs to exactly one pool.
+### 6.1 Ownership and reach
 
-- Two clients in the **same** pool: their users are the same set. A person
-  who signs up on Client A can log into Client B with no new account — this
-  is what "SSO across your own apps" means in practice.
-- Two clients in **different** pools: fully isolated. The same email address
-  can even exist as two unrelated accounts, one per pool (enforced by the
-  `(user_pool_id, email)` unique constraint, not a global `email` unique
-  constraint).
-- A session cookie is checked against the requesting client's pool on every
-  `/authorize` call (`authorize.py`'s pool guard) — a session from Pool A
-  is silently ignored (falls through to a fresh login) if the client
-  belongs to Pool B, rather than granting cross-pool access.
+Two separate questions, answered by two separate columns:
 
-Self-registering clients (DCR and CIMD) always land in the `default` pool.
-Admin-created clients can be assigned any pool name, created implicitly the
-first time it's used — see `db/pools.py::get_or_create_pool`.
+| Question | Answered by | Cardinality |
+|---|---|---|
+| **Who owns this account?** | `users.client_id` | Exactly one application, always |
+| **Which applications can this account sign in to?** | `clients.user_pool_id` on the owning application and on the target application | The owning application, plus every application in the same login group |
+
+```
+                    target application has no group        target application is in group G
+                   ┌──────────────────────────────────┬───────────────────────────────────────┐
+ user is owned by  │                                  │                                       │
+ the target app    │              ALLOWED             │                ALLOWED                │
+                   ├──────────────────────────────────┼───────────────────────────────────────┤
+ user is owned by  │                                  │  ALLOWED if the owning application    │
+ another app       │              DENIED              │  is also in G, otherwise DENIED       │
+                   └──────────────────────────────────┴───────────────────────────────────────┘
+```
+
+Consequences worth stating outright:
+
+- **Isolation is the default.** An application with `user_pool_id IS NULL`
+  accepts only its own users. Self-registered clients (DCR, CIMD) are always
+  created this way; an admin can group them afterwards.
+- **A group is symmetric.** Adding application B to a group that contains A
+  lets A's users into B *and* B's users into A.
+- **Signup never crosses the boundary.** `/signup` and admin user creation
+  always write `client_id` = the application in question, regardless of
+  group membership.
+- **Uniqueness is per application.** `(client_id, email)` is unique; there is
+  no deployment-wide or group-wide uniqueness constraint on email. See
+  [§16](#16-known-limitations) for what that means inside a group.
+- **Authorization is layered on top.** Passing the check above only means the
+  account may *authenticate*. An application with `restrict_access` on then
+  also requires a `client_access_grants` row before `_continue_flow` lets the
+  flow proceed — the same identity-versus-assignment split other identity
+  providers call "app assignment".
+
+### 6.2 Where the rule is enforced
+
+The rule lives in two functions in `oidc/authorize.py`, and every
+interactive path goes through one of them:
+
+| Function | Used when you have… | Callers |
+|---|---|---|
+| `_find_user_for_client(db, email, client)` | an email and need the matching account | `POST /login`, `POST /forgot-password`, `POST /resend-verification`, `POST /webauthn/login/options` |
+| `_user_can_access_client(db, user, client)` | an already-identified user and need a yes/no | `GET /authorize` (is the existing session cookie valid for *this* application?), `POST /webauthn/login/verify` |
+
+The admin API applies the same same-application-or-same-group test before
+granting access to a restricted application
+(`POST /clients/{id}/access`) and before assigning a role
+(`POST /users/{id}/roles`), so an admin cannot hand out access or a role to a
+user the application could never authenticate anyway.
+
+Paths that identify a user by something other than an application — a
+verified JWT (`/userinfo`, the user-status check in `/token`), the session
+cookie (`/account`), or a single-use emailed token (`/reset-password`,
+`/verify-email`) — load the row by primary key and do not re-apply the rule.
+
+### 6.3 Row-Level Security
+
+The migrations enable and force Row-Level Security on `users`, with one policy:
+
+```sql
+CREATE POLICY tenant_isolation ON users
+USING (
+    current_setting('app.rls_bypass', true) = 'on'
+    OR client_id = current_setting('app.tenant_client_id', true)
+)
+WITH CHECK ( /* same expression */ );
+```
+
+`app/db/tenant.py` sets those variables with `SET LOCAL`, so they are scoped
+to the transaction and cannot leak to the next request that checks out the
+same pooled connection. They also reset on every `COMMIT`, which matters for
+any handler that touches `users` again after committing.
+
+| Helper | Effect |
+|---|---|
+| `set_tenant_client(db, client_id)` | Only that application's rows are visible and writable |
+| `bypass_tenant_rls(db)` | All rows; for paths authorized by something other than application membership |
+| `set_tenant_pool(db, pool_id)` | Legacy. Sets `app.tenant_pool_id`, which no policy reads any more |
+
+All three are no-ops outside Postgres, and Postgres only applies the policy
+when the app connects as a non-superuser role (see the README's
+[Row-level security](../README.md#row-level-security) section for the
+`DB_APP_USER` setup).
+
+**What it protects against today.** The policy fails closed: a query against
+`users` in a transaction that declared nothing returns no rows. That catches
+a new code path that reaches user data without having thought about scope
+at all.
+
+**What it does not protect against today.** Every request path that reads
+users currently calls `bypass_tenant_rls` — necessarily so for group lookups,
+which span several applications, and for the admin console — and relies on
+its own `client_id` filter. No request path calls `set_tenant_client`. So a
+bypassing path with a wrong or missing filter is not caught by the database.
+Narrowing the standalone-application paths to `set_tenant_client` is the
+natural next step and is listed in [§16](#16-known-limitations).
+
+### 6.4 Lifecycle operations
+
+| Operation | Entry point | Effect |
+|---|---|---|
+| Create a group | `POST /admin/api/pools`, or implicitly by naming one when registering an application | `get_or_create_pool` — idempotent by name |
+| Add an application to a group | `POST /admin/api/pools/{name}/assign-client` | Sets `clients.user_pool_id`. An application is in at most one group, so this also moves it out of any previous one |
+| Remove an application from a group | `POST /admin/api/pools/{name}/remove-client` | Sets `clients.user_pool_id = NULL`. The application keeps its own users |
+| Delete a group | `DELETE /admin/api/pools/{name}` | Detaches every member application, then deletes the group. No users or applications are deleted |
+| Delete an application | `DELETE /admin/api/clients/{client_id}` | Deletes its roles, role assignments, access grants, consents, and refresh tokens; hard-deletes each of its users; deletes the group too if this was its last application |
+| Move a user | `PATCH /admin/api/users/{id}` with a new `client_id` | Changes ownership, then revokes all of the user's sessions and refresh tokens |
+| Sweep empty groups | `POST /admin/api/maintenance/cleanup-empty-pools` | Deletes every group with no applications. Idempotent |
+
+Changing group membership takes effect on the next `/authorize`, because
+eligibility is re-evaluated there on every request, session cookie or not.
+
+### 6.5 Upgrading from the pool-owned model
+
+Earlier versions stored `users.user_pool_id`: accounts belonged to a pool and
+every application had to be in one. Migration
+`e6f7a8b9c0d1_users_belong_to_clients` converts that data in place, inside one
+transaction:
+
+1. Each user is assigned to **one** application from their former pool — the
+   first by `client_id` order. Because that application stays in the same
+   group, the user can still sign in to every application they could before.
+2. Users whose pool had **no applications at all** are **deleted**, together
+   with their consents, access grants, role assignments, passkeys, and
+   refresh tokens. Such accounts had nothing to sign in to, but if you want
+   them, attach an application to the pool before upgrading.
+3. Pools left with no applications are deleted.
+4. `clients.user_pool_id` becomes nullable, and the RLS policy is replaced
+   with the `client_id`-based one above.
+
+Two neighbouring migrations in the same release drop the `deleted_at`
+soft-delete columns from `clients` and `users`; deletion is a hard delete
+from here on. Take a database backup before running `alembic upgrade head`
+across these revisions. A `downgrade()` exists and restores the old columns
+and policy, but it cannot bring back rows deleted in step 2 or 3.
 
 ## 7. Token lifecycle
 
@@ -375,7 +569,7 @@ mechanism (`auth/sessions.py`) but different cookies and TTLs:
 |---|---|---|
 | Cookie name | `auth_session` | `admin_session` |
 | TTL | 7 days | 12 hours |
-| Scoped to | One user pool (checked on every `/authorize`) | The whole deployment |
+| Scoped to | The user's own application and its login group (re-checked on every `/authorize`) | The whole deployment |
 | Created by | `/login`, `/signup`, `/webauthn/login/verify` | `/admin/login` |
 
 Every session ID also gets added to a `user_sessions:<user_id>` Redis set,
@@ -394,6 +588,9 @@ left to your deployment, same as any other 12-factor app.
 |---|---|---|
 | `login_success` / `login_failure` | Password login result | INFO / WARNING |
 | `signup_success` | New account created | INFO |
+| `access_denied_not_assigned` | Authenticated user isn't on a restricted application's allow-list | WARNING |
+| `password_changed` / `session_revoked` / `sessions_revoked_others` | End user acts on their own `/account` page | INFO |
+| `admin_setup_completed` | First-run admin account created | INFO |
 | `admin_login_success` / `admin_login_failure` | Admin login result | INFO / WARNING |
 | `webauthn_login_success` / `webauthn_registered` | Passkey used / added | INFO |
 | `token_issued` | Every successful `/token` call, any grant type | INFO |
@@ -403,6 +600,19 @@ left to your deployment, same as any other 12-factor app.
 | `password_reset_requested` / `password_reset_completed` | Forgot-password flow | INFO |
 | `email_verified` | Verification link used | INFO |
 | `anomalous_activity` | 5+ failed logins for the same email or IP within 5 minutes | WARNING |
+| `client_assigned_to_pool` / `client_removed_from_pool` | Admin changes an application's login group | INFO |
+| `pool_deleted` / `cleanup_empty_pools` | Admin deletes a login group / sweeps empty ones | INFO |
+| `client_enabled` / `client_disabled` / `client_deleted` | Admin changes an application's state | INFO |
+| `client_restrict_access_enabled` / `client_restrict_access_disabled` | Admin toggles an application's allow-list | INFO |
+| `client_access_granted` / `client_access_revoked` | Admin edits an allow-list | INFO |
+| `user_role_assigned` / `user_role_unassigned` / `client_role_deleted` | Admin edits roles | INFO |
+| `user_active` / `user_disabled` / `user_deleted` | Admin changes an account's state | INFO |
+| `user_client_changed` | Admin moves a user to another application | INFO |
+| `user_signed_out_by_admin` | Admin revokes a user's sessions and refresh tokens | INFO |
+| `resource_created` / `resource_updated` / `resource_enabled` / `resource_disabled` / `resource_deleted` | Admin edits a protected resource | INFO |
+
+Events for changes made in the admin console carry `admin_id`, so the log
+answers "who changed this" as well as "what changed".
 
 Anomaly detection (`record_failed_login` in `audit.py`) uses a Redis
 counter with a sliding TTL window, separately keyed per email and per IP —
@@ -494,7 +704,60 @@ Where to actually make a change, for the most common asks:
 |---|---|
 | Add a new OAuth grant type | `token.py`'s `if grant_type == ...` chain, plus `Client.grant_types` validation in `register.py`/`cli.py` |
 | Add a new client authentication method | `clients.py::get_and_validate_client` — follow the mTLS branch as a template |
-| Add a new login method (beyond password/TOTP/passkey) | A new module under `app/auth/`, a new router under `app/oidc/`, and a branch in `_continue_flow`'s callers, same shape as `webauthn.py` |
+| Add a new login method (beyond password/TOTP/passkey) | A new module under `app/auth/`, a new router under `app/oidc/`, and a branch in `_continue_flow`'s callers, same shape as `webauthn.py`. Resolve the user with `_find_user_for_client` so the method inherits the login-group rule |
+| Change who can sign in where | `authorize.py::_find_user_for_client` and `_user_can_access_client` — the only two places the rule is written down ([§6.2](#62-where-the-rule-is-enforced)) |
+| Add a user profile field | `db/models.py` + a migration; `_user_json`, `CreateUserBody`, and `EditUserBody` in `admin/api.py`; `AppUser` in `frontend/src/api.ts`; the forms in `frontend/src/pages/Users.tsx`; `signup.html` and the `signup` handler if end users should supply it |
+| Expose profile fields to applications | `userinfo.py` — it currently returns `sub`, `email`, and (when enabled) `roles` |
+| Make another field searchable in the admin user list | The `or_(...)` clause in `admin/api.py::api_list_users` |
 | Change what's in the JWT | `tokens.py::mint_access_token` |
 | Add a new audit event | `app.audit.log_event(...)` at the relevant call site — no registration step, it's just a function call |
 | Change session/token lifetimes | `config.py` — every TTL is a named setting, nothing hardcoded inline |
+
+## 16. Known limitations
+
+Open items in the current implementation, stated plainly so nobody has to
+rediscover them.
+
+1. **Email is not unique across a login group.** Uniqueness is
+   `(client_id, email)`. The self-signup duplicate check and the admin
+   create-user check both look only at the target application, and grouping
+   two applications does not check for overlap. If the same email ends up
+   registered to two applications in one group, `_find_user_for_client`
+   matches two rows and its `scalar_one_or_none()` raises, so password login,
+   forgot-password, resend-verification, and passkey login fail with a server
+   error for that email on every application in the group. Until this is
+   enforced, check for overlapping emails before grouping applications, and
+   point users at "Sign in" rather than "Sign up" on a second application in
+   the same group.
+2. **Row-Level Security is not yet narrowed per application.** As described in
+   [§6.3](#63-row-level-security), every user-reading path uses the bypass.
+   In addition, `GET /authorize` loads the session's user without declaring
+   any RLS scope at all; under a restricted runtime role that lookup returns
+   nothing, so an existing session is not recognised and the user is asked to
+   sign in again. Separately, a database bootstrapped by `init_db_schema()` on
+   first boot ([§13](#13-deployment-topology)) is built from the models and
+   stamped to head without running any migration, so it has neither the
+   policy nor the `auth_app_runtime` role. Deployments that rely on RLS
+   should confirm the policy exists (`\d users` in `psql`) and re-verify the
+   login, signup, and SSO paths end to end. (Identified by reading the code;
+   RLS is not covered by the automated tests, which run on SQLite.)
+3. **Regrouping does not revoke tokens already issued.** Removing an
+   application from a group stops new sign-ins from the other applications'
+   users at `/authorize`, but refresh tokens those users already hold for it
+   keep working until they expire or are revoked — `/token` checks that the
+   user is active, not that they are still eligible for the application. Use
+   "sign out everywhere" on the affected users if the cut-off must be
+   immediate.
+4. **Group views in the admin console load at most 200 users.** The Login
+   groups page and an application's Manage dialog request a single page of
+   500, and `GET /admin/api/users` caps `page_size` at 200. Larger groups are
+   listed incompletely there; the Users page, which paginates properly, is
+   unaffected.
+5. **Profile fields are admin-facing only.** `first_name`, `last_name`,
+   `username`, and `phone` are stored and editable in the admin console but
+   are not released to applications as `/userinfo` claims, and the CLI's
+   `create-user` does not set them.
+6. **The test suite predates this model.** `tests/helpers.py` still creates
+   users with `user_pool_id`, the signup tests don't send first and last
+   name, and the CLI tests call the old command signatures. At the time of
+   writing 58 of 133 tests fail.

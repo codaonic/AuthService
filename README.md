@@ -6,7 +6,7 @@ A self-hosted **OAuth 2.1 / OIDC authorization server**, written in Python and b
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> Status: **Feature-complete against its planned scope** — full OAuth 2.1/OIDC surface, DCR + CIMD, passkeys, mTLS, user pools, and an admin UI. See [Roadmap](#roadmap) for the checklist.
+> Status: **Feature-complete against its planned scope** — full OAuth 2.1/OIDC surface, DCR + CIMD, passkeys, mTLS, per-application users with optional shared login groups, and an admin UI. See [Roadmap](#roadmap) for the checklist.
 
 ## Quickstart
 
@@ -33,7 +33,7 @@ That's a real, running instance at `http://localhost:8113` (admin console at `/a
 - [Row-level security](#row-level-security)
 - [API surface](#api-surface)
 - [Core flows](#core-flows)
-- [User pools](#user-pools)
+- [Applications, users, and login groups](#applications-users-and-login-groups)
 - [Admin UI](#admin-ui)
 - [Integrating your applications and MCP servers](#integrating-your-applications-and-mcp-servers)
 - [Architecture](#architecture)
@@ -59,8 +59,10 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 - **Self-service signup, password recovery, and email verification** — with admin-managed users as an alternative, toggled per client
 - **Passkey (WebAuthn) login** alongside password + TOTP, not instead of it
 - **Embeddable popup widget** (`auth-widget.js`) so a site can trigger login/signup from its own styled button without a full-page redirect, plus optional per-client branding (logo, color) on the hosted form itself — see [§4](#4-making-it-feel-embedded-the-popup-widget)
-- **User pools** — clients can share one identity (SSO across your own apps) or be fully isolated, your choice, per client, with optional [Postgres Row-Level Security](#row-level-security) as a database-level backstop
-- **Web admin UI** (`/admin`) — pools, clients, resources, users, all clickable, with a CLI equivalent for scripting
+- **Per-application users, optional login groups** — every account belongs to the application it was created through, and applications are isolated from each other by default. Put two or more in a *login group* and they share one identity (SSO across your own apps). Optional [Postgres Row-Level Security](#row-level-security) acts as a database-level backstop — see [Applications, users, and login groups](#applications-users-and-login-groups)
+- **User profiles** — first and last name (required at self-signup), plus an optional username (unique per application) and phone number
+- **Per-application access control** — restrict an application to an explicit allow-list of users, and define per-application roles that are reported in `/userinfo`
+- **Web admin UI** (`/admin`) — applications, login groups, resources, and users (server-side search and pagination), with a CLI equivalent for scripting
 - **Resource-server SDK** (Python, [`authservice-client`](https://github.com/codaonic/AuthService_Client), its own repo) plus a documented ~20-line pattern for any other language
 - **mTLS client authentication** for `client_credentials` clients, stronger than a shared secret
 - **Structured (JSON-lines) audit logging** with anomalous-activity flagging, ready for any log aggregator
@@ -115,6 +117,11 @@ Iterating on the admin UI itself is faster with Vite's own dev server instead, w
 cd frontend
 npm run dev        # serves the SPA itself at http://localhost:5173/admin
 ```
+
+The proxy targets `http://localhost:8000` by default (uvicorn's default port). To point it at a
+different backend — the Docker stack on `:8113`, for example — copy `frontend/.env.example` to
+`frontend/.env` and set `VITE_BACKEND_URL`. That variable is read only by `vite.config.ts` at
+dev-server startup; the production bundle always calls `/admin/api` on its own origin.
 
 ### Server / production deployment (Docker Compose)
 
@@ -186,14 +193,28 @@ uv run alembic revision --autogenerate -m "describe the change"
 uv run alembic upgrade head
 ```
 
+> **Upgrading a deployment that predates per-application users?** Revision `e6f7a8b9c0d1` moves every user from a pool onto one application in that pool, and **deletes users whose pool has no applications**, along with pools left empty. The neighbouring revisions drop the `deleted_at` soft-delete columns. Back up the database first, and read [docs/architecture.md §6.5](docs/architecture.md#65-upgrading-from-the-pool-owned-model) for exactly what is converted and what is removed.
+
 ## Row-level security
 
-Isolation here is pool-based (see "User pools" below, and its note on what pools are *not*
-for): every user belongs to exactly one pool, and application code filters every query by
-it. Postgres Row-Level Security adds a database-level backstop for that — a query on
-`users` that forgot its `user_pool_id` filter returns zero rows instead of another pool's
-data, instead of relying on
-application code alone getting it right every time.
+Every row in `users` carries the `client_id` of the application it belongs to (see
+[Applications, users, and login groups](#applications-users-and-login-groups)), and
+application code scopes every lookup to that application, or to the applications sharing
+its login group. Postgres Row-Level Security on `users` is a database-level backstop for
+that: the policy exposes a row only when the current transaction has declared its scope
+through a session variable.
+
+| Session variable (transaction-scoped, `SET LOCAL`) | Rows visible |
+|---|---|
+| `app.tenant_client_id = '<client_id>'` | Only that application's users |
+| `app.rls_bypass = 'on'` | All users — for code paths already authorized by something else: an admin session, a verified JWT, a single-use email token, or a login-group lookup that legitimately spans several applications |
+| *(neither set)* | **None** — the policy fails closed |
+
+So a query that reaches `users` without declaring its scope returns zero rows instead of
+another application's data. The helpers live in `app/db/tenant.py`. Today the user-facing
+flows declare the bypass and rely on their own `client_id` filters; see
+[docs/architecture.md §6.3](docs/architecture.md#63-row-level-security) for exactly what
+that does and doesn't protect against.
 
 **This only takes effect if the app connects as a non-superuser role.** Postgres exempts
 superusers from RLS unconditionally, and the role in `DB_USER` is commonly a superuser by
@@ -240,47 +261,110 @@ Full request/response schemas: `/docs` (Swagger UI) once the service is running.
 
 **Service-to-service.** `POST /token` with `grant_type=client_credentials` and the service's own `client_id`/`client_secret` returns a short-lived, user-less JWT scoped to the calling service.
 
-**User signup.** `/authorize` shows a login page with a "Sign up" link (`/signup`) for any client that doesn't recognize the email. A new account is created directly by this service (Argon2-hashed password), logged in, and carried straight into the same consent flow — no separate onboarding step needed.
+**User signup.** `/authorize` shows a login page with a "Sign up" link (`/signup`) for any client that has signup enabled. The form asks for first name, last name, email, and password (all required). The new account is created directly by this service (Argon2-hashed password) under the application whose signup page was used, logged in, and carried straight into the same consent flow — no separate onboarding step needed.
 
 **Token validation (every consumer, every language).** Fetch `/jwks.json` once, cache it, verify signature + `exp` + `aud` + `iss` locally. No call back to this service required — that's the cross-language guarantee.
 
-## User pools
+## Applications, users, and login groups
 
-A single deployment of this service is meant to sit behind **all of one company's own apps, APIs, and MCP servers**. Within that one deployment, every client belongs to a **user pool**:
+A single deployment of this service is meant to sit behind **all of one company's own apps, APIs, and MCP servers**. Three concepts decide who can sign in where:
 
-- Clients that share a pool name share one set of users — sign up through any one of them, log into all of them. This is the common case: one company, one identity, every internal service trusts the same login.
-- Clients in different pool names are fully isolated — a user created via one can't log into the other, even though both run on this same instance. Use this for something that genuinely needs a separate user base (e.g. an internal admin tool vs. your public product).
+| Concept | What it is | Stored as |
+|---|---|---|
+| **Application** | Anything that signs users in or requests tokens — an OAuth client | `clients` row |
+| **User** | An account. Belongs to exactly **one** application: the one it was created through | `users.client_id` → `clients.client_id` |
+| **Login group** | An optional, named grouping of applications that share their users | `user_pools` row, referenced by the nullable `clients.user_pool_id` |
 
-Different *organizations* don't share a deployment at all — each company/provider runs its own separate instance of this service (own DB, own Redis, own signing keys, own domain). Pools are for grouping services *within* one deployment, not for multi-tenant hosting of unrelated companies.
+```
+  Login group "acme"                          Standalone (no group)
+┌──────────────────────────────────┐        ┌──────────────────┐
+│  acme-web          acme-mobile   │        │  acme-admin      │
+│   ├─ alice          ├─ carol     │        │   └─ dave        │
+│   └─ bob                         │        │                  │
+└──────────────────────────────────┘        └──────────────────┘
+ alice, bob and carol can each sign in        only dave can sign in
+ to both acme-web and acme-mobile             to acme-admin
+```
 
-Pools are created implicitly by name the first time you reference them — there's no separate "create a pool" step:
+### The rules
+
+1. **Applications are isolated by default.** An application with no login group accepts only the users registered to it. This is also what every self-registered client (DCR, CIMD) gets.
+2. **A login group shares identity.** When an application is in a group, anyone registered to *any* application in that group can sign in to it with the same email and password — one account, every app in the group.
+3. **Signup lands on the application that hosted it.** A self-signup or an admin-created user is always stored under one specific application, whether or not that application is in a group.
+4. **Email is unique per application**, not per deployment: the same address can be two unrelated accounts in two applications that don't share a group. Usernames, when set, are also unique per application.
+5. **Groups decide who *may* authenticate; an application can narrow that further.** Turn on *restrict access* for an application and only users on its allow-list get in, even if the group would otherwise admit them.
+
+> **Keep emails unique within a login group.** Uniqueness is enforced per application, so nothing stops the same email from being registered to two applications that are (or later become) members of one group. Sign-in for that email then becomes ambiguous. See [docs/architecture.md §16](docs/architecture.md#16-known-limitations) before grouping applications that already have overlapping users.
+
+Different *organizations* don't share a deployment at all — each company runs its own instance (own DB, own Redis, own signing keys, own domain). Login groups are for grouping applications *within* one deployment, not for multi-tenant hosting of unrelated companies.
+
+### What happens when things change
+
+| Action | Effect |
+|---|---|
+| Add an application to a group | Users of the other member applications can now sign in to it, and its users can sign in to them |
+| Remove an application from a group | It becomes standalone and keeps its own users; users of the other member applications can no longer sign in to it |
+| Delete a login group | Its applications become standalone. No users or applications are deleted |
+| Delete an application | Its users are deleted with it, along with their consents, access grants, role assignments, passkeys, sessions, and refresh tokens. If it was the last application in its group, the empty group is removed too |
+| Move a user to another application | All of that user's sessions and refresh tokens are revoked |
+
+### From the CLI
 
 ```bash
-# These two share one pool ("acme") -- same users can log into both:
+# Two applications sharing one login group ("acme") -- the group is created on first use:
 uv run python -m app.cli register-client --client-id acme-web --type public --redirect-uri "..." --user-pool acme
 uv run python -m app.cli register-client --client-id acme-mobile --type public --redirect-uri "..." --user-pool acme
 
-# This one is isolated in its own pool -- none of the "acme" users can log in here:
-uv run python -m app.cli register-client --client-id acme-admin --type confidential --user-pool acme-admin-only
+# A standalone application with its own isolated users (no --user-pool):
+uv run python -m app.cli register-client --client-id acme-admin --type confidential
+
+# Users are created under a specific application:
+uv run python -m app.cli create-user --client-id acme-web --email alice@example.com --password '...'
+
+uv run python -m app.cli list-clients   # shows pool=<name> or "standalone" per application
+uv run python -m app.cli list-pools
 ```
 
-`--user-pool` defaults to `default` if omitted (including for DCR/`/register` self-registration), so the common "one company, one shared identity" case needs zero pool configuration at all.
+`--user-pool` is optional. Omit it and the application is standalone. In code, the API, and the CLI a login group is called a *pool* (`user_pools`, `--user-pool`, `/admin/api/pools`); the admin UI calls it a *login group*. They are the same thing.
+
+### Contacts
+
+Independently of all of the above, the first time an email address is seen — at self-signup or when an admin creates a user — one row is written to a `contacts` table, recording the address, the timestamp, and the application it first appeared in. That row is never updated or removed afterwards, so it survives the deletion of the user, the application, and the group. It is a deployment-wide record for analytics and CRM export (`GET /admin/api/contacts`); it plays no part in authentication.
 
 ## Admin UI
 
-Everything the CLI can do is also available as a web UI at `/admin`, for operators who'd rather click than run commands. It's a React SPA (`frontend/`) that talks to a JSON API at `/admin/api/*` (`app/admin/api.py`), authenticated by the same admin session cookie as before — see [Local development](#local-development) for how to build/run it:
+Everything the CLI can do, and a good deal more, is available as a web UI at `/admin`. It's a React SPA (`frontend/`) that talks to a JSON API at `/admin/api/*` (`app/admin/api.py`), authenticated by an admin session cookie — see [Local development](#local-development) for how to build and run it.
 
-- **Dashboard** — counts of pools/clients/resources/users, plus a recent-activity preview.
-- **User pools** — create pools by name.
-- **Clients** — register clients (public or confidential), pick their user pool, toggle **"allow signup"** per client, set/rotate a client's **mTLS certificate thumbprint**, and **disable/re-enable** a client without deleting it (blocks all sign-in and token refresh immediately — for a compromised secret or a retired app, while keeping its history). Clients that registered themselves (DCR or CIMD) are marked with a **Source** badge and can't be edited here.
-- **Resources** — register protected APIs/MCP servers.
-- **Users** — the manual add-a-user path, for clients with signup disabled; lists/filters existing users by pool; **disable an account** (revokes all sessions and refresh tokens immediately, not just future logins) or **sign it out everywhere** without disabling it.
+- **Dashboard** — counts of login groups, applications, resources, and users, plus a recent-activity preview.
+- **Applications** — register an application (public or confidential) and choose at creation whether it shares accounts with an existing application or keeps its users separate. Per application: toggle **allow signup**, set branding, set or rotate an **mTLS certificate thumbprint**, **disable/re-enable** it (blocks all sign-in and token refresh immediately — for a compromised secret or a retired app, while keeping its configuration), **restrict access** to an allow-list of users, and define **roles** and assign them. The **Manage** dialog is also where you add a user directly to that application. An **Integration Guide** generates copy-paste snippets for the application you're looking at. Applications that registered themselves (DCR or CIMD) are marked with a **Source** badge and can't be edited here.
+- **APIs & MCP servers** — register, edit, and delete protected resources, or **disable** one, after which `/token` refuses to issue any access token for that audience.
+- **Users** — one list across every application, paginated server-side (50 per page). Search as you type across email, first and last name, username, and application; filter by application. Add a user (to an application you pick), edit profile fields, **move a user to a different application**, **disable an account** (revokes all sessions and refresh tokens immediately, not just future logins), **sign it out everywhere** without disabling it, send a password-reset email, or delete it.
+- **Login groups** — one collapsible card per group, listing its member applications and every user who can sign in through them, each with its own search box. Create a group, add a standalone application to it, or remove one. Users are added at the application level, not here.
 - **Activity log** — a live, in-memory view of recent logins, token issuance, and security events on this process (also written to stdout as JSON lines — point a real log aggregator there for durable history).
 - **Account** — change the admin password.
 
-End users get their own self-service page at `/account` once signed in: change password, manage passkeys, and see/revoke active sessions per device.
+End users get their own self-service page at `/account` once signed in: change password, manage passkeys, and see or revoke active sessions per device.
 
 The first time `/admin` is opened with no admin account yet in the database, it shows a setup screen instead of a login screen — whoever fills it in becomes the admin, with the email and password they chose themselves. No default credential exists unless you explicitly set `DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` (see [Configuration](#configuration)) for a scripted deployment, in which case that account is seeded flagged `must_change_password` and logged clearly at startup instead. Admin sessions are a separate cookie from end-user sessions, so being signed into `/admin` never grants access to any client's login.
+
+### Admin API
+
+The SPA is only one consumer of `/admin/api/*`; anything it does can be scripted with the same admin session cookie. The endpoints most relevant to the identity model:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/api/users` | Paginated user list. Query: `search`, `client` (a `client_id`), `pool` (a group name), `page` (default 1), `page_size` (default 50, capped at 200). Returns `{items, total, page, page_size, pages}` |
+| `POST /admin/api/users` | Create a user under `client_id`. Accepts `email`, `password`, `confirm_password`, and optional `first_name`, `last_name`, `username`, `phone`, `email_verified` |
+| `PATCH /admin/api/users/{id}` | Edit profile fields; pass a different `client_id` to move the user to another application |
+| `DELETE /admin/api/users/{id}` | Delete a user and everything that references them |
+| `POST /admin/api/clients` | Register an application; `user_pool` is optional — blank means standalone |
+| `POST /admin/api/pools/{name}/assign-client` | Add an application to a login group — body `{"client_id": "..."}` |
+| `POST /admin/api/pools/{name}/remove-client` | Make an application standalone — body `{"client_id": "..."}` |
+| `DELETE /admin/api/pools/{name}` | Delete a group; its applications become standalone |
+| `POST /admin/api/maintenance/cleanup-empty-pools` | Remove every group that has no applications. Idempotent |
+| `GET /admin/api/contacts` | The deployment-wide contact list |
+
+The complete list, with request and response schemas, is in `/docs` (Swagger UI).
 
 ## Integrating your applications and MCP servers
 
@@ -297,9 +381,9 @@ uv run python -m app.cli register-client --client-id your-app --type public --re
 # (in Docker: docker compose exec auth-service uv run python -m app.cli ...)
 ```
 
-Add `--user-pool <name>` to either share users with your other clients or isolate them — see [User pools](#user-pools). Omit it and everything lands in one shared `default` pool.
+Add `--user-pool <name>` to make the client share users with the other applications in that login group — see [Applications, users, and login groups](#applications-users-and-login-groups). Omit it and the client is standalone, with its own isolated users.
 
-MCP clients don't need manual registration — they self-register at connect time, either via `POST /register` (Dynamic Client Registration) or, increasingly, by hosting a JSON document at their own `client_id` URL ([CIMD](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/), which the MCP spec's 2026-07-28 revision now prefers over DCR — this server supports both, resolving whichever style of `client_id` a request presents). Either way, it's `/.well-known/oauth-protected-resource` + `/.well-known/openid-configuration` that point clients at this server in the first place.
+MCP clients don't need manual registration — they self-register at connect time (always as standalone applications; an admin can add one to a login group afterwards), either via `POST /register` (Dynamic Client Registration) or, increasingly, by hosting a JSON document at their own `client_id` URL ([CIMD](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/), which the MCP spec's 2026-07-28 revision now prefers over DCR — this server supports both, resolving whichever style of `client_id` a request presents). Either way, it's `/.well-known/oauth-protected-resource` + `/.well-known/openid-configuration` that point clients at this server in the first place.
 
 Service-to-service `client_credentials` clients can authenticate with a certificate instead of a shared secret — see [Mutual TLS](#mutual-tls-for-client_credentials-clients).
 
@@ -378,16 +462,17 @@ For actual branding of the popup's contents (not just the button that opens it),
                          │  /.well-known/openid-configuration        │
                          │  /.well-known/oauth-protected-resource    │
                          │  /jwks.json                                │
-                         │  /admin/*  -- operator setup UI: pools,   │
-                         │    clients, resources, users, own login   │
+                         │  /admin/*  -- operator UI: applications,  │
+                         │    login groups, resources, users         │
                          └───────────────┬─────────────────────────┘
                                          │
                      ┌───────────────────┼───────────────────┐
                      ▼                   ▼                   ▼
               PostgreSQL           Redis                  Signing keys
-          (users, clients,     (sessions, auth codes,     (rotating RSA
-           resources, consents, refresh tokens,            keypairs on disk,
-           refresh-token audit) revocation)                 kid-tagged)
+          (applications, users, (sessions, auth codes,     (rotating RSA
+           login groups,        refresh tokens,            keypairs on disk,
+           resources, consents, revocation)                 kid-tagged)
+           refresh-token audit)
 
                      ▲  JWKS + OIDC discovery, fetched & cached locally
                      │
@@ -402,12 +487,27 @@ For actual branding of the popup's contents (not just the button that opens it),
 
 Every consumer is a **resource server**: it never issues tokens, it only fetches this service's JWKS once, caches it, and verifies JWTs locally — no network call back to the auth service on the hot path.
 
+Inside the service, identity hangs off the application rather than off a tenant:
+
+```
+user_pools (login group, optional)
+     ▲
+     │ clients.user_pool_id  (nullable -- NULL means standalone)
+     │
+  clients (application) ◄──── users.client_id ──── users
+     ▲                                               ▲
+     └── consents, client_access_grants,             └── webauthn_credentials,
+         client_roles, refresh_tokens                    user_role_assignments
+```
+
+A user is owned by one application; a login group widens *which applications that user can sign in to* without changing who owns the row. The full data model, request flows, storage split, and trust boundaries are in [docs/architecture.md](docs/architecture.md).
+
 ## Tech stack
 
 | Component | Choice | Why |
 |---|---|---|
 | Web framework | FastAPI | Async, native OpenAPI docs |
-| Database | PostgreSQL via SQLAlchemy (async) + asyncpg | Users, clients, resources, consents, refresh-token audit trail |
+| Database | PostgreSQL via SQLAlchemy (async) + asyncpg | Applications, users, login groups, resources, consents, roles, refresh-token audit trail |
 | Cache / sessions / codes | Redis | Login sessions, authorization codes, active refresh tokens, one-time-use enforcement |
 | JWT signing | `python-jose` + `cryptography` | RS256, `kid`-based key rotation |
 | Password hashing | `argon2-cffi` | Memory-hard, current best practice |
@@ -425,18 +525,22 @@ auth_service/
 ├── app/
 │   ├── main.py                  # FastAPI app entrypoint, router + middleware wiring
 │   ├── config.py                # env-based settings (pydantic-settings); builds DB/Redis URLs from parts
-│   ├── cli.py                    # admin CLI: register-client, register-resource, create-user, list-*
+│   ├── cli.py                    # admin CLI: register-client, register-resource, create-user (per application), list-*
 │   ├── audit.py                  # structured (JSON-lines) audit logging + failed-login anomaly tracking
 │   ├── email.py                   # SMTP sender (password reset + verification emails)
 │   ├── db/
-│   │   ├── models.py            # SQLAlchemy models: UserPool, User, AdminUser, Client, Resource, Consent, RefreshToken, WebAuthnCredential
-│   │   ├── pools.py              # get_or_create_pool() -- pools are created implicitly by name
+│   │   ├── models.py            # SQLAlchemy models: Client, User, UserPool, Contact, AdminUser, Resource, Consent,
+│   │   │                        #   ClientAccessGrant, ClientRole, UserRoleAssignment, RefreshToken, WebAuthnCredential
+│   │   ├── pools.py              # get_or_create_pool() -- login groups are created by name on first use
+│   │   ├── tenant.py             # Row-Level Security session variables for `users` (scope to one application, or bypass)
+│   │   ├── contacts.py           # upsert_contact() -- first-seen record per email, kept after user/app deletion
 │   │   ├── session.py           # async engine + session factory
 │   │   └── redis_client.py      # Redis connection
 │   ├── oidc/                     # standard OAuth/OIDC surface, all at root
 │   │   ├── discovery.py         # GET /.well-known/openid-configuration
 │   │   ├── prm.py                # GET /.well-known/oauth-protected-resource
-│   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow)
+│   │   ├── authorize.py          # /authorize, /login, /signup, /consent (PKCE + login/signup + consent flow);
+│   │   │                         #   also owns the "which user may sign in to this application" lookup
 │   │   ├── password_reset.py     # /forgot-password, /reset-password, /verify-email, /resend-verification
 │   │   ├── webauthn.py           # /webauthn/* (passkey register + login), /account (manage passkeys)
 │   │   ├── token.py              # POST /token (auth code, refresh, client_credentials)
@@ -454,7 +558,8 @@ auth_service/
 │   ├── admin/                     # backs /admin -- operator setup UI (see frontend/ for the SPA itself)
 │   │   ├── auth.py                # get_current_admin() session lookup, shared by api.py
 │   │   ├── seed.py                # optional admin seeding from DEFAULT_ADMIN_EMAIL/PASSWORD (scripted deployments only)
-│   │   └── api.py                 # JSON API under /admin/api/*: login/logout, dashboard, pools, clients, resources, users, account
+│   │   └── api.py                 # JSON API under /admin/api/*: setup, login/logout, dashboard, applications, login groups,
+│   │                              #   resources, users (search + pagination), access grants, roles, contacts, account
 │   ├── auth/
 │   │   ├── passwords.py          # argon2 hashing
 │   │   ├── mfa.py                 # TOTP generate/verify
@@ -471,10 +576,12 @@ auth_service/
 │   │   ├── api.ts                  # typed fetch client for /admin/api/*
 │   │   ├── AdminContext.tsx        # current-admin auth state
 │   │   ├── theme.ts                # light/dark toggle, persisted to localStorage
-│   │   ├── components/             # Layout, Modal, Drawer, Menu, Badge, ConfirmDialog, CopyableId, EmptyState, ToastProvider, PasswordInput
-│   │   └── pages/                  # Login, Dashboard, Applications, Users, LoginGroups, Resources, AuditLog, Account
+│   │   ├── components/             # Layout, Modal, Menu, Badge, ConfirmDialog, CopyableId, CodeBlock, EmptyState, Icons,
+│   │   │                           #   IntegrationModal, PasswordInput, ToastProvider
+│   │   └── pages/                  # Setup, Login, Dashboard, Applications, Users, LoginGroups, Resources, AuditLog, Account
+│   ├── .env.example               # VITE_BACKEND_URL -- where `npm run dev` proxies /admin/api (dev server only)
 │   └── dist/                      # `npm run build` output; served by app/main.py at /admin (gitignored)
-├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata)
+├── alembic/                       # migrations (env.py wired to app.db.models.Base.metadata) -- the authoritative schema history
 ├── tests/                         # pytest + httpx ASGI client, fakeredis, in-memory SQLite
 ├── examples/
 │   ├── example_api/                # runnable protected API built on the SDK
@@ -550,7 +657,11 @@ Once configured for a client, mTLS is *required* for it — a correct `client_se
 uv run pytest
 ```
 
-The suite uses `httpx`'s ASGI transport (no running server needed), `fakeredis` in place of Redis, and an in-memory SQLite database — so it runs with zero external dependencies. It covers discovery/JWKS, dynamic client registration, the full authorize → login/signup → consent → token → refresh-rotation → revoke lifecycle for both authorization-code and client-credentials grants, user-pool sharing/isolation, and the admin UI (login, seeding, pools/clients/resources/users CRUD, the signup toggle).
+The suite uses `httpx`'s ASGI transport (no running server needed), `fakeredis` in place of Redis, and an in-memory SQLite database — so it runs with zero external dependencies. It targets discovery/JWKS, dynamic client registration, the full authorize → login/signup → consent → token → refresh-rotation → revoke lifecycle for both authorization-code and client-credentials grants, login-group sharing and isolation, and the admin API (setup, login, applications, login groups, resources, users).
+
+Row-Level Security is Postgres-only, so it is not exercised by this suite — the `app/db/tenant.py` helpers are no-ops on SQLite.
+
+> **Current state:** the shared fixtures in `tests/helpers.py` and several signup tests still target the previous pool-owned user model, so a large part of the suite fails until they are ported to per-application users. See [docs/architecture.md §16](docs/architecture.md#16-known-limitations).
 
 ## Roadmap
 
@@ -561,8 +672,8 @@ Following the build order this service was planned against:
 - [x] Dynamic Client Registration, refresh rotation, revocation denylist
 - [x] Polished login/consent UI
 - [x] Admin CLI for registering resources/clients/users; resource-server SDK + example integrations
-- [x] Self-service user signup, and user pools (shared vs. isolated identity across clients on one deployment)
-- [x] `/admin` setup UI (pools, clients, resources, users, per-client signup toggle) with an interactive first-run admin setup screen — no default credential
+- [x] Self-service user signup, and shared vs. isolated identity across clients on one deployment
+- [x] `/admin` setup UI (applications, login groups, resources, users, per-client signup toggle) with an interactive first-run admin setup screen — no default credential
 - [x] MCP support: RFC 8707 resource indicators, RFC 9728 protected resource metadata, RFC 7591 Dynamic Client Registration
 - [x] Password recovery and email verification
 - [x] Passkey (WebAuthn) login, alongside password + TOTP
@@ -571,6 +682,12 @@ Following the build order this service was planned against:
 - [x] CIMD support: `client_id`-as-URL resolution, per the MCP spec's 2026-07-28 revision preferring it over DCR
 - [x] mTLS for `client_credentials` clients (RFC 8705-style cert-thumbprint binding, via reverse-proxy header handoff)
 - [x] Observability: structured audit logs, anomalous-issuance alerting
+- [x] Per-application access control: allow-lists (`restrict_access`) and per-application roles reported in `/userinfo`
+- [x] Per-application user ownership — users belong to an application, login groups become an optional grouping of applications
+- [x] User profile fields (first/last name, username, phone) and a deployment-wide contacts record
+- [x] Admin console at scale: server-side search and pagination for users
+- [ ] Port the test suite to the per-application user model
+- [ ] Enforce email uniqueness across a login group
 
 ## Contributing
 
