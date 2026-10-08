@@ -16,10 +16,11 @@ from app.auth.password_reset import create_email_verification_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, get_session_user
 from app.config import get_settings
+from app.db.contacts import upsert_contact
 from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, User, UserRoleAssignment
 from app.db.redis_client import get_redis
 from app.db.session import get_db
-from app.db.tenant import set_tenant_pool
+from app.db.tenant import bypass_tenant_rls
 from app.email import send_verification_email
 from app.middleware.rate_limit import limiter
 from app.oidc.cimd import is_cimd_client_id, resolve_cimd_client
@@ -81,6 +82,36 @@ async def _signup_roles(db: AsyncSession, client: Client) -> list[str]:
     return [name for (name,) in result.all()]
 
 
+async def _find_user_for_client(db: AsyncSession, email: str, client: Client) -> "User | None":
+    """Find the user who can authenticate for this client.
+
+    Checks: user registered directly with this client, OR registered with any
+    other client in the same pool (shared identity across pooled apps).
+    """
+    if client.user_pool_id is not None:
+        pool_client_ids = select(Client.client_id).where(Client.user_pool_id == client.user_pool_id)
+        result = await db.execute(
+            select(User).where(User.email == email, User.client_id.in_(pool_client_ids))
+        )
+    else:
+        result = await db.execute(
+            select(User).where(User.email == email, User.client_id == client.client_id)
+        )
+    return result.scalar_one_or_none()
+
+
+async def _user_can_access_client(db: AsyncSession, user: "User", client: Client) -> bool:
+    """Check if a user (by registration client) can authenticate for a given client."""
+    if user.client_id == client.client_id:
+        return True
+    if client.user_pool_id is None:
+        return False
+    user_client = (
+        await db.execute(select(Client).where(Client.client_id == user.client_id))
+    ).scalar_one_or_none()
+    return user_client is not None and user_client.user_pool_id == client.user_pool_id
+
+
 async def _has_client_access(db: AsyncSession, client_id: str, user_id: str) -> bool:
     result = await db.execute(
         select(ClientAccessGrant).where(
@@ -130,8 +161,6 @@ async def authorize(
     client = await _load_client(db, client_id)
     if redirect_uri not in client.redirect_uris:
         raise HTTPException(400, "invalid_redirect_uri")
-    await set_tenant_pool(db, client.user_pool_id)
-
     scope = resolve_scope(scope, client.allowed_scope)
 
     flow_id = secrets.token_urlsafe(16)
@@ -151,10 +180,10 @@ async def authorize(
     user_id = await get_session_user(redis, session_id)
 
     if user_id is not None:
-        # A session cookie from a different, isolated user pool must not
+        # A session cookie from a different, isolated app/pool must not
         # grant access here -- fall through to login/signup for this client.
         user = await db.get(User, uuid.UUID(user_id))
-        if user is None or user.user_pool_id != client.user_pool_id:
+        if user is None or not await _user_can_access_client(db, user, client):
             user_id = None
 
     if user_id is None:
@@ -208,12 +237,9 @@ async def login(
 ):
     settings = get_settings()
     client = await _get_flow_client(db, redis, flow_id)
-    await set_tenant_pool(db, client.user_pool_id)
+    await bypass_tenant_rls(db)
 
-    result = await db.execute(
-        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
-    )
-    user = result.scalar_one_or_none()
+    user = await _find_user_for_client(db, email, client)
 
     if user is None or user.status != "active" or not verify_password(password, user.password_hash):
         await _record_login_failure(redis, email, request, client.client_id, "invalid_credentials")
@@ -286,6 +312,8 @@ async def signup_page(
 async def signup(
     request: Request,
     flow_id: str = Form(...),
+    first_name: str = Form(...),
+    last_name: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
     confirm_password: str = Form(...),
@@ -297,7 +325,7 @@ async def signup(
     client = await _get_flow_client(db, redis, flow_id)
     if not client.allow_signup:
         raise HTTPException(403, "signup_disabled")
-    await set_tenant_pool(db, client.user_pool_id)
+    await bypass_tenant_rls(db)
     roles = await _signup_roles(db, client)
 
     def error(message: str, status_code: int = 400):
@@ -311,23 +339,36 @@ async def signup(
                 "roles": roles,
                 "error": message,
                 "email": email,
+                "first_name": first_name,
+                "last_name": last_name,
             },
             status_code=status_code,
         )
 
+    if not first_name.strip():
+        return error("First name is required")
+    if not last_name.strip():
+        return error("Last name is required")
     if password != confirm_password:
         return error("Passwords do not match")
     if len(password) < MIN_PASSWORD_LENGTH:
         return error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
     existing = await db.execute(
-        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
+        select(User).where(User.email == email, User.client_id == client.client_id)
     )
     if existing.scalar_one_or_none() is not None:
         return error("An account with that email already exists")
 
-    user = User(user_pool_id=client.user_pool_id, email=email, password_hash=hash_password(password))
+    user = User(
+        client_id=client.client_id,
+        email=email,
+        first_name=first_name.strip(),
+        last_name=last_name.strip(),
+        password_hash=hash_password(password),
+    )
     db.add(user)
+    await upsert_contact(db, email=email, app_name=client.client_name or client.client_id)
     await db.flush()  # populates user.id, generated at flush time, not construction
     if client.restrict_access:
         # They signed up through this app's own signup page -- that's

@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Index,
     JSON,
     Boolean,
     DateTime,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -38,28 +40,56 @@ class UserPool(Base):
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("user_pool_id", "email", name="uq_users_pool_email"),)
+    __table_args__ = (
+        UniqueConstraint("client_id", "email", name="uq_users_client_email"),
+        Index(
+            "uq_users_client_username",
+            "client_id",
+            "username",
+            unique=True,
+            postgresql_where=text("username IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    user_pool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_pools.id"), index=True)
+    client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"), index=True)
     email: Mapped[str] = mapped_column(String, index=True)
+    username: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    first_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String, nullable=True)
     password_hash: Mapped[str] = mapped_column(String)
     mfa_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="active")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Soft delete -- see Client.deleted_at for why this isn't a hard DELETE.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
+class Contact(Base):
+    """One row per unique email address, across all pools and apps.
+
+    Written on every user creation (admin or self-signup) via upsert so the
+    record survives pool/app deletion. Never shown in the per-pool auth UI —
+    used for marketing, analytics, and CRM exports.
+    """
+
+    __tablename__ = "contacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    first_pool: Mapped[str | None] = mapped_column(String, nullable=True)
+    first_app: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class Client(Base):
     __tablename__ = "clients"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    user_pool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_pools.id"), index=True)
+    user_pool_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user_pools.id"), index=True, nullable=True)
     client_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     # Human-readable display name -- shown on login/consent screens instead of
     # client_id, which for dcr/cimd clients is an opaque token or a bare URL.
@@ -100,11 +130,6 @@ class Client(Base):
     # client's defined roles. Meaningless unless roles_enabled and
     # allow_signup are both also on.
     allow_signup_role_selection: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Soft delete: set instead of removing the row, since refresh tokens,
-    # consents, and audit history reference this client_id. Deleted clients
-    # are also force-disabled (see api_delete_client) and filtered out of
-    # every admin listing -- this column only matters for data retention.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

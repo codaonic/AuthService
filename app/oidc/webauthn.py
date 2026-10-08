@@ -37,8 +37,8 @@ from app.config import get_settings
 from app.db.models import User, WebAuthnCredential
 from app.db.redis_client import get_redis
 from app.db.session import get_db
-from app.db.tenant import bypass_tenant_rls, set_tenant_pool
-from app.oidc.authorize import _continue_flow, _get_flow_client
+from app.db.tenant import bypass_tenant_rls
+from app.oidc.authorize import _continue_flow, _find_user_for_client, _get_flow_client, _user_can_access_client
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -68,12 +68,9 @@ async def webauthn_login_options(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
-    await set_tenant_pool(db, client.user_pool_id)
+    await bypass_tenant_rls(db)
 
-    result = await db.execute(
-        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
-    )
-    user = result.scalar_one_or_none()
+    user = await _find_user_for_client(db, email, client)
 
     credentials: list[WebAuthnCredential] = []
     if user is not None:
@@ -109,7 +106,7 @@ async def webauthn_login_verify(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
-    await set_tenant_pool(db, client.user_pool_id)
+    await bypass_tenant_rls(db)
     settings = get_settings()
 
     challenge = await pop_authentication_challenge(redis, flow_id)
@@ -125,7 +122,7 @@ async def webauthn_login_verify(
         raise HTTPException(400, "Unknown passkey")
 
     user = await db.get(User, stored.user_id)
-    if user is None or user.user_pool_id != client.user_pool_id or user.status != "active":
+    if user is None or not await _user_can_access_client(db, user, client) or user.status != "active":
         raise HTTPException(400, "Unknown passkey")
 
     rp_id, origin = relying_party()

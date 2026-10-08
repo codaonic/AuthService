@@ -19,10 +19,10 @@ from app.config import get_settings
 from app.db.models import User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
-from app.db.tenant import bypass_tenant_rls, set_tenant_pool
+from app.db.tenant import bypass_tenant_rls
 from app.email import send_password_reset_email, send_verification_email
 from app.middleware.rate_limit import limiter
-from app.oidc.authorize import _get_flow_client
+from app.oidc.authorize import _find_user_for_client, _get_flow_client
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
 router = APIRouter()
@@ -54,12 +54,9 @@ async def forgot_password_submit(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
-    await set_tenant_pool(db, client.user_pool_id)
+    await bypass_tenant_rls(db)
 
-    result = await db.execute(
-        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
-    )
-    user = result.scalar_one_or_none()
+    user = await _find_user_for_client(db, email, client)
     if user is not None and user.status == "active":
         token = await create_password_reset_token(redis, str(user.id))
         await send_password_reset_email(user.email, token)
@@ -158,12 +155,9 @@ async def resend_verification_submit(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
-    await set_tenant_pool(db, client.user_pool_id)
+    await bypass_tenant_rls(db)
 
-    result = await db.execute(
-        select(User).where(User.email == email, User.user_pool_id == client.user_pool_id)
-    )
-    user = result.scalar_one_or_none()
+    user = await _find_user_for_client(db, email, client)
     if user is not None and not user.email_verified:
         token = await create_email_verification_token(redis, str(user.id))
         await send_verification_email(user.email, token)

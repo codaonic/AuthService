@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_event
 from app.db.models import Client
-from app.db.pools import DEFAULT_POOL_NAME, get_or_create_pool
 
 logger = logging.getLogger("app.oidc.cimd")
 
@@ -105,9 +104,8 @@ async def resolve_cimd_client(db: AsyncSession, client_id: str) -> Client:
         existing.client_name = client_name
         existing.cimd_fetched_at = now
     else:
-        pool = await get_or_create_pool(db, DEFAULT_POOL_NAME)
         client = Client(
-            user_pool_id=pool.id,
+            user_pool_id=None,
             client_id=client_id,
             client_name=client_name,
             client_secret_hash=None,  # CIMD clients are always public -- no secret to hold

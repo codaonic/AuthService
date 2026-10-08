@@ -9,11 +9,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # plain `SET` here would leak one request's tenant into whatever unrelated
 # request next checks out the same pooled connection.
 _POOL_VAR = "app.tenant_pool_id"
+_CLIENT_VAR = "app.tenant_client_id"
 _BYPASS_VAR = "app.rls_bypass"
 
 
 def _is_postgres(db: AsyncSession) -> bool:
     return db.bind is not None and db.bind.dialect.name == "postgresql"
+
+
+async def set_tenant_client(db: AsyncSession, client_id: str) -> None:
+    """Scope the rest of this transaction's `users` queries to one client.
+
+    Used for direct (non-pool) user lookups in the OIDC flow -- standalone
+    apps where a user can only belong to one specific client.
+    """
+    if not _is_postgres(db):
+        return
+    if not isinstance(client_id, str):
+        raise TypeError(f"client_id must be a str, got {type(client_id)!r}")
+    await db.execute(text(f"SET LOCAL {_CLIENT_VAR} = '{client_id}'"))
 
 
 async def set_tenant_pool(db: AsyncSession, pool_id: uuid.UUID) -> None:

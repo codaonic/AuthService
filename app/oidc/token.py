@@ -10,7 +10,7 @@ from app.config import get_settings
 from app.db.models import Resource, User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
-from app.db.tenant import set_tenant_pool
+from app.db.tenant import bypass_tenant_rls
 from app.middleware.rate_limit import limiter
 from app.oidc.clients import get_and_validate_client
 from app.oidc.pkce import verify_pkce
@@ -84,7 +84,7 @@ async def token_endpoint(
         # called here, not earlier, since the refresh_token branch above
         # commits (rotating the token), which resets the transaction-scoped
         # RLS context set before it.
-        await set_tenant_pool(db, client.user_pool_id)
+        await bypass_tenant_rls(db)
         user = await db.get(User, uuid.UUID(subject))
         if user is None or user.status != "active":
             raise HTTPException(400, "invalid_grant")
