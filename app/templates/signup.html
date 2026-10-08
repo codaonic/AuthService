@@ -33,9 +33,20 @@
 <form method="post" action="/signup" class="form" novalidate>
   <input type="hidden" name="flow_id" value="{{ flow_id }}">
 
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+    <div class="field">
+      <label for="first_name">First name</label>
+      <input id="first_name" type="text" name="first_name" required autofocus autocomplete="given-name" placeholder="Jane" value="{{ first_name or '' }}">
+    </div>
+    <div class="field">
+      <label for="last_name">Last name</label>
+      <input id="last_name" type="text" name="last_name" required autocomplete="family-name" placeholder="Smith" value="{{ last_name or '' }}">
+    </div>
+  </div>
+
   <div class="field">
     <label for="email">Email</label>
-    <input id="email" type="email" name="email" required autofocus autocomplete="username" placeholder="you@example.com" value="{{ email or '' }}">
+    <input id="email" type="email" name="email" required autocomplete="username" placeholder="you@example.com" value="{{ email or '' }}">
   </div>
 
   <div class="field">
