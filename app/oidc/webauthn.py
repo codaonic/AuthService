@@ -20,11 +20,11 @@ from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerifica
 from app.audit import client_ip, log_event
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import (
-    create_session,
     get_session_user,
     list_sessions_for_user,
     revoke_other_sessions,
     revoke_session,
+    sign_in,
 )
 from app.auth.webauthn import (
     pop_authentication_challenge,
@@ -150,8 +150,13 @@ async def webauthn_login_verify(
     await db.commit()
     log_event("webauthn_login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
-    session_id = await create_session(
-        redis, str(user.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    session_id = await sign_in(
+        redis,
+        request.cookies.get(settings.session_cookie_name),
+        str(user.id),
+        client.client_id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
     )
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(

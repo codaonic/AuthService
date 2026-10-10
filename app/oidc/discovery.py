@@ -15,6 +15,7 @@ def _metadata_document() -> dict:
         "registration_endpoint": f"{issuer}/register",
         "userinfo_endpoint": f"{issuer}/userinfo",
         "revocation_endpoint": f"{issuer}/revoke",
+        "end_session_endpoint": f"{issuer}/logout",
         "jwks_uri": f"{issuer}/jwks.json",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],

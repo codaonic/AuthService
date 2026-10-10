@@ -12,7 +12,19 @@ from app.admin import api as admin_api
 from app.admin.seed import ensure_default_admin
 from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
-from app.oidc import authorize, discovery, jwks, password_reset, prm, register, revoke, token, userinfo, webauthn
+from app.oidc import (
+    authorize,
+    discovery,
+    jwks,
+    logout,
+    password_reset,
+    prm,
+    register,
+    revoke,
+    token,
+    userinfo,
+    webauthn,
+)
 
 
 @asynccontextmanager
@@ -40,6 +52,7 @@ app.include_router(webauthn.router)
 app.include_router(token.router)
 app.include_router(register.router)
 app.include_router(revoke.router)
+app.include_router(logout.router)
 app.include_router(userinfo.router)
 
 # JSON API for the admin console (React SPA, served below).

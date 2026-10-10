@@ -1,5 +1,6 @@
 import logging
 import secrets
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlencode
@@ -15,7 +16,7 @@ from app.audit import client_ip, log_event, record_failed_login
 from app.auth.mfa import verify_totp
 from app.auth.password_reset import create_email_verification_token
 from app.auth.passwords import hash_password, verify_password
-from app.auth.sessions import create_session, get_session_user
+from app.auth.sessions import app_auth_time, get_session_user, sign_in
 from app.config import get_settings
 from app.db.contacts import upsert_contact
 from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, User, UserRoleAssignment
@@ -188,11 +189,20 @@ async def authorize(
     session_id = request.cookies.get(settings.session_cookie_name)
     user_id = await get_session_user(redis, session_id)
 
+    auth_time = None
     if user_id is not None:
         # A session cookie from a different, isolated app/pool must not
         # grant access here -- fall through to login/signup for this client.
         user = await db.get(User, uuid.UUID(user_id))
         if user is None or not await _user_can_access_client(db, user, client):
+            user_id = None
+
+    if user_id is not None:
+        # Signed out of this application specifically, or signed in longer
+        # ago than this application allows -- ask for credentials again.
+        auth_time = await app_auth_time(redis, session_id, client.client_id)
+        limit = client.session_ttl_seconds  # 0 = no per-application limit
+        if auth_time is None or (limit and time.time() - auth_time > limit):
             user_id = None
 
     if user_id is None:
@@ -209,7 +219,7 @@ async def authorize(
             },
         )
 
-    return await _continue_flow(request, db, redis, flow_id, user_id)
+    return await _continue_flow(request, db, redis, flow_id, user_id, auth_time=auth_time)
 
 
 @router.get("/login")
@@ -284,8 +294,13 @@ async def login(
         )
 
     log_event("login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
-    session_id = await create_session(
-        redis, str(user.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    session_id = await sign_in(
+        redis,
+        request.cookies.get(settings.session_cookie_name),
+        str(user.id),
+        client.client_id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
     )
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(
@@ -396,8 +411,13 @@ async def signup(
     token = await create_email_verification_token(redis, str(user.id))
     await send_verification_email(user.email, token)
 
-    session_id = await create_session(
-        redis, str(user.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")
+    session_id = await sign_in(
+        redis,
+        request.cookies.get(settings.session_cookie_name),
+        str(user.id),
+        client.client_id,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
     )
     response = await _continue_flow(request, db, redis, flow_id, str(user.id))
     response.set_cookie(
@@ -412,11 +432,22 @@ async def signup(
 
 
 async def _continue_flow(
-    request: Request, db: AsyncSession, redis: Redis, flow_id: str, user_id: str
+    request: Request,
+    db: AsyncSession,
+    redis: Redis,
+    flow_id: str,
+    user_id: str,
+    auth_time: int | None = None,
 ):
+    """`auth_time` is when the user actually authenticated -- now, unless an
+    existing session is being reused. It rides along on the flow so the
+    tokens issued at the end can't outlive the application's sign-in timeout.
+    """
     flow = await redis.hgetall(f"{FLOW_KEY_PREFIX}{flow_id}")
     if not flow:
         raise HTTPException(400, "invalid_request: expired or unknown flow")
+    flow["auth_time"] = str(auth_time or round(time.time()))
+    await redis.hset(f"{FLOW_KEY_PREFIX}{flow_id}", "auth_time", flow["auth_time"])
 
     client = await _load_client(db, flow["client_id"])
     requested_scopes = set(flow["scope"].split()) if flow["scope"] else set()
@@ -524,6 +555,7 @@ async def _issue_code(redis: Redis, flow_id: str, flow: dict, user_id: str) -> R
             "code_challenge_method": flow["code_challenge_method"],
             "redirect_uri": flow["redirect_uri"],
             "scope": flow["scope"],
+            "auth_time": flow.get("auth_time") or str(round(time.time())),
         },
     )
     await redis.expire(f"{CODE_KEY_PREFIX}{code}", settings.authorization_code_ttl_seconds)

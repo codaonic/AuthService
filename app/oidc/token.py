@@ -1,3 +1,4 @@
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -42,6 +43,8 @@ async def token_endpoint(
     client = await get_and_validate_client(db, client_id, client_secret, request)
     if grant_type not in client.grant_types:
         raise HTTPException(400, "unauthorized_client")
+    session_ttl = client.session_ttl_seconds
+    auth_time: int | None = None
 
     if grant_type == "authorization_code":
         if not code:
@@ -60,6 +63,7 @@ async def token_endpoint(
         subject = auth_code["user_id"]
         resource = auth_code["resource"]
         scope = auth_code["scope"]
+        auth_time = int(auth_code["auth_time"]) if auth_code.get("auth_time") else None
 
     elif grant_type == "client_credentials":
         if not resource:
@@ -74,6 +78,11 @@ async def token_endpoint(
         subject = rt["user_id"]
         resource = resource or rt["resource"]
         scope = resolve_scope(scope, rt["scope"])
+        auth_time = rt["auth_time"]
+        # The application's sign-in timeout has passed (it may have been
+        # shortened since this token was issued) -- the user has to log in.
+        if auth_time and session_ttl and time.time() > auth_time + session_ttl:
+            raise HTTPException(400, "invalid_grant")
 
     else:
         raise HTTPException(400, "unsupported_grant_type")
@@ -120,7 +129,7 @@ async def token_endpoint(
 
     if grant_type != "client_credentials":
         response["refresh_token"] = await issue_refresh_token(
-            db, redis, subject, client_id, resource, scope=scope
+            db, redis, subject, client_id, resource, scope=scope, auth_time=auth_time, max_age=session_ttl
         )
 
     return response

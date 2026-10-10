@@ -16,6 +16,7 @@ from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, delete_session, revoke_all_sessions_for_user
 from app.config import get_settings
 from app.db.models import (
+    DEFAULT_CLIENT_SESSION_TTL_SECONDS,
     AdminUser,
     Client,
     ClientAccessGrant,
@@ -41,6 +42,7 @@ router = APIRouter(prefix="/admin/api")
 
 ALL_GRANT_TYPES = ["authorization_code", "refresh_token", "client_credentials"]
 MIN_PASSWORD_LENGTH = 8
+MIN_CLIENT_SESSION_TTL_SECONDS = 5 * 60
 
 
 async def require_admin(
@@ -76,8 +78,30 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "roles_enabled": client.roles_enabled,
         "allow_signup_role_selection": client.allow_signup_role_selection,
         "cimd_fetched_at": client.cimd_fetched_at.isoformat() if client.cimd_fetched_at else None,
+        "session_ttl_seconds": client.session_ttl_seconds,
+        "post_logout_redirect_uris": client.post_logout_redirect_uris or [],
         "pool_name": pool_name,
     }
+
+
+def _validated_session_ttl(seconds: int) -> int:
+    if seconds == 0:  # no per-application limit
+        return 0
+    # The upper bound is the refresh-token lifetime: nothing keeps a sign-in
+    # alive longer than that, so a larger value would be a promise the
+    # service can't keep.
+    maximum = get_settings().refresh_token_ttl_seconds
+    if not MIN_CLIENT_SESSION_TTL_SECONDS <= seconds <= maximum:
+        raise HTTPException(
+            400,
+            f"Sign-in timeout must be between {MIN_CLIENT_SESSION_TTL_SECONDS // 60} minutes "
+            f"and {maximum // 86400} days",
+        )
+    return seconds
+
+
+def _split_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
 
 
 def _user_json(user: User, client_name: str | None, pool_name: str | None) -> dict:
@@ -488,6 +512,7 @@ async def api_system_endpoints(admin: AdminUser = Depends(require_admin)):
         "registration_endpoint": f"{issuer}/register",
         "userinfo_endpoint": f"{issuer}/userinfo",
         "revocation_endpoint": f"{issuer}/revoke",
+        "end_session_endpoint": f"{issuer}/logout",
         "jwks_uri": f"{issuer}/jwks.json",
         "prm_endpoint": f"{issuer}/.well-known/oauth-protected-resource",
         "openid_configuration": f"{issuer}/.well-known/openid-configuration",
@@ -521,6 +546,10 @@ class CreateClientBody(BaseModel):
     allow_signup: bool = False
     logo_url: str = ""
     brand_color: str = ""
+    # Omitted: websites get the 7-day default, everything else (mobile/AI
+    # assistant/service clients) gets no per-application limit.
+    session_ttl_seconds: int | None = None
+    post_logout_redirect_uris: str = ""
 
 
 @router.post("/clients", status_code=201)
@@ -530,6 +559,10 @@ async def api_create_client(
     existing = await db.execute(select(Client).where(Client.client_id == body.client_id))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(400, f"client '{body.client_id}' already exists")
+    if body.session_ttl_seconds is None:
+        session_ttl = DEFAULT_CLIENT_SESSION_TTL_SECONDS if body.application_type == "web" else 0
+    else:
+        session_ttl = _validated_session_ttl(body.session_ttl_seconds)
 
     is_public = body.client_type == "public"
     client_secret = None if is_public else secrets.token_urlsafe(32)
@@ -549,6 +582,8 @@ async def api_create_client(
         allow_signup=body.allow_signup,
         logo_url=body.logo_url.strip() or None,
         brand_color=body.brand_color.strip() or None,
+        session_ttl_seconds=session_ttl,
+        post_logout_redirect_uris=_split_lines(body.post_logout_redirect_uris),
     )
     db.add(client)
     await db.commit()
@@ -561,6 +596,10 @@ class EditClientBody(BaseModel):
     client_name: str = ""
     redirect_uris: str = ""
     scope: str = ""
+    # None = leave unchanged, so older callers that only send the three
+    # fields above don't reset these.
+    session_ttl_seconds: int | None = None
+    post_logout_redirect_uris: str | None = None
 
 
 @router.patch("/clients/{client_id}")
@@ -574,6 +613,10 @@ async def api_edit_client(
     client.client_name = body.client_name.strip() or None
     client.redirect_uris = [u.strip() for u in body.redirect_uris.splitlines() if u.strip()]
     client.allowed_scope = body.scope
+    if body.session_ttl_seconds is not None:
+        client.session_ttl_seconds = _validated_session_ttl(body.session_ttl_seconds)
+    if body.post_logout_redirect_uris is not None:
+        client.post_logout_redirect_uris = _split_lines(body.post_logout_redirect_uris)
     await db.commit()
     pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
     return _client_json(client, pool.name if pool else "")

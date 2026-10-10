@@ -23,6 +23,9 @@ class Base(DeclarativeBase):
     pass
 
 
+DEFAULT_CLIENT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
 class UserPool(Base):
     """A group of clients that share one set of users.
 
@@ -130,6 +133,16 @@ class Client(Base):
     # client's defined roles. Meaningless unless roles_enabled and
     # allow_signup are both also on.
     allow_signup_role_selection: Mapped[bool] = mapped_column(Boolean, default=False)
+    # How long a sign-in counts for this application, measured from the
+    # moment the user last actually authenticated. Past it, /authorize asks
+    # for credentials again and refresh tokens stop working. 0 (the default,
+    # and what every self-registered API/MCP client gets) means no
+    # per-application limit: only the deployment-wide session and
+    # refresh-token lifetimes apply. The admin console turns it on for
+    # websites, at DEFAULT_CLIENT_SESSION_TTL_SECONDS.
+    session_ttl_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Where /logout may send the browser back to for this application.
+    post_logout_redirect_uris: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
