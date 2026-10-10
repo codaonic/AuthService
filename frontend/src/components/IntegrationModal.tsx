@@ -576,6 +576,41 @@ async def handle_callback(code: str, code_verifier: str):
         tokens = resp.json()
         return tokens  # Store tokens server-side in user session`}
               />
+              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                Logout signs the person out of <strong>this application only</strong> — other
+                applications stay signed in, including ones in the same login group. Call it from
+                your own logout button; it has no page of its own. Use either form:
+              </p>
+              <CodeBlock
+                language="python"
+                title="Logout from your server (returns JSON)"
+                code={`import httpx
+
+async def handle_logout(refresh_token: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "${endpoints.end_session_endpoint}",
+            data={
+                "client_id": "${currentClientId}",${
+                  isPublicClient
+                    ? ""
+                    : `
+                "client_secret": "${effectiveSecret || "<paste-your-client-secret>"}",`
+                }
+                "refresh_token": refresh_token,
+            },
+        )
+        resp.raise_for_status()  # {"status": "signed_out", ...}
+    # then clear your own session cookie`}
+              />
+              <CodeBlock
+                language="text"
+                title="Logout by redirecting the browser"
+                code={`${endpoints.end_session_endpoint}?client_id=${encodeURIComponent(currentClientId)}&post_logout_redirect_uri=${encodeURIComponent(
+                  activeClient?.post_logout_redirect_uris?.[0] ?? "https://yourapp.com/signed-out",
+                )}&state=<optional>`}
+                description="The return URL must be listed under After-logout URLs for this application."
+              />
             </div>
           )}
 

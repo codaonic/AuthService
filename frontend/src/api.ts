@@ -62,6 +62,7 @@ export interface SystemEndpoints {
   registration_endpoint: string;
   userinfo_endpoint: string;
   revocation_endpoint: string;
+  end_session_endpoint: string;
   jwks_uri: string;
   prm_endpoint: string;
   openid_configuration: string;
@@ -88,6 +89,8 @@ export interface Client {
   roles_enabled: boolean;
   allow_signup_role_selection: boolean;
   cimd_fetched_at: string | null;
+  session_ttl_seconds: number;
+  post_logout_redirect_uris: string[];
   pool_name: string | null;
   client_secret?: string;
 }

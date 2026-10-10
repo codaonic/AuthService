@@ -31,6 +31,93 @@ const PRESET_DEFAULTS: Record<Preset, { clientType: string; applicationType: str
   service: { clientType: "confidential", applicationType: "service", grants: ["client_credentials"] },
 };
 
+type DurationUnit = "minutes" | "hours" | "days";
+const UNIT_SECONDS: Record<DurationUnit, number> = { minutes: 60, hours: 3600, days: 86400 };
+const DEFAULT_SESSION_TTL_SECONDS = 7 * 86400;
+
+function splitDuration(seconds: number): { value: string; unit: DurationUnit } {
+  if (seconds <= 0) seconds = DEFAULT_SESSION_TTL_SECONDS;
+  for (const unit of ["days", "hours"] as const) {
+    if (seconds % UNIT_SECONDS[unit] === 0) return { value: String(seconds / UNIT_SECONDS[unit]), unit };
+  }
+  return { value: String(Math.round(seconds / 60)), unit: "minutes" };
+}
+
+function durationSeconds(value: string, unit: DurationUnit): number {
+  return Math.round(Number(value) * UNIT_SECONDS[unit]);
+}
+
+function SessionTimeoutField({
+  enabled,
+  value,
+  unit,
+  onChange,
+}: {
+  enabled: boolean;
+  value: string;
+  unit: DurationUnit;
+  onChange: (enabled: boolean, value: string, unit: DurationUnit) => void;
+}) {
+  return (
+    <div className="field">
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked, value, unit)} />
+        Make people log in again after a set time
+      </label>
+      {enabled && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            aria-label="Sign-in lasts"
+            type="number"
+            min={1}
+            required
+            style={{ maxWidth: 120 }}
+            value={value}
+            onChange={(e) => onChange(enabled, e.target.value, unit)}
+          />
+          <select
+            aria-label="Unit"
+            style={{ maxWidth: 140 }}
+            value={unit}
+            onChange={(e) => onChange(enabled, value, e.target.value as DurationUnit)}
+          >
+            <option value="minutes">minutes</option>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+          </select>
+        </div>
+      )}
+      <span className="field__hint">
+        {enabled
+          ? "Counted from when the person last entered their password or passkey. After that they must log in again, even if the app keeps them signed in. Between 5 minutes and 30 days."
+          : "Off: no limit of its own — the standard rules apply. Recommended for AI assistants, MCP clients and APIs, which would otherwise have to reconnect."}
+      </span>
+    </div>
+  );
+}
+
+function PostLogoutUrisField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="field">
+      <label htmlFor="post_logout_uris">
+        After-logout URLs <span className="field__hint">(optional — one per line)</span>
+      </label>
+      <textarea
+        id="post_logout_uris"
+        rows={2}
+        placeholder="https://yourapp.com/signed-out"
+        style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <span className="field__hint">
+        Where the logout endpoint may send the browser back to. Only needed if the app logs
+        people out by redirecting their browser.
+      </span>
+    </div>
+  );
+}
+
 export function Applications() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [search, setSearch] = useState("");
@@ -55,6 +142,10 @@ export function Applications() {
   const [scope, setScope] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [brandColor, setBrandColor] = useState("");
+  const [ttlEnabled, setTtlEnabled] = useState(true);
+  const [ttlValue, setTtlValue] = useState("7");
+  const [ttlUnit, setTtlUnit] = useState<DurationUnit>("days");
+  const [postLogoutUris, setPostLogoutUris] = useState("");
 
   const load = () => api.get<Client[]>("/clients").then(setClients);
 
@@ -107,6 +198,9 @@ export function Applications() {
     const d = PRESET_DEFAULTS[p];
     setClientType(d.clientType);
     setGrants(d.grants);
+    // Only websites get a sign-in limit by default; AI assistants, MCP
+    // clients and services keep the standard rules unless switched on.
+    setTtlEnabled(p === "website");
     if (p === "service") {
       setRedirectUris("");
       setAllowSignup(false);
@@ -139,11 +233,18 @@ export function Applications() {
         allow_signup: allowSignup,
         logo_url: logoUrl,
         brand_color: brandColor,
+        session_ttl_seconds:
+          preset === "service" || !ttlEnabled ? 0 : durationSeconds(ttlValue, ttlUnit),
+        post_logout_redirect_uris: preset === "service" ? "" : postLogoutUris,
       });
       setModalOpen(false);
       setCreated(result);
       setClientId("");
       setRedirectUris("");
+      setTtlEnabled(preset === "website");
+      setTtlValue("7");
+      setTtlUnit("days");
+      setPostLogoutUris("");
       setScope("");
       setLogoUrl("");
       setBrandColor("");
@@ -192,6 +293,8 @@ export function Applications() {
           client_name: fields.details.name,
           redirect_uris: fields.details.uris,
           scope: fields.details.scope,
+          session_ttl_seconds: fields.details.sessionTtlSeconds,
+          post_logout_redirect_uris: fields.details.postLogoutUris,
         }),
       );
     }
@@ -207,8 +310,12 @@ export function Applications() {
       calls.push(api.post(`/clients/${client.client_id}/mtls`, { thumbprint: fields.thumbprint }));
     }
     if (calls.length === 0) return;
-    await Promise.all(calls);
-    show("Saved");
+    try {
+      await Promise.all(calls);
+      show("Saved");
+    } catch (err) {
+      show(err instanceof ApiError ? err.message : "Couldn't save");
+    }
     load();
   };
 
@@ -471,6 +578,22 @@ export function Applications() {
               </div>
             )}
 
+            {preset !== "service" && (
+              <>
+                <SessionTimeoutField
+                  enabled={ttlEnabled}
+                  value={ttlValue}
+                  unit={ttlUnit}
+                  onChange={(on, v, u) => {
+                    setTtlEnabled(on);
+                    setTtlValue(v);
+                    setTtlUnit(u);
+                  }}
+                />
+                <PostLogoutUrisField value={postLogoutUris} onChange={setPostLogoutUris} />
+              </>
+            )}
+
             <details>
               <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>
                 Advanced settings (rarely needed)
@@ -535,8 +658,12 @@ export function Applications() {
       {created && (
         <Modal title="Application created" wide onClose={() => setCreated(null)}>
           <p className="field__hint" style={{ marginTop: -8 }}>
-            <strong>{created.client_id}</strong> was added.
+            <strong>{created.client_name || created.client_id}</strong> was added.
           </p>
+          <div className="field">
+            <label>Client ID</label>
+            <input readOnly value={created.client_id} onFocus={(e) => e.currentTarget.select()} />
+          </div>
           {created.client_secret && (
             <div className="field">
               <label>Client secret</label>
@@ -691,7 +818,7 @@ interface SaveFields {
   // client's current saved values -- Save changes is one button, but it
   // must not blindly re-POST branding/mtls (or overwrite them with stale
   // values) just because the admin only touched the name or scope.
-  details?: { name: string; uris: string; scope: string };
+  details?: { name: string; uris: string; scope: string; sessionTtlSeconds: number; postLogoutUris: string };
   branding?: { logoUrl: string; brandColor: string };
   thumbprint?: string;
 }
@@ -720,6 +847,11 @@ function ManageDrawer({
   const [name, setName] = useState(client.client_name ?? "");
   const [redirectUris, setRedirectUris] = useState(client.redirect_uris.join("\n"));
   const [scope, setScope] = useState(client.allowed_scope);
+  const [ttlEnabled, setTtlEnabled] = useState(client.session_ttl_seconds > 0);
+  const [ttlValue, setTtlValue] = useState(splitDuration(client.session_ttl_seconds).value);
+  const [ttlUnit, setTtlUnit] = useState<DurationUnit>(splitDuration(client.session_ttl_seconds).unit);
+  const [postLogoutUris, setPostLogoutUris] = useState(client.post_logout_redirect_uris.join("\n"));
+  const signsPeopleIn = client.grant_types.includes("authorization_code");
   const [grants, setGrants] = useState<AccessGrant[] | null>(null);
   const [poolUsers, setPoolUsers] = useState<AppUser[]>([]);
   const [grantUserId, setGrantUserId] = useState("");
@@ -1097,6 +1229,22 @@ function ManageDrawer({
             <input id="edit-scope" value={scope} onChange={(e) => setScope(e.target.value)} placeholder="openid profile email" />
           </div>
 
+          {signsPeopleIn && (
+            <>
+              <SessionTimeoutField
+                enabled={ttlEnabled}
+                value={ttlValue}
+                unit={ttlUnit}
+                onChange={(on, v, u) => {
+                  setTtlEnabled(on);
+                  setTtlValue(v);
+                  setTtlUnit(u);
+                }}
+              />
+              <PostLogoutUrisField value={postLogoutUris} onChange={setPostLogoutUris} />
+            </>
+          )}
+
           {showBranding && (
             <>
               <div className="field">
@@ -1134,12 +1282,15 @@ function ManageDrawer({
             className="btn btn--primary btn--block"
             onClick={() => {
               const fields: SaveFields = {};
+              const sessionTtlSeconds = ttlEnabled ? durationSeconds(ttlValue, ttlUnit) : 0;
               if (
                 name !== (client.client_name ?? "") ||
                 redirectUris !== client.redirect_uris.join("\n") ||
-                scope !== client.allowed_scope
+                scope !== client.allowed_scope ||
+                sessionTtlSeconds !== client.session_ttl_seconds ||
+                postLogoutUris !== client.post_logout_redirect_uris.join("\n")
               ) {
-                fields.details = { name, uris: redirectUris, scope };
+                fields.details = { name, uris: redirectUris, scope, sessionTtlSeconds, postLogoutUris };
               }
               if (showBranding && (logoUrl !== (client.logo_url ?? "") || brandColor !== (client.brand_color ?? ""))) {
                 fields.branding = { logoUrl, brandColor };
