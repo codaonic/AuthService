@@ -25,6 +25,10 @@ Then open http://localhost:9003 in a browser. "Call the downstream API on
 your behalf" talks to ../example_api -- run that too (port 9001) to see it
 actually resolve, or just watch it fail with a clear connection error if
 you haven't.
+
+"Log out" calls the auth service's POST /logout, which signs the user out of
+this application only. How long a sign-in lasts before the user must log in
+again is the application's "Sign-in lasts" setting in the admin console.
 """
 
 import base64
@@ -182,6 +186,14 @@ async def call_api(request: Request):
             resp = await http.get(
                 DOWNSTREAM_API, headers={"Authorization": f"Bearer {session['access_token']}"}
             )
+            if resp.status_code == 401:
+                # Access tokens are short-lived. Renew once and retry; if the
+                # renewal is refused, the sign-in has ended.
+                if not await _refresh(session):
+                    return RedirectResponse("/logout")
+                resp = await http.get(
+                    DOWNSTREAM_API, headers={"Authorization": f"Bearer {session['access_token']}"}
+                )
             body = f"{resp.status_code}: {resp.text}"
         except httpx.ConnectError:
             body = f"Couldn't reach {DOWNSTREAM_API} -- is ../example_api running on port 9001?"
@@ -189,9 +201,49 @@ async def call_api(request: Request):
     return HTMLResponse(f"<pre>{body}</pre><p><a href='/'>Back</a></p>")
 
 
+async def _refresh(session: dict) -> bool:
+    """Trade the refresh token for a new pair. False means the sign-in is
+    over -- the application's "Sign-in lasts" timeout passed, or the user was
+    signed out -- and the only way forward is to log in again.
+    """
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(
+            f"{ISSUER}/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": session["refresh_token"],
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+            },
+        )
+    if resp.status_code != 200:
+        return False
+    tokens = resp.json()
+    # Refresh tokens are one-time-use: always keep the new one.
+    session["access_token"] = tokens["access_token"]
+    session["refresh_token"] = tokens["refresh_token"]
+    return True
+
+
 @app.get("/logout")
 async def logout(request: Request):
-    SESSIONS.pop(request.cookies.get(SESSION_COOKIE), None)
+    session = SESSIONS.pop(request.cookies.get(SESSION_COOKIE), None)
+
+    # Clearing our own cookie isn't enough: the auth service would still
+    # recognize this browser and sign the user straight back in. Tell it too.
+    # This signs the user out of THIS application only -- any other
+    # application they use, even in the same login group, stays signed in.
+    if session and session.get("refresh_token"):
+        async with httpx.AsyncClient() as http:
+            await http.post(
+                f"{ISSUER}/logout",
+                data={
+                    "client_id": CLIENT_ID,
+                    "client_secret": CLIENT_SECRET,
+                    "refresh_token": session["refresh_token"],
+                },
+            )
+
     response = RedirectResponse("/")
     response.delete_cookie(SESSION_COOKIE)
     return response

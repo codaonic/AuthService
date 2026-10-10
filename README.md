@@ -61,6 +61,7 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 - **Embeddable popup widget** (`auth-widget.js`) so a site can trigger login/signup from its own styled button without a full-page redirect, plus optional per-client branding (logo, color) on the hosted form itself — see [§4](#4-making-it-feel-embedded-the-popup-widget)
 - **Per-application users, optional login groups** — every account belongs to the application it was created through, and applications are isolated from each other by default. Put two or more in a *login group* and they share one identity (SSO across your own apps). Optional [Postgres Row-Level Security](#row-level-security) acts as a database-level backstop — see [Applications, users, and login groups](#applications-users-and-login-groups)
 - **User profiles** — first and last name (required at self-signup), plus an optional username (unique per application) and phone number
+- **Per-application sign-in timeout and logout** — a website can set how long a sign-in lasts before people must log in again (default 7 days; APIs, MCP clients and AI assistants are left on the standard rules), and a logout endpoint signs a user out of that one application without touching the others — see [§5](#5-sign-in-timeout-and-logout)
 - **Per-application access control** — restrict an application to an explicit allow-list of users, and define per-application roles that are reported in `/userinfo`
 - **Web admin UI** (`/admin`) — applications, login groups, resources, and users (server-side search and pagination), with a CLI equivalent for scripting
 - **Resource-server SDK** (Python, [`authservice-client`](https://github.com/codaonic/AuthService_Client), its own repo) plus a documented ~20-line pattern for any other language
@@ -249,6 +250,7 @@ opt-in, not a breaking change on upgrade.
 | `POST /register` | Dynamic Client Registration (RFC 7591) |
 | `GET /userinfo` | OIDC standard claims endpoint |
 | `POST /revoke` | Refresh token revocation |
+| `GET`/`POST /logout` | Sign a user out of one application — browser redirect or server-to-server ([§5](#5-sign-in-timeout-and-logout)) |
 | `GET /healthz` | Liveness check |
 
 Full request/response schemas: `/docs` (Swagger UI) once the service is running.
@@ -262,6 +264,8 @@ Full request/response schemas: `/docs` (Swagger UI) once the service is running.
 **Service-to-service.** `POST /token` with `grant_type=client_credentials` and the service's own `client_id`/`client_secret` returns a short-lived, user-less JWT scoped to the calling service.
 
 **User signup.** `/authorize` shows a login page with a "Sign up" link (`/signup`) for any client that has signup enabled. The form asks for first name, last name, email, and password (all required). The new account is created directly by this service (Argon2-hashed password) under the application whose signup page was used, logged in, and carried straight into the same consent flow — no separate onboarding step needed.
+
+**Logout.** An application signs a user out of *itself* by calling `/logout` — from its backend with the refresh token it holds, or by redirecting the browser. Other applications, including ones in the same login group, stay signed in.
 
 **Token validation (every consumer, every language).** Fetch `/jwks.json` once, cache it, verify signature + `exp` + `aud` + `iss` locally. No call back to this service required — that's the cross-language guarantee.
 
@@ -336,7 +340,7 @@ Independently of all of the above, the first time an email address is seen — a
 Everything the CLI can do, and a good deal more, is available as a web UI at `/admin`. It's a React SPA (`frontend/`) that talks to a JSON API at `/admin/api/*` (`app/admin/api.py`), authenticated by an admin session cookie — see [Local development](#local-development) for how to build and run it.
 
 - **Dashboard** — counts of login groups, applications, resources, and users, plus a recent-activity preview.
-- **Applications** — register an application (public or confidential) and choose at creation whether it shares accounts with an existing application or keeps its users separate. Per application: toggle **allow signup**, set branding, set or rotate an **mTLS certificate thumbprint**, **disable/re-enable** it (blocks all sign-in and token refresh immediately — for a compromised secret or a retired app, while keeping its configuration), **restrict access** to an allow-list of users, and define **roles** and assign them. The **Manage** dialog is also where you add a user directly to that application. An **Integration Guide** generates copy-paste snippets for the application you're looking at. Applications that registered themselves (DCR or CIMD) are marked with a **Source** badge and can't be edited here.
+- **Applications** — register an application (public or confidential) and choose at creation whether it shares accounts with an existing application or keeps its users separate. Per application: toggle **allow signup**, set branding, set or rotate an **mTLS certificate thumbprint**, **disable/re-enable** it (blocks all sign-in and token refresh immediately — for a compromised secret or a retired app, while keeping its configuration), **restrict access** to an allow-list of users, optionally **make people log in again after a set time** (on for websites, off for AI assistants and other API/MCP clients) and the **After-logout URLs** the logout endpoint may redirect to, and define **roles** and assign them. The **Manage** dialog is also where you add a user directly to that application. An **Integration Guide** generates copy-paste snippets for the application you're looking at. Applications that registered themselves (DCR or CIMD) are marked with a **Source** badge and can't be edited here.
 - **APIs & MCP servers** — register, edit, and delete protected resources, or **disable** one, after which `/token` refuses to issue any access token for that audience.
 - **Users** — one list across every application, paginated server-side (50 per page). Search as you type across email, first and last name, username, and application; filter by application. Add a user (to an application you pick), edit profile fields, **move a user to a different application**, **disable an account** (revokes all sessions and refresh tokens immediately, not just future logins), **sign it out everywhere** without disabling it, send a password-reset email, or delete it.
 - **Login groups** — one collapsible card per group, listing its member applications and every user who can sign in through them, each with its own search box. Create a group, add a standalone application to it, or remove one. Users are added at the application level, not here.
@@ -357,7 +361,8 @@ The SPA is only one consumer of `/admin/api/*`; anything it does can be scripted
 | `POST /admin/api/users` | Create a user under `client_id`. Accepts `email`, `password`, `confirm_password`, and optional `first_name`, `last_name`, `username`, `phone`, `email_verified` |
 | `PATCH /admin/api/users/{id}` | Edit profile fields; pass a different `client_id` to move the user to another application |
 | `DELETE /admin/api/users/{id}` | Delete a user and everything that references them |
-| `POST /admin/api/clients` | Register an application; `user_pool` is optional — blank means standalone |
+| `POST /admin/api/clients` | Register an application; `user_pool` is optional — blank means standalone. Also accepts `session_ttl_seconds` (`0` = no per-application limit; omitted = 604800 for a website, `0` otherwise) and `post_logout_redirect_uris` (one per line) |
+| `PATCH /admin/api/clients/{client_id}` | Edit name, redirect URIs, and scopes; optionally `session_ttl_seconds` and `post_logout_redirect_uris` |
 | `POST /admin/api/pools/{name}/assign-client` | Add an application to a login group — body `{"client_id": "..."}` |
 | `POST /admin/api/pools/{name}/remove-client` | Make an application standalone — body `{"client_id": "..."}` |
 | `DELETE /admin/api/pools/{name}` | Delete a group; its applications become standalone |
@@ -451,6 +456,50 @@ Your backend's login/callback routes need two small additions (both shown in [`e
    ```
 
 For actual branding of the popup's contents (not just the button that opens it), a client can carry a `logo_url` and `brand_color` — set at creation via the admin UI/CLI, or updated any time with `POST /admin/api/clients/{client_id}/branding` — applied to that client's login/signup/consent pages (`app/templates/base.html`).
+
+### 5. Sign-in timeout and logout
+
+**How long a sign-in lasts** can be limited per application — *Make people log in again after a set time* in the admin console, 5 minutes to 30 days.
+
+| Application | Default |
+|---|---|
+| Website added in the admin console | Limit on, 7 days |
+| Mobile app / AI assistant added in the admin console | Limit off — can be switched on |
+| Service (no person involved), and every client that registers itself (DCR, CIMD — i.e. MCP clients) or is added from the CLI | Limit off |
+
+*Limit off* is exactly how the service behaved before this setting existed: a sign-in is good for as long as the deployment-wide session lasts (`SESSION_TTL_SECONDS`, 7 days), and refresh tokens renew themselves for `REFRESH_TOKEN_TTL_SECONDS` (30 days) from each use — so an MCP client or AI assistant that stays in use never has to reconnect.
+
+With the limit on, the clock starts when the user actually enters their password or passkey, and it is not extended by activity. Once it runs out:
+
+- `/authorize` shows the login page again instead of passing the user straight through, and
+- `POST /token` with `grant_type=refresh_token` returns `400 invalid_grant`.
+
+So the one thing an application must handle is a refused refresh: treat it as "signed out", clear your own session, and send the user to log in again. Access tokens already issued remain valid until they expire (10 minutes by default), because resource servers verify them offline.
+
+**Logout** signs the user out of the calling application only. Their sign-in to every other application — including ones in the same login group — is untouched, and signing in to one of those later does not sign them back in here. The endpoint has no page of its own; wire it to your own logout button. It is advertised as `end_session_endpoint` in the discovery document. Use whichever form fits:
+
+*From your backend* (recommended for the BFF pattern) — authenticate as the application and name the user by the refresh token you hold:
+
+```bash
+curl -X POST https://auth.yourdomain.com/logout \
+  -d client_id=your-app \
+  -d client_secret=YOUR_CLIENT_SECRET \
+  -d refresh_token=THE_USERS_REFRESH_TOKEN
+# 200 {"status": "signed_out", "client_id": "your-app"}
+# 400 invalid_grant if the refresh token is unknown, expired, or already used
+```
+
+Public clients omit `client_secret`. Then clear your own session cookie.
+
+*From the browser* — redirect the user to:
+
+```
+https://auth.yourdomain.com/logout?client_id=your-app&post_logout_redirect_uri=https://yourapp.com/signed-out&state=abc
+```
+
+The user is identified by the auth service's own session cookie and sent back to `post_logout_redirect_uri` with `state` appended. That URL must be listed under the application's *After-logout URLs*; an unlisted one is rejected with `400`. Leave the parameter out and the response is the same JSON as above.
+
+Either form also revokes every refresh token this application holds for that user, on all their devices. [`examples/website_bff`](examples/website_bff) shows both halves: renewing an expired access token, and calling `/logout`.
 
 ## Architecture
 
@@ -554,6 +603,7 @@ auth_service/
 │   │   ├── jwks.py               # GET /jwks.json
 │   │   ├── register.py           # POST /register (Dynamic Client Registration, RFC 7591)
 │   │   ├── revoke.py             # POST /revoke
+│   │   ├── logout.py             # GET/POST /logout -- sign a user out of one application
 │   │   └── userinfo.py           # GET /userinfo
 │   ├── admin/                     # backs /admin -- operator setup UI (see frontend/ for the SPA itself)
 │   │   ├── auth.py                # get_current_admin() session lookup, shared by api.py
@@ -608,6 +658,8 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) for how to report it priva
 - Refresh token validity lives in Redis (fast revocation check); Postgres keeps the full audit trail (`rotated_from`, `revoked_at`)
 - Passwords hashed with Argon2; TOTP MFA supported per-user
 - Access tokens are short-lived JWTs (default 10 min), scoped to a single `resource` (RFC 8707) — no ambient all-access tokens
+- An application can cap how long a sign-in lasts; refresh tokens cannot outlive that cap, however often they are rotated
+- Logout is scoped to one application and revokes that application's refresh tokens for the user; the browser form only redirects to pre-registered URLs
 - Rate limiting on `/token`, `/authorize`, and `/admin/login`
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever served over HTTPS; admin sessions use a separate cookie from end-user sessions
 - No credentials or connection strings are hardcoded anywhere — `docker-compose.yml` sources them from `.env` via variable interpolation, and the app itself composes URLs from discrete env vars at runtime
@@ -686,6 +738,7 @@ Following the build order this service was planned against:
 - [x] Per-application user ownership — users belong to an application, login groups become an optional grouping of applications
 - [x] User profile fields (first/last name, username, phone) and a deployment-wide contacts record
 - [x] Admin console at scale: server-side search and pagination for users
+- [x] Per-application sign-in timeout and a per-application logout endpoint
 - [ ] Port the test suite to the per-application user model
 - [ ] Enforce email uniqueness across a login group
 

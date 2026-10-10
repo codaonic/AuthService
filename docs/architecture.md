@@ -158,7 +158,7 @@ describes how that link widens who can sign in where.
 
 | Table | Key columns beyond the obvious | Notes |
 |---|---|---|
-| `clients` | `client_id` (unique), `user_pool_id` (nullable), `client_type` (public/confidential), `registration_method` (static/dcr/cimd), `enabled`, `allow_signup`, `restrict_access`, `roles_enabled`, `allow_signup_role_selection`, `mtls_cert_thumbprint`, `cimd_fetched_at`, `logo_url`, `brand_color` | One table for every registration path — static (CLI/admin), DCR, and CIMD all produce the same row shape. DCR and CIMD rows are always created standalone |
+| `clients` | `client_id` (unique), `user_pool_id` (nullable), `client_type` (public/confidential), `registration_method` (static/dcr/cimd), `enabled`, `allow_signup`, `restrict_access`, `roles_enabled`, `allow_signup_role_selection`, `mtls_cert_thumbprint`, `cimd_fetched_at`, `logo_url`, `brand_color`, `session_ttl_seconds`, `post_logout_redirect_uris` | One table for every registration path — static (CLI/admin), DCR, and CIMD all produce the same row shape. DCR and CIMD rows are always created standalone |
 | `users` | `client_id` (FK → `clients.client_id`), unique `(client_id, email)`, partial unique `(client_id, username) WHERE username IS NOT NULL`, `first_name`, `last_name`, `phone`, `status`, `email_verified`, `mfa_secret` | The same email can be two different accounts in two applications. Username and phone are optional; first and last name are required by the self-signup form but nullable in the schema, since admin- and CLI-created users may omit them |
 | `user_pools` | `name` | A login group. Nothing but a name — membership is the `clients.user_pool_id` pointer. The name is not unique at the database level; `get_or_create_pool` is what keeps it unique in practice |
 | `contacts` | `email` (unique), `first_seen_at`, `first_app`, `first_pool` | Insert-once: written the first time an email is seen at self-signup or admin user creation, never updated. `first_pool` is only filled in for admin-created users. Not written by the CLI's `create-user` |
@@ -197,6 +197,8 @@ queried later; Redis holds anything short-lived or purely for fast lookup.**
 | | `webauthn_reg_challenge:` / `webauthn_auth_challenge:` — in-progress passkey ceremonies |
 | | `audit_failed_login:` — sliding-window failed-login counters for anomaly detection |
 | | `user_sessions:` — the *set* of session IDs per user, so a password reset can revoke all of them at once |
+| | `session_apps:` — per session, when it last authenticated through each application |
+| | `app_logout:` — per user, when they were signed out of each application |
 
 Redis is a cache/coordination layer, never the source of truth for anything
 that needs to survive a restart with certainty — if Redis is flushed, the
@@ -367,6 +369,31 @@ Signup → create_email_verification_token() + send it (24h TTL), immediately
          passkeys-plan.md §5.2 for why this default was chosen)
 GET /verify-email?token=... → consume token → users.email_verified = true
 ```
+
+### 5.10 Logout
+
+Two forms, same effect — sign one user out of one application:
+
+```
+Backend:  POST /logout (client_id, [client_secret], refresh_token)
+          → authenticate the client → look up whose refresh token this is
+          → 200 {"status": "signed_out"}   |   400 invalid_grant
+
+Browser:  GET /logout?client_id=…[&post_logout_redirect_uri=…&state=…]
+          → user taken from the auth service's own session cookie
+          → redirect URI must be in clients.post_logout_redirect_uris, else 400
+          → 303 back to the application (or the same JSON if none was given)
+
+Both:     app_logout:<user_id>[client_id] = now        (§9.2)
+          revoke every refresh token (this user × this client)
+          audit event `logout`
+```
+
+What is deliberately *not* done: the session and its cookie are kept, and no
+other application's tokens are revoked — a logout from one application must
+not be felt by another, even inside the same login group. The endpoint
+renders no page; the application owns its logout UI. Access tokens already
+issued stay valid until they expire, as with any offline-verified JWT.
 
 ## 6. Identity model: applications, users, and login groups
 
@@ -572,6 +599,47 @@ mechanism (`auth/sessions.py`) but different cookies and TTLs:
 | Scoped to | The user's own application and its login group (re-checked on every `/authorize`) | The whole deployment |
 | Created by | `/login`, `/signup`, `/webauthn/login/verify` | `/admin/login` |
 
+### 9.1 Per-application sign-in timeout
+
+The cookie is shared, but an application can decide for itself how long a
+sign-in is good for (`clients.session_ttl_seconds`, 5 minutes to 30 days).
+The measure is fixed time since the user last really authenticated —
+activity does not extend it.
+
+`0` means no per-application limit, and it is the column default: clients
+that register themselves (DCR, CIMD — in practice MCP clients and AI
+assistants), clients added from the CLI, and service clients all get it, and
+behave exactly as they did before the setting existed. Only websites added
+through the admin console start with a limit (7 days). Every check below is
+skipped when the value is `0`.
+
+- `sessions.sign_in()` records, in `session_apps:<session_id>`, the moment the
+  session authenticated through a given application. It reuses the browser's
+  existing session when it belongs to the same user.
+- `sessions.app_auth_time()` answers "when did this session authenticate for
+  application X?". An application the session has never signed in through
+  inherits the session's most recent sign-in, which is what lets single
+  sign-on work across a login group.
+- `GET /authorize` shows the login page when that time is older than the
+  application's timeout.
+- The same time travels with the flow → authorization code → refresh token
+  (`auth_time`). `issue_refresh_token` never gives a token a lifetime past
+  `auth_time + session_ttl_seconds`, rotation carries `auth_time` forward
+  unchanged, and `/token` re-checks it against the application's *current*
+  setting — so shortening the timeout applies to people already signed in.
+
+The global `SESSION_TTL_SECONDS` still bounds the cookie itself: an
+application timeout longer than it only has an effect through refresh tokens.
+
+### 9.2 Per-application logout
+
+`sessions.sign_out_app()` writes the logout time to
+`app_logout:<user_id>[client_id]`. From then on `app_auth_time()` ignores the
+inherited sign-in for that application and accepts only a sign-in made
+through that application itself, after the logout. Nothing else is touched:
+the session, the cookie, and every other application's state stay as they
+were. See [§5.10](#510-logout) for the endpoint.
+
 Every session ID also gets added to a `user_sessions:<user_id>` Redis set,
 so `revoke_all_sessions_for_user()` (used after a password reset) can find
 and delete every session a user has, not just the current one.
@@ -595,6 +663,7 @@ left to your deployment, same as any other 12-factor app.
 | `webauthn_login_success` / `webauthn_registered` | Passkey used / added | INFO |
 | `token_issued` | Every successful `/token` call, any grant type | INFO |
 | `token_revoked` | `/revoke` called | INFO |
+| `logout` | A user is signed out of one application (`via` = `browser` or `backchannel`) | INFO |
 | `client_registered` | DCR or CIMD produces a new client row | INFO |
 | `mtls_auth_failed` | mTLS required but verification failed | (via `login_failure`-style call sites) |
 | `password_reset_requested` / `password_reset_completed` | Forgot-password flow | INFO |
@@ -711,7 +780,8 @@ Where to actually make a change, for the most common asks:
 | Make another field searchable in the admin user list | The `or_(...)` clause in `admin/api.py::api_list_users` |
 | Change what's in the JWT | `tokens.py::mint_access_token` |
 | Add a new audit event | `app.audit.log_event(...)` at the relevant call site — no registration step, it's just a function call |
-| Change session/token lifetimes | `config.py` — every TTL is a named setting, nothing hardcoded inline |
+| Change session/token lifetimes | `config.py` — every TTL is a named setting, nothing hardcoded inline. Per-application sign-in timeout is `clients.session_ttl_seconds`, enforced in `auth/sessions.py`, `authorize.py`, and `token.py` |
+| Change what logout does | `oidc/logout.py::_sign_out` |
 
 ## 16. Known limitations
 
