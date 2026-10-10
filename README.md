@@ -13,10 +13,10 @@ A self-hosted **OAuth 2.1 / OIDC authorization server**, written in Python and b
 ```bash
 docker network create nginx-proxy-net   # once, if it doesn't already exist
 cp .env.example .env
-docker compose up -d --build && docker compose exec auth-service uv run alembic upgrade head
+docker compose up -d --build && docker compose exec app uv run alembic upgrade head
 ```
 
-That's a real, running instance at `http://localhost:8113` (admin console at `/admin`, default login logged to `docker compose logs auth-service`). See [Getting started](#getting-started) below for local (non-Docker) development, or to set real production values first.
+That's a real, running instance at `http://localhost:8113` (admin console at `/admin`, default login logged to `docker compose logs app`). See [Getting started](#getting-started) below for local (non-Docker) development, or to set real production values first.
 
 ---
 
@@ -81,7 +81,7 @@ Runs the app directly on the host with `uv` — fastest iteration (actual `--rel
 `docker-compose.yml` publishes both to **loopback-only** host ports — reachable from this same machine, never from the network, regardless of firewall rules, even if this same compose file is the one running on a real server:
 
 ```bash
-docker compose up -d postgres redis   # just these two services, not auth-service
+docker compose up -d postgres redis   # just these two services, not app
 ```
 
 - Postgres: `127.0.0.1:5434` (not the standard `5432` — a host often already has its own)
@@ -128,7 +128,7 @@ dev-server startup; the production bundle always calls `/admin/api` on its own o
 
 `docker-compose.yml` builds and runs Postgres, Redis, and the app together as a stack, on port **8113** internally, meant to sit behind a **reverse proxy that already exists on the host** — it does not serve the public internet directly, and it expects an external Docker network named `nginx-proxy-net` for that proxy to reach it on. If that network doesn't exist yet:
 
-> **Naming note:** commands below mix two different names for the same thing. `postgres`, `redis`, and `auth-service` are the *compose service names* (what `docker compose exec <name> ...` takes); `auth_pgsql`, `auth_redis`, and `auth_backend` are the *container names* (what plain `docker exec <name> ...` or `docker logs <name>` take). Either works, but they're not interchangeable with the wrong command.
+> **Naming note:** commands below mix two different names for the same thing. `postgres`, `redis`, and `app` are the *compose service names* (what `docker compose exec <name> ...` takes); `auth_pgsql`, `auth_redis`, and `auth_backend` are the *container names* (what plain `docker exec <name> ...` or `docker logs <name>` take). Either works, but they're not interchangeable with the wrong command.
 
 ```bash
 docker network create nginx-proxy-net
@@ -140,7 +140,7 @@ Then:
 cp .env.example .env
 # set real values: ISSUER=https://your-domain (not localhost), real DB/Redis credentials
 docker compose up -d --build
-docker compose exec auth-service uv run alembic upgrade head
+docker compose exec app uv run alembic upgrade head
 ```
 
 Open `/admin` and you'll land on a setup screen to create your own admin email/password — there's no default credential to know about or change. (`DEFAULT_ADMIN_EMAIL`/`DEFAULT_ADMIN_PASSWORD` in [Configuration](#configuration) are an escape hatch for scripted deployments that can't drive that screen, not something you need for a normal setup.)
@@ -383,7 +383,7 @@ Every protected app/API/MCP server is a **resource** (its identity as a token au
 # From this repo, against a running instance:
 uv run python -m app.cli register-resource --resource-id "https://mcp.yourdomain.com" --name "Your MCP Server"
 uv run python -m app.cli register-client --client-id your-app --type public --redirect-uri "https://yourapp.com/callback"
-# (in Docker: docker compose exec auth-service uv run python -m app.cli ...)
+# (in Docker: docker compose exec app uv run python -m app.cli ...)
 ```
 
 Add `--user-pool <name>` to make the client share users with the other applications in that login group — see [Applications, users, and login groups](#applications-users-and-login-groups). Omit it and the client is standalone, with its own isolated users.

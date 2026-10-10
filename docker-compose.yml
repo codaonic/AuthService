@@ -50,7 +50,7 @@ services:
       - "127.0.0.1:${REDIS_HOST_PORT:-6381}:6379"
     networks:
       - nginx-proxy-net
-  auth-service:
+  app:
     build: .
     container_name: auth_backend
     restart: unless-stopped
