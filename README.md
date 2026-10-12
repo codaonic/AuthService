@@ -180,10 +180,11 @@ All configuration is environment-driven (`app/config.py`, loaded from `.env`). C
 | `SESSION_TTL_SECONDS` | `604800` (7d) | Login session cookie lifetime |
 | `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | *(unset)* | Optional, for scripted/automated deployments only. Left unset (the default), no admin is seeded at all — the first person to open `/admin` gets an interactive setup screen to choose their own email/password, so no known credential is ever created. Set both only if something needs a working admin login without a human driving that screen on first boot |
 | `RATE_LIMIT_TOKEN` / `RATE_LIMIT_AUTHORIZE` | `20/minute` / `30/minute` | Per-IP rate limits on the two most sensitive endpoints |
-| `COMPOSE_DB_HOST` / `COMPOSE_REDIS_HOST` | `postgres` / `redis` | **Compose-only**: not read by the app — used purely for `docker-compose.yml` variable interpolation so container-network hostnames aren't hardcoded in the compose file |
 | `HOST_PORT` (shell env, not `.env`) | `8113` | **Compose-only**: which host port `docker compose up` publishes the service on (the container always listens on `8113` internally), e.g. `HOST_PORT=8080 docker compose up -d` if `8113` is already taken |
 
 `.env` is gitignored; `.env.example` documents every variable with safe local-dev defaults.
+
+> **Sharing a host with other Docker projects?** Inside Docker the app reaches its databases at the `DB_HOST` and `REDIS_HOST` set in `.env` — `auth_pgsql` and `auth_redis`, this project's own container names, and Postgres and Redis sit on a network private to this project. That is deliberate: the app also joins the shared `nginx-proxy-net`, and on a shared network the generic names `postgres` and `redis` can resolve to *another* project's containers, which shows up as intermittent `password authentication failed` errors.
 
 ## Database migrations
 
