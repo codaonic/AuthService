@@ -38,6 +38,7 @@ from app.db.models import User, WebAuthnCredential
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
+from app.middleware.rate_limit import limiter
 from app.oidc.authorize import (
     _continue_flow,
     _find_user_for_client,
@@ -67,6 +68,7 @@ async def _current_user(request: Request, db: AsyncSession, redis: Redis) -> Use
 
 
 @router.post("/webauthn/login/options")
+@limiter.limit(get_settings().rate_limit_login)
 async def webauthn_login_options(
     request: Request,
     flow_id: str = Form(...),
@@ -105,6 +107,7 @@ async def webauthn_login_options(
 
 
 @router.post("/webauthn/login/verify")
+@limiter.limit(get_settings().rate_limit_login)
 async def webauthn_login_verify(
     request: Request,
     flow_id: str = Form(...),

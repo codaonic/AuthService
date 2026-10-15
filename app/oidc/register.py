@@ -1,13 +1,15 @@
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_event
 from app.auth.passwords import hash_password
+from app.config import get_settings
 from app.db.models import Client
 from app.db.session import get_db
+from app.middleware.rate_limit import limiter
 
 router = APIRouter()
 
@@ -24,7 +26,9 @@ class ClientRegistrationRequest(BaseModel):
 
 
 @router.post("/register", status_code=201)
+@limiter.limit(get_settings().rate_limit_register)
 async def register_client(
+    request: Request,
     body: ClientRegistrationRequest,
     db: AsyncSession = Depends(get_db),
 ):

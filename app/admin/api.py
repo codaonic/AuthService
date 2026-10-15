@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.auth import get_current_admin
 from app.audit import client_ip, log_event, record_failed_login, recent_events
+from app.auth.lockout import clear_failures, is_locked, record_failure
 from app.auth.password_reset import create_email_verification_token, create_password_reset_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import create_session, delete_session, revoke_all_sessions_for_user
@@ -225,10 +226,15 @@ async def api_login(
     redis: Redis = Depends(get_redis),
 ):
     settings = get_settings()
+    if await is_locked(redis, "admin", body.email):
+        log_event("admin_login_failure", level=logging.WARNING, email=body.email, ip=client_ip(request), reason="locked_out")
+        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
+
     result = await db.execute(select(AdminUser).where(AdminUser.email == body.email))
     admin = result.scalar_one_or_none()
 
     if admin is None or not verify_password(body.password, admin.password_hash):
+        await record_failure(redis, "admin", body.email)
         ip = client_ip(request)
         log_event("admin_login_failure", level=logging.WARNING, email=body.email, ip=ip)
         if await record_failed_login(redis, f"admin:{body.email}"):
@@ -238,6 +244,7 @@ async def api_login(
             )
         raise HTTPException(401, "Invalid email or password")
 
+    await clear_failures(redis, "admin", body.email)
     log_event("admin_login_success", admin_id=str(admin.id), ip=client_ip(request))
     session_id = await create_session(
         redis, str(admin.id), ip=client_ip(request), user_agent=request.headers.get("user-agent")

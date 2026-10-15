@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     rate_limit_authorize: str = "30/minute"
     rate_limit_admin_login: str = "10/minute"
     rate_limit_forgot_password: str = "5/hour"
+    # Per client IP. Only meaningful once the app sees real client IPs --
+    # behind a reverse proxy that means FORWARDED_ALLOW_IPS (see Dockerfile).
+    rate_limit_login: str = "10/minute"
+    rate_limit_signup: str = "5/minute"
+    rate_limit_register: str = "10/hour"
+
+    # Per account (email): after this many wrong passwords or 2FA codes,
+    # further attempts are refused until the window passes.
+    login_max_failures: int = 10
+    login_lockout_seconds: int = 15 * 60
 
     smtp_host: str = "localhost"
     smtp_port: int = 587

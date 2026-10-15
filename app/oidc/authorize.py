@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import client_ip, log_event, record_failed_login
 from app.auth.mfa import verify_totp
 from app.auth.password_reset import create_email_verification_token
+from app.auth.lockout import clear_failures, is_locked, record_failure
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import app_auth_time, get_session_user, sign_in
 from app.config import get_settings
@@ -245,6 +246,7 @@ async def login_page(
 
 
 @router.post("/login")
+@limiter.limit(get_settings().rate_limit_login)
 async def login(
     request: Request,
     flow_id: str = Form(...),
@@ -258,9 +260,26 @@ async def login(
     client = await _get_flow_client(db, redis, flow_id)
     await bypass_tenant_rls(db)
 
+    if await is_locked(redis, "user", email):
+        await _record_login_failure(redis, email, request, client.client_id, "locked_out")
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "flow_id": flow_id,
+                "client_id": client.client_id,
+                **_branding(client),
+                "allow_signup": client.allow_signup,
+                "show_totp": False,
+                "error": "Too many failed attempts. Try again in a few minutes.",
+            },
+            status_code=429,
+        )
+
     user = await _find_user_for_client(db, email, client)
 
     if user is None or user.status != "active" or not verify_password(password, user.password_hash):
+        await record_failure(redis, "user", email)
         await _record_login_failure(redis, email, request, client.client_id, "invalid_credentials")
         return templates.TemplateResponse(
             request,
@@ -277,6 +296,8 @@ async def login(
         )
 
     if user.mfa_secret and not verify_totp(user.mfa_secret, totp_code):
+        if totp_code:  # a blank code is just the prompt for one, not a guess
+            await record_failure(redis, "user", email)
         await _record_login_failure(redis, email, request, client.client_id, "invalid_mfa_code")
         return templates.TemplateResponse(
             request,
@@ -293,6 +314,7 @@ async def login(
             status_code=401,
         )
 
+    await clear_failures(redis, "user", email)
     log_event("login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
     session_id = await sign_in(
         redis,
@@ -333,6 +355,7 @@ async def signup_page(
 
 
 @router.post("/signup")
+@limiter.limit(get_settings().rate_limit_signup)
 async def signup(
     request: Request,
     flow_id: str = Form(...),
