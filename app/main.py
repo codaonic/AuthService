@@ -12,6 +12,7 @@ from app.admin import api as admin_api
 from app.admin.seed import ensure_default_admin
 from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.oidc import (
     authorize,
     discovery,
@@ -40,6 +41,7 @@ app = FastAPI(title="Auth Service", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
