@@ -126,6 +126,8 @@ async def test_signup_sends_verification_email_and_starts_unverified(client, db_
         "/signup",
         data={
             "flow_id": flow_id,
+            "first_name": "Jane",
+            "last_name": "Doe",
             "email": "new@example.com",
             "password": "brand-new-pass!",
             "confirm_password": "brand-new-pass!",
@@ -151,6 +153,8 @@ async def test_verify_email_marks_user_verified(client, db_session, monkeypatch)
         "/signup",
         data={
             "flow_id": flow_id,
+            "first_name": "Jane",
+            "last_name": "Doe",
             "email": "new@example.com",
             "password": "brand-new-pass!",
             "confirm_password": "brand-new-pass!",
@@ -185,3 +189,65 @@ async def test_resend_verification_skips_already_verified_user(client, db_sessio
     )
     assert resp.status_code == 200
     send_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_prints_reset_link_when_smtp_not_configured(client, db_session, monkeypatch, capsys):
+    from app.config import get_settings
+
+    monkeypatch.setenv("SMTP_HOST", "")
+    get_settings.cache_clear()
+
+    await create_user(db_session, email="alice@example.com", password="old-password!")
+    flow_id = await _get_flow_id(client, db_session)
+
+    resp = await client.post(
+        "/forgot-password", data={"flow_id": flow_id, "email": "alice@example.com"}
+    )
+    assert resp.status_code == 200
+    assert "we've sent a link" in resp.text
+
+    captured = capsys.readouterr()
+    assert "[PASSWORD RESET] SMTP is not configured." in captured.out
+    assert "alice@example.com" in captured.out
+    assert "/reset-password?token=" in captured.out
+
+    # Verify the link printed in terminal actually works to reset the password
+    token = captured.out.split("token=")[1].split()[0].strip()
+    reset_resp = await client.post(
+        "/reset-password",
+        data={"token": token, "password": "new-password!", "confirm_password": "new-password!"},
+    )
+    assert reset_resp.status_code == 200
+    assert "Password updated" in reset_resp.text
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_prints_reset_link_when_smtp_fails(client, db_session, monkeypatch, capsys):
+    from aiosmtplib.errors import SMTPConnectError
+
+    send_mock = AsyncMock(side_effect=SMTPConnectError("Connection refused"))
+    monkeypatch.setattr("app.email.send_email", send_mock)
+
+    await create_user(db_session, email="alice@example.com", password="old-password!")
+    flow_id = await _get_flow_id(client, db_session)
+
+    resp = await client.post(
+        "/forgot-password", data={"flow_id": flow_id, "email": "alice@example.com"}
+    )
+    assert resp.status_code == 200
+    assert "we've sent a link" in resp.text
+
+    captured = capsys.readouterr()
+    assert "[PASSWORD RESET] Failed to send email via SMTP" in captured.out
+    assert "alice@example.com" in captured.out
+    assert "/reset-password?token=" in captured.out
+
+    # Verify the link printed in terminal actually works to reset the password
+    token = captured.out.split("token=")[1].split()[0].strip()
+    reset_resp = await client.post(
+        "/reset-password",
+        data={"token": token, "password": "new-password!", "confirm_password": "new-password!"},
+    )
+    assert reset_resp.status_code == 200
+    assert "Password updated" in reset_resp.text

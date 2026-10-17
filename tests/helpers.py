@@ -15,10 +15,9 @@ def make_pkce_pair() -> tuple[str, str]:
 
 
 async def create_user(
-    db_session, email="user@example.com", password="correct horse battery", pool_name="default"
+    db_session, email="user@example.com", password="correct horse battery", pool_name="default", client_id="test-client"
 ):
-    pool = await get_or_create_pool(db_session, pool_name)
-    user = User(user_pool_id=pool.id, email=email, password_hash=hash_password(password))
+    user = User(client_id=client_id, email=email, password_hash=hash_password(password))
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)

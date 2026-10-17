@@ -1,6 +1,7 @@
+from typing import Any
 from functools import lru_cache
 
-from pydantic import computed_field
+from pydantic import computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -109,13 +110,29 @@ class Settings(BaseSettings):
     login_max_failures: int = 10
     login_lockout_seconds: int = 15 * 60
 
-    smtp_host: str = "localhost"
+    smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_use_tls: bool = True
     email_from_address: str = "no-reply@localhost"
     email_from_name: str = "Auth Service"
+
+    @field_validator("smtp_port", mode="before")
+    @classmethod
+    def _parse_smtp_port(cls, v: Any) -> int:
+        if v == "" or v is None:
+            return 587
+        return int(v)
+
+    @field_validator("smtp_use_tls", mode="before")
+    @classmethod
+    def _parse_smtp_use_tls(cls, v: Any) -> bool:
+        if v == "" or v is None:
+            return True
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
 
     password_reset_ttl_seconds: int = 30 * 60
     email_verification_ttl_seconds: int = 60 * 60 * 24

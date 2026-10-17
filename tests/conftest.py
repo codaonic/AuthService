@@ -30,6 +30,7 @@ def redis_client():
 @pytest_asyncio.fixture
 async def client(db_session, redis_client, tmp_path, monkeypatch):
     monkeypatch.setenv("SIGNING_KEY_DIR", str(tmp_path / "keys"))
+    monkeypatch.setenv("SMTP_HOST", "localhost")
     get_settings.cache_clear()
     get_key_manager.cache_clear()
 
