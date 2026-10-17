@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="favShield" x1="16" y1="5.5" x2="48" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="55%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#312E81"/>
+    </linearGradient>
+    <linearGradient id="favCore" x1="32" y1="16" x2="32" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#EEF2FF"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    @media (prefers-color-scheme: dark) {
+      .fav-beacon { fill: #38BDF8; }
+    }
+  </style>
+
+  <!-- Aerodynamic Shield Base -->
+  <path d="M32 5.5C38 6.2 45 8.5 49.5 11.2C51.8 12.5 52.5 14.5 52.5 17.5V31C52.5 43.5 43.5 52.8 32.5 58C32.2 58.2 31.8 58.2 31.5 58C20.5 52.8 11.5 43.5 11.5 31V17.5C11.5 14.5 12.2 12.5 14.5 11.2C19 8.5 26 6.2 32 5.5Z"
+        fill="url(#favShield)"/>
+
+  <!-- High-contrast crisp rim -->
+  <path d="M32 6.8C37.8 7.5 44.5 9.7 48.8 12.3C50.6 13.4 51.2 15 51.2 17.5V31C51.2 42.8 42.8 51.6 32 56.6C21.2 51.6 12.8 42.8 12.8 31V17.5C12.8 15 13.4 13.4 15.2 12.3C19.5 9.7 26.2 7.5 32 6.8Z"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="1.5"/>
+
+  <!-- Beacon Dot -->
+  <circle cx="32" cy="11.2" r="2.2" class="fav-beacon" fill="#38BDF8"/>
+
+  <!-- Key & Token Core -->
+  <circle cx="32" cy="23.5" r="7.5" fill="url(#favCore)"/>
+  <circle cx="32" cy="23.5" r="3.6" fill="#3730A3"/>
+  <rect x="29.6" y="27" width="4.8" height="16.5" rx="2.4" fill="url(#favCore)"/>
+  <rect x="33.5" y="32.5" width="5.5" height="3.2" rx="1.6" fill="url(#favCore)"/>
+  <rect x="33.5" y="38" width="4" height="3.2" rx="1.6" fill="url(#favCore)"/>
+  <rect x="25" y="34.8" width="5.5" height="3.2" rx="1.6" fill="url(#favCore)"/>
+</svg>

@@ -70,9 +70,31 @@ if (FRONTEND_DIST / "assets").is_dir():
     app.mount("/admin/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="admin-assets")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def root_favicon_ico():
+    ico = Path("app/static/favicon.ico")
+    if ico.is_file():
+        return FileResponse(ico, media_type="image/x-icon")
+    raise HTTPException(404)
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def root_favicon_svg():
+    svg = Path("app/static/favicon.svg")
+    if svg.is_file():
+        return FileResponse(svg, media_type="image/svg+xml")
+    raise HTTPException(404)
+
+
 @app.get("/admin", include_in_schema=False)
 @app.get("/admin/{full_path:path}", include_in_schema=False)
 async def admin_spa(full_path: str = ""):
+    if full_path:
+        # Resolve and confine to FRONTEND_DIST so encoded "../" can't escape it.
+        root = FRONTEND_DIST.resolve()
+        static_candidate = (root / full_path).resolve()
+        if static_candidate.is_relative_to(root) and static_candidate.is_file():
+            return FileResponse(static_candidate)
     index_file = FRONTEND_DIST / "index.html"
     if not index_file.is_file():
         raise HTTPException(

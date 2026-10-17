@@ -10,7 +10,7 @@ import {
   GroupsIcon,
   MoonIcon,
   ResourcesIcon,
-  ShieldIcon,
+  AuthIcon,
   SignOutIcon,
   SunIcon,
   UsersIcon,
@@ -53,12 +53,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="shell">
       <nav className="nav">
-        <div className="nav__brand">
+        <Link to="/admin" className="nav__brand">
           <span className="nav__brand-mark">
-            <ShieldIcon width={17} height={17} />
+            <AuthIcon size={28} />
           </span>
-          Auth Admin
-        </div>
+          <span className="nav__brand-text">
+            <span>Auth Admin</span>
+            <span className="nav__brand-badge">2.1</span>
+          </span>
+        </Link>
 
         {NAV_GROUPS.map((group, i) => (
           <div key={i}>

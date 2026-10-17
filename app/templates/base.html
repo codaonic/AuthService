@@ -6,7 +6,11 @@
   <meta name="color-scheme" content="light dark">
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}Sign in{% endblock %}</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234f46e5'%3E%3Cpath d='M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 0 1 6 0v3H9z'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='favicon.svg') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', path='favicon-32x32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', path='favicon-16x16.png') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', path='apple-touch-icon.png') }}">
+  <link rel="shortcut icon" href="{{ url_for('static', path='favicon.ico') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -31,14 +35,18 @@
         {% if logo_url %}
         <img src="{{ logo_url }}" alt="" class="brand-icon brand-icon--logo">
         {% else %}
-        <div class="brand-icon" aria-hidden="true">{% block icon %}{% endblock %}</div>
+        <div class="brand-icon" aria-hidden="true">{% block icon %}<img src="{{ url_for('static', path='icon.svg') }}" alt="Auth Service" width="34" height="34">{% endblock %}</div>
         {% endif %}
         <h1 class="card__title">{% block heading %}{% endblock %}</h1>
         {% block subheading %}{% endblock %}
       </div>
       {% block content %}{% endblock %}
     </div>
-    <p class="page__footer">{% block footer %}Secured sign-in{% endblock %}</p>
+    {% if self.footer() | trim %}<p class="page__footer">{% block footer %}{% endblock %}</p>{% endif %}
+    <p class="page__footer page__footer--brand">
+      <img src="{{ url_for('static', path='icon.svg') }}" alt="" width="13" height="13">
+      Secured by <strong>Auth Service</strong> · OAuth 2.1 &amp; OIDC
+    </p>
   </main>
   <script src="{{ url_for('static', path='js/auth.js') }}?v={{ asset_version() }}" defer></script>
   {% block extra_scripts %}{% endblock %}

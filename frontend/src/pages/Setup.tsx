@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAdmin } from "../AdminContext";
 import { PasswordInput } from "../components/PasswordInput";
-import { ShieldIcon } from "../components/Icons";
+import { AuthIcon } from "../components/AuthIcon";
 import { Admin, api, ApiError } from "../api";
 
 export function Setup() {
@@ -34,10 +34,10 @@ export function Setup() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-card__icon">
-          <ShieldIcon width={22} height={22} />
+          <AuthIcon size={52} />
         </div>
         <h1 className="auth-card__title">Create your admin account</h1>
-        <p style={{ fontSize: 13.5, color: "var(--text-muted)", margin: "-16px 0 20px", textAlign: "center" }}>
+        <p style={{ fontSize: 13.5, color: "var(--text-muted)", margin: "0 0 20px", textAlign: "center" }}>
           This is the first time this service has been started. Choose the email and password
           you'll use to sign in and manage it — no default credential is ever created.
         </p>

@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAdmin } from "../AdminContext";
 import { PasswordInput } from "../components/PasswordInput";
-import { ShieldIcon } from "../components/Icons";
+import { AuthIcon } from "../components/AuthIcon";
 import { Admin, api, ApiError } from "../api";
 
 export function Login() {
@@ -32,9 +32,10 @@ export function Login() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-card__icon">
-          <ShieldIcon width={22} height={22} />
+          <AuthIcon size={52} />
         </div>
         <h1 className="auth-card__title">Admin sign in</h1>
+        <p className="auth-card__subtitle">Auth Service · OAuth 2.1 &amp; OIDC Server</p>
         {error && <div className="alert alert--error" role="alert">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="field">

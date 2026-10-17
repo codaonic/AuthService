@@ -214,7 +214,7 @@ async def test_no_branding_falls_back_to_default_icon(client, db_session):
         },
     )
     assert resp.status_code == 200
-    assert "<img" not in resp.text
+    assert "brand-icon--logo" not in resp.text
     assert "--color-primary: #1d4ed8;" not in resp.text
 
 

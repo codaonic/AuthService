@@ -204,3 +204,5 @@ export function ChevronIcon(props: IconProps) {
     </svg>
   );
 }
+
+export { AuthIcon } from "./AuthIcon";

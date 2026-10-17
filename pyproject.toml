@@ -28,6 +28,7 @@ dependencies = [
 dev = [
     "aiosqlite>=0.22.1",
     "fakeredis>=2.38.0",
+    "pillow>=13.0.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
