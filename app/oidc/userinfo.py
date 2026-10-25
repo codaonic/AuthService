@@ -1,7 +1,10 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from jose import JWTError, jwt
+from joserfc import jwt
+from joserfc.errors import JoseError
+from joserfc.jwk import KeySet
+from joserfc.jwt import JWTClaimsRegistry
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,19 +30,17 @@ async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
     token = _get_bearer_token(request)
 
     try:
-        header = jwt.get_unverified_header(token)
-        jwks = get_key_manager().jwks()
-        key = next((k for k in jwks["keys"] if k["kid"] == header.get("kid")), None)
-        if key is None:
-            raise HTTPException(401, "invalid_token")
-        claims = jwt.decode(
+        verified = jwt.decode(
             token,
-            key,
+            KeySet.import_key_set(get_key_manager().jwks()),
             algorithms=[settings.signing_key_algorithm],
-            issuer=settings.issuer_url,
-            options={"verify_aud": False},
         )
-    except JWTError as exc:
+        JWTClaimsRegistry(
+            iss={"essential": True, "value": settings.issuer_url},
+            exp={"essential": True},
+        ).validate(verified.claims)
+        claims = verified.claims
+    except (JoseError, ValueError) as exc:
         raise HTTPException(401, "invalid_token") from exc
 
     try:

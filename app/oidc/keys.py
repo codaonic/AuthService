@@ -1,11 +1,12 @@
 import json
+import os
 import uuid
 from functools import lru_cache
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwk
+from joserfc.jwk import RSAKey
 
 from app.config import get_settings
 
@@ -34,7 +35,10 @@ class KeyManager:
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
         )
-        self._key_path(kid).write_bytes(pem)
+        # Owner-only: anyone who can read this file can sign valid tokens.
+        fd = os.open(self._key_path(kid), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(pem)
         if make_current:
             self._current_path().write_text(json.dumps({"kid": kid}))
         return kid
@@ -56,8 +60,7 @@ class KeyManager:
         keys = []
         for kid in self._list_kids():
             pem = self._load_private_pem(kid)
-            public_jwk = jwk.construct(pem, algorithm="RS256").public_key().to_dict()
-            public_jwk.pop("d", None)
+            public_jwk = RSAKey.import_key(pem).as_dict(private=False)
             public_jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
             keys.append(public_jwk)
         return {"keys": keys}

@@ -1,3 +1,4 @@
+import stat
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -332,3 +333,11 @@ async def test_revoke_then_refresh_fails(client, db_session):
         },
     )
     assert refresh_resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_signing_keys_are_owner_only(client, tmp_path):
+    await client.get("/jwks.json")
+    keys = list((tmp_path / "keys").glob("*.pem"))
+    assert keys
+    assert all(stat.S_IMODE(k.stat().st_mode) == 0o600 for k in keys)
