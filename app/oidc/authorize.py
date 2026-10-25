@@ -299,6 +299,7 @@ async def login(
                 **_branding(client),
                 "allow_signup": client.allow_signup,
                 "show_totp": False,
+                "email": email,
                 "error": "Invalid email or password",
             },
             status_code=401,
