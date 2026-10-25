@@ -2,6 +2,7 @@ import logging
 import secrets
 import time
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -16,7 +17,7 @@ from app.audit import client_ip, log_event, record_failed_login
 from app.auth.mfa import verify_totp
 from app.auth.password_reset import create_email_verification_token
 from app.auth.lockout import clear_failures, is_locked, record_failure
-from app.auth.passwords import burn_password_check, hash_password, verify_password
+from app.auth.passwords import burn_password_check, hash_password_async, verify_password_async
 from app.auth.sessions import app_auth_time, get_session_user, sign_in
 from app.config import get_settings
 from app.db.contacts import upsert_contact
@@ -33,8 +34,14 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 
+@lru_cache
 def asset_version() -> str:
-    """Appended to static asset URLs so browsers refetch them after a change."""
+    """Appended to static asset URLs so browsers refetch them after a change.
+
+    Worked out once per process -- it walks the whole static directory, which
+    is too much to do on every page view. Static files only change with a
+    deploy, which restarts the app anyway.
+    """
     return str(int(max(p.stat().st_mtime for p in Path("app/static").rglob("*") if p.is_file())))
 
 
@@ -184,8 +191,8 @@ async def authorize(
         "scope": scope,
         "state": state or "",
     }
-    await redis.hset(f"{FLOW_KEY_PREFIX}{flow_id}", mapping=flow)
-    await redis.expire(f"{FLOW_KEY_PREFIX}{flow_id}", 600)
+    async with redis.pipeline(transaction=True) as pipe:
+        await pipe.hset(f"{FLOW_KEY_PREFIX}{flow_id}", mapping=flow).expire(f"{FLOW_KEY_PREFIX}{flow_id}", 600).execute()
 
     session_id = request.cookies.get(settings.session_cookie_name)
     user_id = await get_session_user(redis, session_id)
@@ -278,9 +285,9 @@ async def login(
 
     user = await _find_user_for_client(db, email, client)
     if user is None:
-        burn_password_check(password)
+        await burn_password_check(password)
 
-    if user is None or user.status != "active" or not verify_password(password, user.password_hash):
+    if user is None or user.status != "active" or not await verify_password_async(password, user.password_hash):
         await record_failure(redis, "user", email)
         await _record_login_failure(redis, email, request, client.client_id, "invalid_credentials")
         return templates.TemplateResponse(
@@ -413,7 +420,7 @@ async def signup(
         email=email,
         first_name=first_name.strip(),
         last_name=last_name.strip(),
-        password_hash=hash_password(password),
+        password_hash=await hash_password_async(password),
     )
     db.add(user)
     await upsert_contact(db, email=email, app_name=client.client_name or client.client_id)
@@ -569,21 +576,23 @@ async def consent(
 async def _issue_code(redis: Redis, flow_id: str, flow: dict, user_id: str) -> RedirectResponse:
     settings = get_settings()
     code = secrets.token_urlsafe(32)
-    await redis.hset(
-        f"{CODE_KEY_PREFIX}{code}",
-        mapping={
-            "client_id": flow["client_id"],
-            "user_id": user_id,
-            "resource": flow["resource"],
-            "code_challenge": flow["code_challenge"],
-            "code_challenge_method": flow["code_challenge_method"],
-            "redirect_uri": flow["redirect_uri"],
-            "scope": flow["scope"],
-            "auth_time": flow.get("auth_time") or str(round(time.time())),
-        },
-    )
-    await redis.expire(f"{CODE_KEY_PREFIX}{code}", settings.authorization_code_ttl_seconds)
-    await redis.delete(f"{FLOW_KEY_PREFIX}{flow_id}")
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.hset(
+            f"{CODE_KEY_PREFIX}{code}",
+            mapping={
+                "client_id": flow["client_id"],
+                "user_id": user_id,
+                "resource": flow["resource"],
+                "code_challenge": flow["code_challenge"],
+                "code_challenge_method": flow["code_challenge_method"],
+                "redirect_uri": flow["redirect_uri"],
+                "scope": flow["scope"],
+                "auth_time": flow.get("auth_time") or str(round(time.time())),
+            },
+        )
+        pipe.expire(f"{CODE_KEY_PREFIX}{code}", settings.authorization_code_ttl_seconds)
+        pipe.delete(f"{FLOW_KEY_PREFIX}{flow_id}")
+        await pipe.execute()
 
     params = {"code": code, "iss": settings.issuer_url}
     if flow["state"]:

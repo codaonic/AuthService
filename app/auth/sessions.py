@@ -17,18 +17,21 @@ async def create_session(
     settings = get_settings()
     session_id = secrets.token_urlsafe(32)
     key = f"{SESSION_KEY_PREFIX}{session_id}"
-    await redis.hset(
-        key,
-        mapping={
-            "user_id": user_id,
-            "created_at": str(round(time.time())),
-            "ip": ip or "",
-            "user_agent": (user_agent or "")[:200],
-        },
-    )
-    await redis.expire(key, settings.session_ttl_seconds)
-    await redis.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", session_id)
-    await redis.expire(f"{USER_SESSIONS_PREFIX}{user_id}", settings.session_ttl_seconds)
+    ttl = settings.session_ttl_seconds
+    async with redis.pipeline(transaction=False) as pipe:
+        pipe.hset(
+            key,
+            mapping={
+                "user_id": user_id,
+                "created_at": str(round(time.time())),
+                "ip": ip or "",
+                "user_agent": (user_agent or "")[:200],
+            },
+        )
+        pipe.expire(key, ttl)
+        pipe.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", session_id)
+        pipe.expire(f"{USER_SESSIONS_PREFIX}{user_id}", ttl)
+        await pipe.execute()
     return session_id
 
 
@@ -46,16 +49,18 @@ async def sign_in(
     """
     settings = get_settings()
     now = str(round(time.time()))
-    if existing_session_id and await get_session_user(redis, existing_session_id) == user_id:
-        session_id = existing_session_id
-        await redis.hset(f"{SESSION_KEY_PREFIX}{session_id}", "last_auth", now)
-        await redis.expire(f"{SESSION_KEY_PREFIX}{session_id}", settings.session_ttl_seconds)
-        await redis.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", session_id)
-        await redis.expire(f"{USER_SESSIONS_PREFIX}{user_id}", settings.session_ttl_seconds)
-    else:
-        session_id = await create_session(redis, user_id, ip=ip, user_agent=user_agent)
-    await redis.hset(f"{SESSION_APPS_PREFIX}{session_id}", client_id, now)
-    await redis.expire(f"{SESSION_APPS_PREFIX}{session_id}", settings.session_ttl_seconds)
+    ttl = settings.session_ttl_seconds
+    reuse = existing_session_id and await get_session_user(redis, existing_session_id) == user_id
+    session_id = existing_session_id if reuse else await create_session(redis, user_id, ip=ip, user_agent=user_agent)
+    async with redis.pipeline(transaction=False) as pipe:
+        if reuse:
+            pipe.hset(f"{SESSION_KEY_PREFIX}{session_id}", "last_auth", now)
+            pipe.expire(f"{SESSION_KEY_PREFIX}{session_id}", ttl)
+            pipe.sadd(f"{USER_SESSIONS_PREFIX}{user_id}", session_id)
+            pipe.expire(f"{USER_SESSIONS_PREFIX}{user_id}", ttl)
+        pipe.hset(f"{SESSION_APPS_PREFIX}{session_id}", client_id, now)
+        pipe.expire(f"{SESSION_APPS_PREFIX}{session_id}", ttl)
+        await pipe.execute()
     return session_id
 
 
@@ -67,10 +72,14 @@ async def app_auth_time(redis: Redis, session_id: str | None, client_id: str) ->
     """
     if not session_id:
         return None
-    session = await redis.hgetall(f"{SESSION_KEY_PREFIX}{session_id}")
+    async with redis.pipeline(transaction=False) as pipe:
+        session, own = await (
+            pipe.hgetall(f"{SESSION_KEY_PREFIX}{session_id}")
+            .hget(f"{SESSION_APPS_PREFIX}{session_id}", client_id)
+            .execute()
+        )
     if not session:
         return None
-    own = await redis.hget(f"{SESSION_APPS_PREFIX}{session_id}", client_id)
     signed_out_at = await redis.hget(f"{APP_LOGOUT_PREFIX}{session['user_id']}", client_id)
     if signed_out_at:
         # After a logout only a sign-in made through this application itself
@@ -117,11 +126,14 @@ async def list_sessions_for_user(redis: Redis, user_id: str) -> list[dict]:
     able to sign out everywhere.
     """
     key = f"{USER_SESSIONS_PREFIX}{user_id}"
-    session_ids = await redis.smembers(key)
+    session_ids = list(await redis.smembers(key))
+    async with redis.pipeline(transaction=False) as pipe:
+        for session_id in session_ids:
+            pipe.hgetall(f"{SESSION_KEY_PREFIX}{session_id}")
+        all_data = await pipe.execute()
     sessions = []
     stale = []
-    for session_id in session_ids:
-        data = await redis.hgetall(f"{SESSION_KEY_PREFIX}{session_id}")
+    for session_id, data in zip(session_ids, all_data):
         if not data:
             stale.append(session_id)
             continue

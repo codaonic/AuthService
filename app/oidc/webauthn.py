@@ -18,7 +18,7 @@ from webauthn import (
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
 from app.audit import client_ip, log_event
-from app.auth.passwords import hash_password, verify_password
+from app.auth.passwords import hash_password_async, verify_password_async
 from app.auth.sessions import (
     get_session_user,
     list_sessions_for_user,
@@ -228,14 +228,14 @@ async def change_account_password(
         ctx = await _account_context(request, db, redis, user, error=message)
         return templates.TemplateResponse(request, "account.html", ctx, status_code=status_code)
 
-    if not verify_password(current_password, user.password_hash):
+    if not await verify_password_async(current_password, user.password_hash):
         return await error("Current password is incorrect")
     if new_password != confirm_password:
         return await error("New passwords do not match")
     if len(new_password) < MIN_PASSWORD_LENGTH:
         return await error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
-    user.password_hash = hash_password(new_password)
+    user.password_hash = await hash_password_async(new_password)
     await db.commit()
     log_event("password_changed", user_id=str(user.id), ip=client_ip(request))
 

@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_event
-from app.auth.passwords import verify_password
+from app.auth.passwords import verify_client_secret
 from app.config import get_settings
 from app.db.models import Client
 from app.oidc.cimd import is_cimd_client_id, resolve_cimd_client
@@ -60,7 +60,7 @@ async def get_and_validate_client(
     if client.client_type == "confidential":
         if not client_secret or client.client_secret_hash is None:
             raise HTTPException(401, "invalid_client")
-        if not verify_password(client_secret, client.client_secret_hash):
+        if not await verify_client_secret(client_secret, client.client_secret_hash):
             raise HTTPException(401, "invalid_client")
     elif client_secret:
         raise HTTPException(401, "invalid_client")

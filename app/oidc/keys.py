@@ -6,7 +6,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from joserfc.jwk import RSAKey
+from joserfc.jwk import KeySet, RSAKey
 
 from app.config import get_settings
 
@@ -17,6 +17,12 @@ class KeyManager:
     def __init__(self, key_dir: str):
         self.key_dir = Path(key_dir)
         self.key_dir.mkdir(parents=True, exist_ok=True)
+        # A key file never changes once written, so each is read and parsed
+        # once. The directory listing and current.json are still checked per
+        # call, so a rotation (e.g. from the CLI, another process) is picked
+        # up right away.
+        self._keys: dict[str, RSAKey] = {}
+        self._jwks: tuple[frozenset[str], dict, KeySet] | None = None
 
     def _current_path(self) -> Path:
         return self.key_dir / CURRENT_FILE
@@ -51,19 +57,35 @@ class KeyManager:
     def _load_private_pem(self, kid: str) -> bytes:
         return self._key_path(kid).read_bytes()
 
-    def signing_key(self) -> tuple[str, bytes]:
+    def _key(self, kid: str) -> RSAKey:
+        key = self._keys.get(kid)
+        if key is None:
+            key = self._keys[kid] = RSAKey.import_key(self._load_private_pem(kid))
+        return key
+
+    def signing_key(self) -> tuple[str, RSAKey]:
         kid = self.current_kid()
-        return kid, self._load_private_pem(kid)
+        return kid, self._key(kid)
+
+    def _public(self) -> tuple[dict, KeySet]:
+        self.current_kid()  # ensure at least one key exists
+        kids = frozenset(self._list_kids())
+        if self._jwks is None or self._jwks[0] != kids:
+            keys = []
+            for kid in sorted(kids):
+                public_jwk = self._key(kid).as_dict(private=False)
+                public_jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
+                keys.append(public_jwk)
+            jwks = {"keys": keys}
+            self._jwks = (kids, jwks, KeySet.import_key_set(jwks))
+        return self._jwks[1], self._jwks[2]
 
     def jwks(self) -> dict:
-        self.current_kid()  # ensure at least one key exists
-        keys = []
-        for kid in self._list_kids():
-            pem = self._load_private_pem(kid)
-            public_jwk = RSAKey.import_key(pem).as_dict(private=False)
-            public_jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
-            keys.append(public_jwk)
-        return {"keys": keys}
+        return self._public()[0]
+
+    def public_key_set(self) -> KeySet:
+        """The public keys, ready to verify a token with."""
+        return self._public()[1]
 
     def rotate(self) -> str:
         return self.generate_key(make_current=True)

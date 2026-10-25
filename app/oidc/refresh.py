@@ -54,18 +54,20 @@ async def issue_refresh_token(
     db.add(row)
     await db.commit()
 
-    await redis.hset(
-        f"{REFRESH_KEY_PREFIX}{token_hash}",
-        mapping={
-            "user_id": user_id,
-            "client_id": client_id,
-            "resource": resource,
-            "scope": scope,
-            "row_id": str(row.id),
-            "auth_time": str(auth_time or ""),
-        },
-    )
-    await redis.expire(f"{REFRESH_KEY_PREFIX}{token_hash}", ttl)
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.hset(
+            f"{REFRESH_KEY_PREFIX}{token_hash}",
+            mapping={
+                "user_id": user_id,
+                "client_id": client_id,
+                "resource": resource,
+                "scope": scope,
+                "row_id": str(row.id),
+                "auth_time": str(auth_time or ""),
+            },
+        )
+        pipe.expire(f"{REFRESH_KEY_PREFIX}{token_hash}", ttl)
+        await pipe.execute()
     return token
 
 

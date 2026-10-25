@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import client_ip, log_event
-from app.auth.passwords import hash_password
+from app.auth.passwords import hash_password_async
 from app.auth.password_reset import (
     consume_email_verification_token,
     consume_password_reset_token,
@@ -104,7 +104,7 @@ async def reset_password_submit(
     if user is None:
         return error("This reset link is invalid or has expired. Request a new one.")
 
-    user.password_hash = hash_password(password)
+    user.password_hash = await hash_password_async(password)
     await db.commit()
 
     # A password reset should kill every other session/token this user has.

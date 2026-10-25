@@ -3,7 +3,6 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from joserfc import jwt
 from joserfc.errors import JoseError
-from joserfc.jwk import KeySet
 from joserfc.jwt import JWTClaimsRegistry
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +31,7 @@ async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
     try:
         verified = jwt.decode(
             token,
-            KeySet.import_key_set(get_key_manager().jwks()),
+            get_key_manager().public_key_set(),
             algorithms=[settings.signing_key_algorithm],
         )
         JWTClaimsRegistry(

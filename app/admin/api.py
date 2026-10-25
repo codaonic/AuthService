@@ -13,7 +13,7 @@ from app.admin.auth import get_current_admin
 from app.audit import client_ip, log_event, record_failed_login, recent_events
 from app.auth.lockout import clear_failures, is_locked, record_failure
 from app.auth.password_reset import create_email_verification_token, create_password_reset_token
-from app.auth.passwords import hash_password, verify_password
+from app.auth.passwords import hash_password_async, verify_password_async
 from app.auth.sessions import create_session, delete_session, revoke_all_sessions_for_user
 from app.config import get_settings
 from app.db.models import (
@@ -188,7 +188,7 @@ async def api_setup(
     if len(body.password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
-    admin = AdminUser(email=body.email, password_hash=hash_password(body.password), must_change_password=False)
+    admin = AdminUser(email=body.email, password_hash=await hash_password_async(body.password), must_change_password=False)
     db.add(admin)
     await db.commit()
     log_event("admin_setup_completed", admin_id=str(admin.id), email=admin.email)
@@ -233,7 +233,7 @@ async def api_login(
     result = await db.execute(select(AdminUser).where(AdminUser.email == body.email))
     admin = result.scalar_one_or_none()
 
-    if admin is None or not verify_password(body.password, admin.password_hash):
+    if admin is None or not await verify_password_async(body.password, admin.password_hash):
         await record_failure(redis, "admin", body.email)
         ip = client_ip(request)
         log_event("admin_login_failure", level=logging.WARNING, email=body.email, ip=ip)
@@ -579,7 +579,7 @@ async def api_create_client(
         user_pool_id=pool.id if pool else None,
         client_id=body.client_id,
         client_name=body.client_name.strip() or None,
-        client_secret_hash=hash_password(client_secret) if client_secret else None,
+        client_secret_hash=await hash_password_async(client_secret) if client_secret else None,
         client_type=body.client_type,
         redirect_uris=[u.strip() for u in body.redirect_uris.splitlines() if u.strip()],
         grant_types=body.grant_types or ["authorization_code", "refresh_token"],
@@ -1127,7 +1127,7 @@ async def api_create_user(
         first_name=body.first_name or None,
         last_name=body.last_name or None,
         phone=body.phone or None,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password_async(body.password),
         email_verified=body.email_verified,
     )
     db.add(user)
@@ -1313,14 +1313,14 @@ class ChangePasswordBody(BaseModel):
 async def api_change_password(
     body: ChangePasswordBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    if not verify_password(body.current_password, admin.password_hash):
+    if not await verify_password_async(body.current_password, admin.password_hash):
         raise HTTPException(400, "Current password is incorrect")
     if body.new_password != body.confirm_password:
         raise HTTPException(400, "New passwords do not match")
     if len(body.new_password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
-    admin.password_hash = hash_password(body.new_password)
+    admin.password_hash = await hash_password_async(body.new_password)
     admin.must_change_password = False
     await db.commit()
     return _admin_json(admin)

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_event
-from app.auth.passwords import hash_password
+from app.auth.passwords import hash_password_async
 from app.config import get_settings
 from app.db.models import Client
 from app.db.session import get_db
@@ -50,7 +50,7 @@ async def register_client(
         user_pool_id=None,
         client_id=client_id,
         client_name=body.client_name,
-        client_secret_hash=None if client_secret is None else hash_password(client_secret),
+        client_secret_hash=None if client_secret is None else await hash_password_async(client_secret),
         client_type="public" if is_public else "confidential",
         redirect_uris=body.redirect_uris,
         grant_types=body.grant_types,

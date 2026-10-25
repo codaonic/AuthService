@@ -177,6 +177,8 @@ class Resource(Base):
 
 class Consent(Base):
     __tablename__ = "consents"
+    # Looked up by (user, client) on every authorization.
+    __table_args__ = (Index("ix_consents_user_client", "user_id", "client_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
@@ -237,6 +239,8 @@ class UserRoleAssignment(Base):
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
+    # Logout and password reset find a user's live tokens (optionally for one client).
+    __table_args__ = (Index("ix_refresh_tokens_user_client", "user_id", "client_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String)
