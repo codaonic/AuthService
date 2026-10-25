@@ -535,6 +535,7 @@ async def api_system_endpoints(admin: AdminUser = Depends(require_admin)):
         "openid_configuration": f"{issuer}/.well-known/openid-configuration",
         "oauth_authorization_server": f"{issuer}/.well-known/oauth-authorization-server",
         "auth_widget_js": f"{issuer}/static/js/auth-widget.js",
+        "auth_elements_js": f"{issuer}/static/js/auth-elements.js",
     }
 
 

@@ -68,6 +68,7 @@ export interface SystemEndpoints {
   openid_configuration: string;
   oauth_authorization_server: string;
   auth_widget_js: string;
+  auth_elements_js: string;
 }
 
 export interface Client {

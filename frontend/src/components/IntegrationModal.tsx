@@ -65,7 +65,13 @@ export function IntegrationModal({
     if (resource) {
       setTab("fastmcp");
     } else if (appOnly) {
-      setTab(activeClient?.application_type === "service" ? "curl" : "widget");
+      setTab(
+        activeClient?.application_type === "service"
+          ? "curl"
+          : activeClient?.embed_origins?.length
+          ? "embed"
+          : "widget",
+      );
     } else if (activeClient) {
       if (activeClient.application_type === "native") {
         setTab("claude");
@@ -264,6 +270,9 @@ export function IntegrationModal({
             </TabButton>
             <TabButton active={tab === "widget"} onClick={() => setTab("widget")}>
               Popup Widget (HTML)
+            </TabButton>
+            <TabButton active={tab === "embed"} onClick={() => setTab("embed")}>
+              Embedded Sign-in
             </TabButton>
             <TabButton active={tab === "bff"} onClick={() => setTab("bff")}>
               BFF Backend (Python)
@@ -545,6 +554,114 @@ async def call_mcp_tool(tool_name: str, arguments: dict):
   });
 </script>`}
               />
+            </div>
+          )}
+
+          {tab === "embed" && (
+            <div>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
+                Show sign-in and signup <strong>inside your own page</strong>, styled with your colors,
+                font and corner radius. No redirect and no popup. The form runs in a frame served by
+                this service, so the password never reaches your page or its scripts. Your page gets a
+                one-time code, which your backend exchanges for tokens.
+              </p>
+
+              {activeClient && activeClient.embed_origins.length > 0 ? (
+                <div className="alert">
+                  Embedding is on for {clientDisplayName}, from:{" "}
+                  {activeClient.embed_origins.map((origin, i) => (
+                    <span key={origin}>
+                      {i > 0 && ", "}
+                      <code>{origin}</code>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <div className="alert alert--error">
+                  Embedding is off for this application. Open <strong>Applications → Manage</strong> and
+                  add your site under <strong>Embed origins</strong> (for example{" "}
+                  <code>https://yourapp.com</code>, no path). Until then the form won't load.
+                </div>
+              )}
+
+              <CodeBlock
+                language="html"
+                title="1. Put it on your page"
+                code={`<div id="sign-in"></div>
+
+<script src="${endpoints.auth_elements_js}"></script>
+<script>
+  const auth = AuthElements({
+    clientId: "${currentClientId}",
+    resource: "${activeResourceId}",
+    scope: "${activeClient?.allowed_scope || "openid profile email"}",
+    appearance: {
+      colorPrimary: "#4f46e5",
+      colorBackground: "#ffffff",   // the card the form sits in
+      colorText: "#0f172a",
+      borderRadius: "10px",
+      fontFamily: "Inter, sans-serif",
+      theme: "light",               // or "dark"
+    },
+  });
+
+  const signIn = auth.create("login");   // or auth.create("signup")
+  signIn.on("success", async ({ code, codeVerifier }) => {
+    // Hand the code to your backend (step 2), then refresh.
+    await fetch("/api/auth/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, codeVerifier }),
+    });
+    location.reload();
+  });
+  signIn.on("error", (err) => console.error(err));
+  signIn.mount("#sign-in");
+</script>`}
+              />
+
+              <CodeBlock
+                language="python"
+                title="2. Exchange the code on your backend"
+                description="No redirect_uri is needed for an embedded sign-in. Keep the tokens server-side and give the browser your own session cookie."
+                code={`import httpx
+
+async def complete_sign_in(code: str, code_verifier: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "${endpoints.token_endpoint}",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "${currentClientId}",${
+                  isPublicClient
+                    ? ""
+                    : `
+                "client_secret": "${effectiveSecret || "<paste-your-client-secret>"}",`
+                }
+                "code": code,
+                "code_verifier": code_verifier,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()  # access_token, refresh_token, expires_in`}
+              />
+
+              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                <strong>Appearance options:</strong> <code>colorPrimary</code>,{" "}
+                <code>colorPrimaryText</code>, <code>colorBackground</code>,{" "}
+                <code>colorInputBackground</code>, <code>colorText</code>,{" "}
+                <code>colorTextSecondary</code>, <code>colorBorder</code>, <code>colorDanger</code>,{" "}
+                <code>fontFamily</code> (unquoted names), <code>borderRadius</code> (px, rem or em)
+                and <code>theme</code> (<code>"light"</code> or <code>"dark"</code>). Anything else is
+                ignored.
+              </p>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 0 }}>
+                Wrong passwords, 2FA, signup, forgot password and passkeys all stay inside the frame,
+                and it resizes to fit. To keep the PKCE verifier on your server instead, pass{" "}
+                <code>{"auth.create(\"login\", { codeChallenge })"}</code>; <code>success</code> then
+                carries only the code. Browsers don't share sign-ins with embedded frames, so single
+                sign-on across your apps needs the redirect or popup.
+              </p>
             </div>
           )}
 
