@@ -571,7 +571,7 @@ To keep the PKCE verifier on your server instead of in the browser, generate the
 - Embed pages are served with `Content-Security-Policy: frame-ancestors <your origin>`, so browsers show them only inside your site. Every other page here still refuses all framing.
 - The page in the frame sends `auth-elements:ready`, then `auth-elements:resize` messages so the iframe always fits its content. When sign-in finishes, it sends `auth-elements:success` with the code. Each message goes to your origin only, and the SDK accepts it only from its own iframe, with its own `frame_id` and the `state` it sent.
 - No consent screen is shown in an embed. Only an admin can enable embedding, so these are your own applications. The consent is recorded as granted.
-- Wrong passwords, 2FA codes and the signup form all stay inside the frame. Passkeys work too: the SDK allows WebAuthn in the iframe. *Forgot password?* opens in a new tab.
+- Wrong passwords, 2FA codes and the signup form all stay inside the frame. Passkeys work too: the SDK allows WebAuthn in the iframe. *Forgot password?* also stays in the frame. The reset link in the email opens on its own page, and afterwards the user signs in again in the app.
 
 **Good to know:** browsers block cookies inside a cross-site iframe, so automatic single sign-on between your applications doesn't happen inside an embed. Each application asks for credentials once. Where SSO matters, keep using the redirect ([§3](#3-for-a-website-the-bff-pattern)) or the popup ([§4](#4-making-it-feel-embedded-the-popup-widget)). Both work exactly as before, and an application can offer either alongside the embed.
 

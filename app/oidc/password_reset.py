@@ -22,7 +22,7 @@ from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
 from app.email import send_password_reset_email, send_verification_email
 from app.middleware.rate_limit import limiter
-from app.oidc.authorize import FLOW_KEY_PREFIX, _find_user_for_client, _get_flow_client, asset_version
+from app.oidc.authorize import _find_user_for_client, _get_flow_client, _page, asset_version
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
 router = APIRouter()
@@ -30,12 +30,6 @@ templates = Jinja2Templates(directory="app/templates")
 templates.env.globals["asset_version"] = asset_version
 
 MIN_PASSWORD_LENGTH = 8
-
-
-async def _opened_from_embed(redis: Redis, flow_id: str) -> bool:
-    """An embedded sign-in opens this page in a new tab: signing in from
-    here couldn't hand the result back, so it points back to the app instead."""
-    return bool(await redis.hget(f"{FLOW_KEY_PREFIX}{flow_id}", "embed"))
 
 
 @router.get("/forgot-password")
@@ -46,15 +40,9 @@ async def forgot_password_page(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
-    return templates.TemplateResponse(
-        request,
-        "forgot_password.html",
-        {
-            "flow_id": flow_id,
-            "client_id": client.client_id,
-            "sent": False,
-            "from_embed": await _opened_from_embed(redis, flow_id),
-        },
+    # Part of the sign-in flow: inside the application's page when embedded.
+    return await _page(
+        redis, request, "forgot_password.html", {"flow_id": flow_id, "client_id": client.client_id, "sent": False}
     )
 
 
@@ -77,15 +65,8 @@ async def forgot_password_submit(
         log_event("password_reset_requested", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
     # Always the same response -- never reveal whether the account exists.
-    return templates.TemplateResponse(
-        request,
-        "forgot_password.html",
-        {
-            "flow_id": flow_id,
-            "client_id": client.client_id,
-            "sent": True,
-            "from_embed": await _opened_from_embed(redis, flow_id),
-        },
+    return await _page(
+        redis, request, "forgot_password.html", {"flow_id": flow_id, "client_id": client.client_id, "sent": True}
     )
 
 

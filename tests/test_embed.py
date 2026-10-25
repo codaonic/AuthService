@@ -192,17 +192,38 @@ async def test_signup_screen_can_be_opened_directly(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_forgot_password_opens_in_a_new_tab_from_an_embed(client, db_session):
+async def test_forgot_password_stays_inside_the_embed(client, db_session):
     await _embeddable_client(db_session)
+    await create_user(db_session, email="alice@example.com", password="s3cret-password!")
     _, challenge = make_pkce_pair()
 
     page = await client.get("/authorize", params=_embed_params(challenge))
-    assert 'target="_blank"' in page.text
+    assert 'target="_blank"' not in page.text
     flow_id = extract_hidden_value(page.text, "flow_id")
 
     forgot = await client.get("/forgot-password", params={"flow_id": flow_id})
-    assert "sign in again in the app" in forgot.text
-    assert forgot.headers["x-frame-options"] == "DENY"  # a normal page, in its own tab
+    assert forgot.headers["content-security-policy"] == f"frame-ancestors {ORIGIN}"
+    assert "x-frame-options" not in forgot.headers
+    assert 'class="embed"' in forgot.text
+    assert f'href="/login?flow_id={flow_id}"' in forgot.text  # back to sign in, still in the frame
+
+    sent = await client.post("/forgot-password", data={"flow_id": flow_id, "email": "alice@example.com"})
+    assert sent.headers["content-security-policy"] == f"frame-ancestors {ORIGIN}"
+    assert 'class="embed"' in sent.text
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_outside_an_embed_is_unchanged(client, db_session):
+    await _embeddable_client(db_session)
+    _, challenge = make_pkce_pair()
+    params = _embed_params(challenge, response_mode="query", redirect_uri="https://client.example.com/callback")
+    del params["origin"], params["frame_id"]
+
+    page = await client.get("/authorize", params=params)
+    forgot = await client.get("/forgot-password", params={"flow_id": extract_hidden_value(page.text, "flow_id")})
+
+    assert forgot.headers["x-frame-options"] == "DENY"
+    assert 'class="embed"' not in forgot.text
 
 
 @pytest.mark.asyncio

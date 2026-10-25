@@ -134,12 +134,9 @@ window.AuthElements = (function () {
           iframe.style.cssText = "width:100%;border:0;display:block;color-scheme:normal;height:" + (options.height || 460) + "px";
           // Passkeys need the iframe to be allowed to use WebAuthn.
           iframe.allow = "publickey-credentials-get";
-          // No top-level navigation from inside the frame; "Forgot password?"
-          // still opens in a new tab.
-          iframe.setAttribute(
-            "sandbox",
-            "allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox",
-          );
+          // The whole flow (sign-in, signup, forgot password) stays inside the
+          // frame: no top-level navigation and no popups from it.
+          iframe.setAttribute("sandbox", "allow-forms allow-scripts allow-same-origin");
 
           window.addEventListener("message", onMessage);
           readyTimer = setTimeout(function () {
