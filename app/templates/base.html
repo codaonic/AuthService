@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if embed and embed.theme %} data-theme="{{ embed.theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,20 +15,33 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v={{ asset_version() }}">
-  {% if brand_color %}
+  {% set primary = embed.primary if embed and embed.primary else brand_color %}
+  {# :root:root:root outranks the dark-theme blocks in styles.css
+     (:root:not([data-theme="light"]) and :root[data-theme="dark"]), which
+     would otherwise put the default colors back for dark-mode visitors. #}
+  {% if primary %}
   <style>
-    :root {
-      --color-primary: {{ brand_color }};
-      --color-primary-hover: color-mix(in srgb, {{ brand_color }} 85%, black);
-      --color-primary-active: color-mix(in srgb, {{ brand_color }} 70%, black);
-      --color-primary-soft: color-mix(in srgb, {{ brand_color }} 12%, transparent);
-      --color-primary-glow: color-mix(in srgb, {{ brand_color }} 30%, transparent);
-      --ring: 0 0 0 3px color-mix(in srgb, {{ brand_color }} 22%, transparent);
+    :root:root:root {
+      --color-primary: {{ primary }};
+      --color-primary-hover: color-mix(in srgb, {{ primary }} 85%, black);
+      --color-primary-active: color-mix(in srgb, {{ primary }} 70%, black);
+      --color-primary-soft: color-mix(in srgb, {{ primary }} 12%, transparent);
+      --color-primary-glow: color-mix(in srgb, {{ primary }} 30%, transparent);
+      --ring: 0 0 0 3px color-mix(in srgb, {{ primary }} 22%, transparent);
+    }
+  </style>
+  {% endif %}
+  {% if embed and embed.css %}
+  {# Values were checked against strict patterns in app/oidc/embed.py. #}
+  <style>
+    :root:root:root {
+      {% for name, value in embed.css %}{{ name }}: {{ value }};
+      {% endfor %}
     }
   </style>
   {% endif %}
 </head>
-<body>
+<body{% if embed %} class="embed" data-embed-origin="{{ embed.origin }}" data-frame-id="{{ embed.frame_id }}"{% endif %}>
   <main class="page">
     <div class="card {% block card_class %}{% endblock %}">
       <div class="card__header">
@@ -49,6 +62,7 @@
     </p>
   </main>
   <script src="{{ url_for('static', path='js/auth.js') }}?v={{ asset_version() }}" defer></script>
+  {% if embed %}<script src="{{ url_for('static', path='js/embed.js') }}?v={{ asset_version() }}" defer></script>{% endif %}
   {% block extra_scripts %}{% endblock %}
 </body>
 </html>

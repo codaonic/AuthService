@@ -10,11 +10,17 @@ from app.db.models import Client, Resource, User, UserPool
 from app.db.pools import get_or_create_pool
 from app.db.session import async_session_factory
 from app.db.tenant import bypass_tenant_rls
+from app.oidc.embed import normalize_origin
 
 
 async def register_client(args: argparse.Namespace) -> None:
     is_public = args.type == "public"
     client_secret = None if is_public else (args.secret or secrets.token_urlsafe(32))
+    try:
+        embed_origins = [normalize_origin(o) for o in args.embed_origin or []]
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
     async with async_session_factory() as db:
         existing = await db.execute(select(Client).where(Client.client_id == args.client_id))
@@ -38,6 +44,7 @@ async def register_client(args: argparse.Namespace) -> None:
                 mtls_cert_thumbprint=args.mtls_thumbprint,
                 logo_url=args.logo_url,
                 brand_color=args.brand_color,
+                embed_origins=embed_origins,
             )
         )
         await db.commit()
@@ -149,6 +156,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--brand-color", help="CSS color (e.g. #1d4ed8) applied to this client's login/signup/consent pages"
+    )
+    p.add_argument(
+        "--embed-origin",
+        action="append",
+        help=(
+            "Repeatable. A web origin (https://app.example.com) allowed to embed this "
+            "client's sign-in in its own page with auth-elements.js"
+        ),
     )
     p.add_argument(
         "--user-pool",

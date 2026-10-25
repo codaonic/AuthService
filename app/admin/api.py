@@ -37,6 +37,7 @@ from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.email import send_password_reset_email, send_verification_email
 from app.middleware.rate_limit import limiter
+from app.oidc.embed import normalize_origin
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
 router = APIRouter(prefix="/admin/api")
@@ -81,6 +82,7 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "cimd_fetched_at": client.cimd_fetched_at.isoformat() if client.cimd_fetched_at else None,
         "session_ttl_seconds": client.session_ttl_seconds,
         "post_logout_redirect_uris": client.post_logout_redirect_uris or [],
+        "embed_origins": client.embed_origins or [],
         "pool_name": pool_name,
     }
 
@@ -103,6 +105,14 @@ def _validated_session_ttl(seconds: int) -> int:
 
 def _split_lines(value: str) -> list[str]:
     return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _embed_origins(value: str) -> list[str]:
+    """One origin per line, normalized -- see app/oidc/embed.py."""
+    try:
+        return [normalize_origin(line) for line in _split_lines(value)]
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _user_json(user: User, client_name: str | None, pool_name: str | None) -> dict:
@@ -557,6 +567,7 @@ class CreateClientBody(BaseModel):
     # assistant/service clients) gets no per-application limit.
     session_ttl_seconds: int | None = None
     post_logout_redirect_uris: str = ""
+    embed_origins: str = ""
 
 
 @router.post("/clients", status_code=201)
@@ -591,6 +602,7 @@ async def api_create_client(
         brand_color=body.brand_color.strip() or None,
         session_ttl_seconds=session_ttl,
         post_logout_redirect_uris=_split_lines(body.post_logout_redirect_uris),
+        embed_origins=_embed_origins(body.embed_origins),
     )
     db.add(client)
     await db.commit()
@@ -607,6 +619,7 @@ class EditClientBody(BaseModel):
     # fields above don't reset these.
     session_ttl_seconds: int | None = None
     post_logout_redirect_uris: str | None = None
+    embed_origins: str | None = None
 
 
 @router.patch("/clients/{client_id}")
@@ -624,6 +637,8 @@ async def api_edit_client(
         client.session_ttl_seconds = _validated_session_ttl(body.session_ttl_seconds)
     if body.post_logout_redirect_uris is not None:
         client.post_logout_redirect_uris = _split_lines(body.post_logout_redirect_uris)
+    if body.embed_origins is not None:
+        client.embed_origins = _embed_origins(body.embed_origins)
     await db.commit()
     pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
     return _client_json(client, pool.name if pool else "")

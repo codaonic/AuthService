@@ -812,3 +812,41 @@ select,
     line-height: 1.4;
   }
 }
+
+/* --- Embedded sign-in (Auth Elements): shown inside an application's own
+   page, so only the form itself -- no card, header, background or page
+   chrome. The application draws all of that around it. --- */
+html:has(body.embed),
+body.embed {
+  height: auto;
+}
+
+body.embed {
+  background: var(--embed-background, transparent);
+  background-image: none;
+}
+
+.embed .page {
+  min-height: 0;
+  padding: 2px;
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.embed .card {
+  max-width: none;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  animation: none;
+}
+
+.embed .card__header,
+.embed .page__footer:not(.page__footer--brand) {
+  display: none;
+}
+
+.embed .page__footer--brand {
+  margin-top: 0;
+}

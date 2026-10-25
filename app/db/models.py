@@ -143,6 +143,10 @@ class Client(Base):
     session_ttl_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Where /logout may send the browser back to for this application.
     post_logout_redirect_uris: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    # Web origins (scheme://host[:port]) allowed to embed this application's
+    # sign-in inside their own pages (Auth Elements, see app/oidc/embed.py).
+    # Empty = embedding is off; only an admin can set it.
+    embed_origins: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

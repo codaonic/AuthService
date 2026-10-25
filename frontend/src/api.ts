@@ -91,6 +91,7 @@ export interface Client {
   cimd_fetched_at: string | null;
   session_ttl_seconds: number;
   post_logout_redirect_uris: string[];
+  embed_origins: string[];
   pool_name: string | null;
   client_secret?: string;
 }

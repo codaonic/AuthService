@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -27,6 +27,7 @@ from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
 from app.email import send_verification_email
 from app.middleware.rate_limit import limiter
+from app.oidc import embed as embedding
 from app.oidc.cimd import is_cimd_client_id, resolve_cimd_client
 from app.oidc.scope import resolve_scope
 
@@ -147,6 +148,16 @@ def _branding(client: Client) -> dict:
     return {"client_name": client.client_name, "logo_url": client.logo_url, "brand_color": client.brand_color}
 
 
+async def _page(redis: Redis, request: Request, name: str, context: dict, status_code: int = 200) -> HTMLResponse:
+    """Render a page of a sign-in flow -- inside an application's own page
+    when the flow is embedded (see app/oidc/embed.py), otherwise normally."""
+    embed = embedding.decode(await redis.hget(f"{FLOW_KEY_PREFIX}{context['flow_id']}", "embed"))
+    response = templates.TemplateResponse(request, name, {**context, "embed": embed}, status_code=status_code)
+    if embed:
+        response.headers["Content-Security-Policy"] = embedding.frame_ancestors(embed["origin"])
+    return response
+
+
 async def _get_flow_client(db: AsyncSession, redis: Redis, flow_id: str) -> Client:
     client_id = await redis.hget(f"{FLOW_KEY_PREFIX}{flow_id}", "client_id")
     if client_id is None:
@@ -160,12 +171,19 @@ async def authorize(
     request: Request,
     response_type: str,
     client_id: str,
-    redirect_uri: str,
     resource: str,
     code_challenge: str,
+    redirect_uri: str | None = None,
     code_challenge_method: str = "S256",
     scope: str = "",
     state: str | None = None,
+    # Embedded sign-in (app/oidc/embed.py): the code goes back by postMessage
+    # to `origin` instead of a redirect.
+    response_mode: str = "query",
+    origin: str | None = None,
+    frame_id: str | None = None,
+    appearance: str | None = None,
+    screen: str = "login",
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
@@ -177,7 +195,15 @@ async def authorize(
         raise HTTPException(400, "invalid_request: code_challenge_method must be S256")
 
     client = await _load_client(db, client_id)
-    if redirect_uri not in client.redirect_uris:
+    embed = ""
+    if response_mode == "web_message":
+        if not origin or origin not in (client.embed_origins or []) or not embedding.valid_frame_id(frame_id):
+            raise HTTPException(400, "invalid_request: this page may not embed sign-in for this application")
+        embed = embedding.encode(origin, frame_id, embedding.parse_appearance(appearance))
+        redirect_uri = origin
+    elif response_mode != "query":
+        raise HTTPException(400, "unsupported_response_mode")
+    elif redirect_uri is None or redirect_uri not in client.redirect_uris:
         raise HTTPException(400, "invalid_redirect_uri")
     scope = resolve_scope(scope, client.allowed_scope)
 
@@ -190,6 +216,7 @@ async def authorize(
         "code_challenge_method": code_challenge_method,
         "scope": scope,
         "state": state or "",
+        "embed": embed,
     }
     async with redis.pipeline(transaction=True) as pipe:
         await pipe.hset(f"{FLOW_KEY_PREFIX}{flow_id}", mapping=flow).expire(f"{FLOW_KEY_PREFIX}{flow_id}", 600).execute()
@@ -213,8 +240,23 @@ async def authorize(
         if auth_time is None or (limit and time.time() - auth_time > limit):
             user_id = None
 
+    if user_id is None and screen == "signup" and client.allow_signup:
+        return await _page(
+            redis,
+            request,
+            "signup.html",
+            {
+                "flow_id": flow_id,
+                "client_id": client_id,
+                **_branding(client),
+                "roles": await _signup_roles(db, client),
+                "error": None,
+            },
+        )
+
     if user_id is None:
-        return templates.TemplateResponse(
+        return await _page(
+            redis,
             request,
             "login.html",
             {
@@ -238,7 +280,8 @@ async def login_page(
     redis: Redis = Depends(get_redis),
 ):
     client = await _get_flow_client(db, redis, flow_id)
-    return templates.TemplateResponse(
+    return await _page(
+        redis,
         request,
         "login.html",
         {
@@ -269,7 +312,8 @@ async def login(
 
     if await is_locked(redis, "user", email):
         await _record_login_failure(redis, email, request, client.client_id, "locked_out")
-        return templates.TemplateResponse(
+        return await _page(
+            redis,
             request,
             "login.html",
             {
@@ -290,7 +334,8 @@ async def login(
     if user is None or user.status != "active" or not await verify_password_async(password, user.password_hash):
         await record_failure(redis, "user", email)
         await _record_login_failure(redis, email, request, client.client_id, "invalid_credentials")
-        return templates.TemplateResponse(
+        return await _page(
+            redis,
             request,
             "login.html",
             {
@@ -309,7 +354,8 @@ async def login(
         if totp_code:  # a blank code is just the prompt for one, not a guess
             await record_failure(redis, "user", email)
         await _record_login_failure(redis, email, request, client.client_id, "invalid_mfa_code")
-        return templates.TemplateResponse(
+        return await _page(
+            redis,
             request,
             "login.html",
             {
@@ -357,7 +403,8 @@ async def signup_page(
     if not client.allow_signup:
         raise HTTPException(403, "signup_disabled")
     roles = await _signup_roles(db, client)
-    return templates.TemplateResponse(
+    return await _page(
+        redis,
         request,
         "signup.html",
         {"flow_id": flow_id, "client_id": client.client_id, **_branding(client), "roles": roles, "error": None},
@@ -385,8 +432,9 @@ async def signup(
     await bypass_tenant_rls(db)
     roles = await _signup_roles(db, client)
 
-    def error(message: str, status_code: int = 400):
-        return templates.TemplateResponse(
+    async def error(message: str, status_code: int = 400):
+        return await _page(
+            redis,
             request,
             "signup.html",
             {
@@ -403,18 +451,18 @@ async def signup(
         )
 
     if not first_name.strip():
-        return error("First name is required")
+        return await error("First name is required")
     if not last_name.strip():
-        return error("Last name is required")
+        return await error("Last name is required")
     if password != confirm_password:
-        return error("Passwords do not match")
+        return await error("Passwords do not match")
     if len(password) < MIN_PASSWORD_LENGTH:
-        return error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+        return await error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
     # Across the whole login group, not just this app: a second account with
     # the same email there would make the owner's own login ambiguous.
     if await _find_user_for_client(db, email, client) is not None:
-        return error("An account with that email already exists")
+        return await error("An account with that email already exists")
 
     user = User(
         client_id=client.client_id,
@@ -491,7 +539,8 @@ async def _continue_flow(
             client_id=client.client_id,
             user_id=user_id,
         )
-        return templates.TemplateResponse(
+        return await _page(
+            redis,
             request,
             "login.html",
             {
@@ -512,7 +561,14 @@ async def _continue_flow(
     )
     consent = result.scalar_one_or_none()
     if consent is None or not requested_scopes.issubset(set(consent.scopes)):
-        return templates.TemplateResponse(
+        if flow.get("embed"):
+            # Embedding is something only an admin can turn on, for the
+            # organisation's own applications -- and a consent screen inside
+            # the requesting app's own page would be no real consent anyway.
+            await _record_consent(db, consent, user_id, client.client_id, requested_scopes)
+            return await _issue_code(request, redis, flow_id, flow, user_id)
+        return await _page(
+            redis,
             request,
             "consent.html",
             {
@@ -524,7 +580,17 @@ async def _continue_flow(
             },
         )
 
-    return await _issue_code(redis, flow_id, flow, user_id)
+    return await _issue_code(request, redis, flow_id, flow, user_id)
+
+
+async def _record_consent(
+    db: AsyncSession, existing: Consent | None, user_id: str, client_id: str, scopes: set[str]
+) -> None:
+    if existing is None:
+        db.add(Consent(user_id=uuid.UUID(user_id), client_id=client_id, scopes=sorted(scopes)))
+    else:
+        existing.scopes = sorted(scopes | set(existing.scopes))
+    await db.commit()
 
 
 @router.post("/consent")
@@ -558,23 +624,14 @@ async def consent(
             Consent.user_id == uuid.UUID(user_id), Consent.client_id == flow["client_id"]
         )
     )
-    existing = result.scalar_one_or_none()
-    if existing is None:
-        db.add(
-            Consent(
-                user_id=uuid.UUID(user_id),
-                client_id=flow["client_id"],
-                scopes=sorted(requested_scopes),
-            )
-        )
-    else:
-        existing.scopes = sorted(requested_scopes | set(existing.scopes))
-    await db.commit()
+    await _record_consent(db, result.scalar_one_or_none(), user_id, flow["client_id"], requested_scopes)
 
-    return await _issue_code(redis, flow_id, flow, user_id)
+    return await _issue_code(request, redis, flow_id, flow, user_id)
 
 
-async def _issue_code(redis: Redis, flow_id: str, flow: dict, user_id: str) -> RedirectResponse:
+async def _issue_code(
+    request: Request, redis: Redis, flow_id: str, flow: dict, user_id: str
+) -> RedirectResponse | HTMLResponse:
     settings = get_settings()
     code = secrets.token_urlsafe(32)
     async with redis.pipeline(transaction=True) as pipe:
@@ -594,6 +651,16 @@ async def _issue_code(redis: Redis, flow_id: str, flow: dict, user_id: str) -> R
         pipe.expire(f"{CODE_KEY_PREFIX}{code}", settings.authorization_code_ttl_seconds)
         pipe.delete(f"{FLOW_KEY_PREFIX}{flow_id}")
         await pipe.execute()
+
+    embed = embedding.decode(flow.get("embed"))
+    if embed:
+        # Handed to the embedding page by postMessage, to its exact origin.
+        response = templates.TemplateResponse(
+            request, "embed_complete.html", {"embed": embed, "code": code, "state": flow["state"]}
+        )
+        response.headers["Content-Security-Policy"] = embedding.frame_ancestors(embed["origin"])
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     params = {"code": code, "iss": settings.issuer_url}
     if flow["state"]:

@@ -118,6 +118,28 @@ function PostLogoutUrisField({ value, onChange }: { value: string; onChange: (va
   );
 }
 
+function EmbedOriginsField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="field">
+      <label htmlFor="embed_origins">
+        Embed origins <span className="field__hint">(optional — one per line)</span>
+      </label>
+      <textarea
+        id="embed_origins"
+        rows={2}
+        placeholder="https://yourapp.com"
+        style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <span className="field__hint">
+        Sites allowed to show this app's sign-in inside their own pages, styled to match them
+        (auth-elements.js). Just the origin — no path. Leave empty to keep sign-in on its own page.
+      </span>
+    </div>
+  );
+}
+
 export function Applications() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [search, setSearch] = useState("");
@@ -295,6 +317,7 @@ export function Applications() {
           scope: fields.details.scope,
           session_ttl_seconds: fields.details.sessionTtlSeconds,
           post_logout_redirect_uris: fields.details.postLogoutUris,
+          embed_origins: fields.details.embedOrigins,
         }),
       );
     }
@@ -818,7 +841,14 @@ interface SaveFields {
   // client's current saved values -- Save changes is one button, but it
   // must not blindly re-POST branding/mtls (or overwrite them with stale
   // values) just because the admin only touched the name or scope.
-  details?: { name: string; uris: string; scope: string; sessionTtlSeconds: number; postLogoutUris: string };
+  details?: {
+    name: string;
+    uris: string;
+    scope: string;
+    sessionTtlSeconds: number;
+    postLogoutUris: string;
+    embedOrigins: string;
+  };
   branding?: { logoUrl: string; brandColor: string };
   thumbprint?: string;
 }
@@ -851,6 +881,7 @@ function ManageDrawer({
   const [ttlValue, setTtlValue] = useState(splitDuration(client.session_ttl_seconds).value);
   const [ttlUnit, setTtlUnit] = useState<DurationUnit>(splitDuration(client.session_ttl_seconds).unit);
   const [postLogoutUris, setPostLogoutUris] = useState(client.post_logout_redirect_uris.join("\n"));
+  const [embedOrigins, setEmbedOrigins] = useState(client.embed_origins.join("\n"));
   const signsPeopleIn = client.grant_types.includes("authorization_code");
   const [grants, setGrants] = useState<AccessGrant[] | null>(null);
   const [poolUsers, setPoolUsers] = useState<AppUser[]>([]);
@@ -1257,6 +1288,7 @@ function ManageDrawer({
                 <label htmlFor="brand_color">Brand color</label>
                 <input id="brand_color" value={brandColor} onChange={(e) => setBrandColor(e.target.value)} placeholder="#1d4ed8" />
               </div>
+              <EmbedOriginsField value={embedOrigins} onChange={setEmbedOrigins} />
             </>
           )}
 
@@ -1288,9 +1320,10 @@ function ManageDrawer({
                 redirectUris !== client.redirect_uris.join("\n") ||
                 scope !== client.allowed_scope ||
                 sessionTtlSeconds !== client.session_ttl_seconds ||
-                postLogoutUris !== client.post_logout_redirect_uris.join("\n")
+                postLogoutUris !== client.post_logout_redirect_uris.join("\n") ||
+                embedOrigins !== client.embed_origins.join("\n")
               ) {
-                fields.details = { name, uris: redirectUris, scope, sessionTtlSeconds, postLogoutUris };
+                fields.details = { name, uris: redirectUris, scope, sessionTtlSeconds, postLogoutUris, embedOrigins };
               }
               if (showBranding && (logoUrl !== (client.logo_url ?? "") || brandColor !== (client.brand_color ?? ""))) {
                 fields.branding = { logoUrl, brandColor };

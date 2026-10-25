@@ -10,6 +10,7 @@ def _args(**kwargs):
     kwargs.setdefault("mtls_thumbprint", None)
     kwargs.setdefault("logo_url", None)
     kwargs.setdefault("brand_color", None)
+    kwargs.setdefault("embed_origin", None)
     return cli.argparse.Namespace(**kwargs)
 
 
@@ -176,3 +177,43 @@ async def test_list_pools(db_session, monkeypatch):
 
     result = await db_session.execute(select(UserPool).where(UserPool.name == "acme"))
     assert result.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_register_client_with_embed_origins(db_session, monkeypatch):
+    monkeypatch.setattr(cli, "async_session_factory", lambda: db_session)
+
+    await cli.register_client(
+        _args(
+            client_id="cli-embed",
+            type="public",
+            redirect_uri=["https://app.example.com/cb"],
+            grant_type=["authorization_code", "refresh_token"],
+            scope="profile",
+            application_type="web",
+            secret=None,
+            embed_origin=["https://App.example.com/", "http://localhost:3000"],
+        )
+    )
+
+    client = (await db_session.execute(select(Client).where(Client.client_id == "cli-embed"))).scalar_one()
+    assert client.embed_origins == ["https://app.example.com", "http://localhost:3000"]
+
+
+@pytest.mark.asyncio
+async def test_register_client_rejects_a_non_origin_embed_value(db_session, monkeypatch):
+    monkeypatch.setattr(cli, "async_session_factory", lambda: db_session)
+
+    with pytest.raises(SystemExit):
+        await cli.register_client(
+            _args(
+                client_id="cli-embed-bad",
+                type="public",
+                redirect_uri=[],
+                grant_type=["authorization_code"],
+                scope="",
+                application_type="web",
+                secret=None,
+                embed_origin=["http://not-local.example.com"],
+            )
+        )

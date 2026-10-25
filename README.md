@@ -59,6 +59,7 @@ OAuth 2.1 / OIDC is a wire protocol (HTTP + JSON + JWT), not a Python library. A
 - **Self-service signup, password recovery, and email verification** — with admin-managed users as an alternative, toggled per client
 - **Passkey (WebAuthn) login** alongside password + TOTP, not instead of it
 - **Embeddable popup widget** (`auth-widget.js`) so a site can trigger login/signup from its own styled button without a full-page redirect, plus optional per-client branding (logo, color) on the hosted form itself — see [§4](#4-making-it-feel-embedded-the-popup-widget)
+- **Embedded sign-in in the application's own design** (`auth-elements.js`) — login and signup shown inside a site's own page and styled with its colors, font and corner radius, while the form itself stays on this service's origin so the password never reaches the site's code — see [§6](#6-embedded-sign-in-in-your-own-design-auth-elements)
 - **Per-application users, optional login groups** — every account belongs to the application it was created through, and applications are isolated from each other by default. Put two or more in a *login group* and they share one identity (SSO across your own apps). Optional [Postgres Row-Level Security](#row-level-security) acts as a database-level backstop — see [Applications, users, and login groups](#applications-users-and-login-groups)
 - **User profiles** — first and last name (required at self-signup), plus an optional username (unique per application) and phone number
 - **Per-application sign-in timeout and logout** — a website can set how long a sign-in lasts before people must log in again (default 7 days; APIs, MCP clients and AI assistants are left on the standard rules), and a logout endpoint signs a user out of that one application without touching the others — see [§5](#5-sign-in-timeout-and-logout)
@@ -253,7 +254,7 @@ opt-in, not a breaking change on upgrade.
 | `GET /.well-known/oauth-authorization-server` | The same document under its RFC 8414 path — several MCP clients probe this one first |
 | `GET /.well-known/oauth-protected-resource` | Protected Resource Metadata (RFC 9728), per `resource=` query param |
 | `GET /jwks.json` | Public signing keys, `kid`-tagged |
-| `GET /authorize` | Authorization Code + PKCE entry point |
+| `GET /authorize` | Authorization Code + PKCE entry point; with `response_mode=web_message`, the embedded sign-in ([§6](#6-embedded-sign-in-in-your-own-design-auth-elements)) |
 | `GET`/`POST /login`, `GET`/`POST /signup`, `POST /consent` | Login, signup, and consent-screen pages/submissions |
 | `POST /token` | Code exchange, refresh, and `client_credentials` grant |
 | `POST /register` | Dynamic Client Registration (RFC 7591) |
@@ -509,6 +510,70 @@ https://auth.yourdomain.com/logout?client_id=your-app&post_logout_redirect_uri=h
 The user is identified by the auth service's own session cookie and sent back to `post_logout_redirect_uri` with `state` appended. That URL must be listed under the application's *After-logout URLs*; an unlisted one is rejected with `400`. Leave the parameter out and the response is the same JSON as above.
 
 Either form also revokes every refresh token this application holds for that user, on all their devices. [`examples/website_bff`](examples/website_bff) shows both halves: renewing an expired access token, and calling `/logout`.
+
+### 6. Embedded sign-in in your own design (Auth Elements)
+
+Shows this service's login and signup **inside your own page**, styled to match it, with no redirect and no popup. `app/static/js/auth-elements.js` (served at `<issuer>/static/js/auth-elements.js`, no build step) puts the form in an iframe served from this service's origin. Your page sets the look; the password is typed into this service's page, so your page's scripts can never read it. What comes back is a one-time authorization code, which you exchange at `/token` as usual.
+
+**1. Allow your site to embed it.** In the admin console, open the application → *Manage* → **Embed origins** and add your site's origin, one per line: `https://app.example.com` (no path). https only, except `http://localhost` for development. From the CLI: `register-client ... --embed-origin https://app.example.com`. Clients that register themselves (DCR, CIMD) can't be embedded at all.
+
+**2. Put it on your page.**
+
+```html
+<div id="sign-in"></div>
+<script src="https://auth.yourdomain.com/static/js/auth-elements.js"></script>
+<script>
+  const auth = AuthElements({
+    clientId: "your-app",
+    resource: "https://api.yourdomain.com",
+    scope: "openid profile email",
+    appearance: {
+      colorPrimary: "#ff5c8a",
+      colorBackground: "#1c1433",   // match the card the form sits in
+      colorInputBackground: "#2a2045",
+      colorText: "#f5f0ff",
+      borderRadius: "14px",
+      fontFamily: "Inter, sans-serif",
+      theme: "dark",
+    },
+  });
+
+  const signIn = auth.create("login");             // or auth.create("signup")
+  signIn.on("success", async ({ code, codeVerifier }) => {
+    await fetch("/api/auth/complete", {              // your backend
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, codeVerifier }),
+    });
+    location.reload();
+  });
+  signIn.on("error", (err) => console.error(err));
+  signIn.mount("#sign-in");
+</script>
+```
+
+**3. Exchange the code on your backend**, without `redirect_uri` (or with your page's origin as `redirect_uri`):
+
+```bash
+curl -X POST https://auth.yourdomain.com/token \
+  -d grant_type=authorization_code -d client_id=your-app \
+  -d code=THE_CODE -d code_verifier=THE_VERIFIER
+  # confidential clients add: -d client_secret=...
+```
+
+To keep the PKCE verifier on your server instead of in the browser, generate the challenge there and pass it in: `auth.create("login", { codeChallenge })`. `success` then carries only the code.
+
+**Appearance options** (anything else is ignored, and each value is checked against a strict pattern, so arbitrary CSS can't be injected): `colorPrimary`, `colorPrimaryText`, `colorBackground`, `colorInputBackground`, `colorText`, `colorTextSecondary`, `colorBorder`, `colorDanger`, `fontFamily` (unquoted family names), `borderRadius` (`px`/`rem`/`em`), and `theme` (`"light"` or `"dark"`).
+
+**What happens under the hood**
+
+- The SDK opens `/authorize` in the iframe with `response_mode=web_message`, your page's `origin`, a random `frame_id`, `state`, and a PKCE challenge. `/authorize` refuses an `origin` that isn't one of the application's embed origins.
+- Embed pages are served with `Content-Security-Policy: frame-ancestors <your origin>`, so browsers show them only inside your site. Every other page here still refuses all framing.
+- The page in the frame sends `auth-elements:ready`, then `auth-elements:resize` messages so the iframe always fits its content. When sign-in finishes, it sends `auth-elements:success` with the code. Each message goes to your origin only, and the SDK accepts it only from its own iframe, with its own `frame_id` and the `state` it sent.
+- No consent screen is shown in an embed. Only an admin can enable embedding, so these are your own applications. The consent is recorded as granted.
+- Wrong passwords, 2FA codes and the signup form all stay inside the frame. Passkeys work too: the SDK allows WebAuthn in the iframe. *Forgot password?* opens in a new tab.
+
+**Good to know:** browsers block cookies inside a cross-site iframe, so automatic single sign-on between your applications doesn't happen inside an embed. Each application asks for credentials once. Where SSO matters, keep using the redirect ([§3](#3-for-a-website-the-bff-pattern)) or the popup ([§4](#4-making-it-feel-embedded-the-popup-widget)). Both work exactly as before, and an application can offer either alongside the embed.
 
 ## Architecture
 

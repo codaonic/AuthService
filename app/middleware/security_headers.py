@@ -8,13 +8,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     Framing is refused outright: the consent page's "Allow" button must never
     be clickable inside someone else's invisible iframe (clickjacking). The
     popup widget opens a window, not a frame, so it's unaffected.
+
+    The one exception is an embedded sign-in page (app/oidc/embed.py), which
+    sets its own `frame-ancestors` naming the single origin allowed to frame
+    it -- X-Frame-Options can't express that, so it is left off there.
     """
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         headers = response.headers
-        headers.setdefault("X-Frame-Options", "DENY")
-        headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        csp = headers.get("Content-Security-Policy", "")
+        if "frame-ancestors" not in csp:
+            headers["X-Frame-Options"] = "DENY"
+            headers["Content-Security-Policy"] = f"{csp}; frame-ancestors 'none'" if csp else "frame-ancestors 'none'"
         headers.setdefault("X-Content-Type-Options", "nosniff")
         headers.setdefault("Referrer-Policy", "no-referrer")
         if request.url.scheme == "https":
