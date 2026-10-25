@@ -2,6 +2,8 @@ import stat
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from joserfc import jwt
+from joserfc.jwk import KeySet
 
 from tests.helpers import (
     create_client,
@@ -333,6 +335,69 @@ async def test_revoke_then_refresh_fails(client, db_session):
         },
     )
     assert refresh_resp.status_code == 400
+
+
+async def _code_to_tokens(client, db_session):
+    verifier, challenge = make_pkce_pair()
+    code = await _run_authorize_to_code(client, db_session, verifier, challenge)
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "code_verifier": verifier,
+        "client_id": "test-client",
+        "redirect_uri": REDIRECT_URI,
+    }
+    resp = await client.post("/token", data=data)
+    assert resp.status_code == 200
+    return data, resp.json()
+
+
+@pytest.mark.asyncio
+async def test_authorization_code_works_only_once(client, db_session):
+    data, _ = await _code_to_tokens(client, db_session)
+    replay = await client.post("/token", data=data)
+    assert replay.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_refresh_cannot_switch_to_another_api(client, db_session):
+    """A refresh token renews access to the API it was issued for only."""
+    _, tokens = await _code_to_tokens(client, db_session)
+    resp = await client.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": tokens["refresh_token"],
+            "client_id": "test-client",
+            "resource": "https://someone-elses-api.example.com",
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_the_original_api(client, db_session):
+    _, tokens = await _code_to_tokens(client, db_session)
+    resp = await client.post(
+        "/token",
+        data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": "test-client"},
+    )
+    assert resp.status_code == 200
+    claims = jwt.decode(resp.json()["access_token"], KeySet.import_key_set((await client.get("/jwks.json")).json()))
+    assert claims.claims["aud"] == RESOURCE
+
+
+@pytest.mark.asyncio
+async def test_userinfo_accepts_its_own_token_and_rejects_a_tampered_one(client, db_session):
+    _, tokens = await _code_to_tokens(client, db_session)
+    good = await client.get("/userinfo", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    assert good.status_code == 200
+    assert good.json()["email"] == "alice@example.com"
+
+    header, payload, signature = tokens["access_token"].split(".")
+    tampered = f"{header}.{payload}.{signature[:-4]}AAAA"
+    bad = await client.get("/userinfo", headers={"Authorization": f"Bearer {tampered}"})
+    assert bad.status_code == 401
 
 
 @pytest.mark.asyncio

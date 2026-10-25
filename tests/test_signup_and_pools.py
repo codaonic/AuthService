@@ -217,3 +217,26 @@ async def test_existing_session_not_reused_across_isolated_pools(client, db_sess
     # Must NOT skip straight to consent using the tenant-a session -- back to login/signup.
     assert resp_b.status_code == 200
     assert "Sign in" in resp_b.text
+
+
+@pytest.mark.asyncio
+async def test_signup_refuses_email_already_used_by_another_app_in_the_login_group(client, db_session):
+    """A second account with the same email in one login group would make
+    the original owner's login ambiguous (and break it)."""
+    await create_client(db_session, client_id="acme-web", redirect_uris=(REDIRECT_URI,), pool_name="acme")
+    await create_user(db_session, email="alice@example.com", password="s3cret-password!", client_id="acme-web")
+    flow_id = await _start_flow(client, db_session, client_id="acme-mobile", pool_name="acme")
+
+    resp = await client.post(
+        "/signup",
+        data={
+            "flow_id": flow_id,
+            "first_name": "Mallory",
+            "last_name": "Example",
+            "email": "alice@example.com",
+            "password": "another-password!",
+            "confirm_password": "another-password!",
+        },
+    )
+    assert resp.status_code == 400
+    assert "already exists" in resp.text

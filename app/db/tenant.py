@@ -27,7 +27,9 @@ async def set_tenant_client(db: AsyncSession, client_id: str) -> None:
         return
     if not isinstance(client_id, str):
         raise TypeError(f"client_id must be a str, got {type(client_id)!r}")
-    await db.execute(text(f"SET LOCAL {_CLIENT_VAR} = '{client_id}'"))
+    # set_config(..., true) is SET LOCAL with a bound value -- a client_id is
+    # caller-supplied text and must never be spliced into the SQL.
+    await db.execute(text("SELECT set_config(:name, :value, true)"), {"name": _CLIENT_VAR, "value": client_id})
 
 
 async def set_tenant_pool(db: AsyncSession, pool_id: uuid.UUID) -> None:

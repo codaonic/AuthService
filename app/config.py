@@ -147,6 +147,13 @@ class Settings(BaseSettings):
     # check would let anyone self-declare a verified certificate.
     mtls_trusted_proxy_secret: str = ""
 
+    # The most a client that registers itself (DCR or CIMD) may ask for --
+    # anything else it names is dropped. Anyone can self-register, so letting
+    # such a client choose its own scopes would let it mint tokens carrying
+    # whatever scope a resource server checks for. Widen this (space-separated)
+    # if your MCP servers define their own scopes.
+    self_registration_scopes: str = "openid profile email offline_access"
+
 
 @lru_cache
 def get_settings() -> Settings:

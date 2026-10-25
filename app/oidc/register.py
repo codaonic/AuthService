@@ -10,10 +10,14 @@ from app.config import get_settings
 from app.db.models import Client
 from app.db.session import get_db
 from app.middleware.rate_limit import limiter
+from app.oidc.scope import self_registration_scope
 
 router = APIRouter()
 
-ALLOWED_GRANT_TYPES = {"authorization_code", "refresh_token", "client_credentials"}
+# No client_credentials: anyone can call /register, so a self-registered
+# client must only ever get tokens on behalf of a user who signed in through
+# it, never on its own authority. Service clients are added by an admin.
+ALLOWED_GRANT_TYPES = {"authorization_code", "refresh_token"}
 
 
 class ClientRegistrationRequest(BaseModel):
@@ -50,7 +54,7 @@ async def register_client(
         client_type="public" if is_public else "confidential",
         redirect_uris=body.redirect_uris,
         grant_types=body.grant_types,
-        allowed_scope=body.scope,
+        allowed_scope=self_registration_scope(body.scope),
         registration_method="dcr",
         application_type=body.application_type,
     )

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_event
 from app.db.models import Client
+from app.oidc.scope import self_registration_scope
 
 logger = logging.getLogger("app.oidc.cimd")
 
@@ -90,7 +91,7 @@ async def resolve_cimd_client(db: AsyncSession, client_id: str) -> Client:
     grant_types = [g for g in doc.get("grant_types", ["authorization_code"]) if g in ALLOWED_GRANT_TYPES]
     if not grant_types:
         grant_types = ["authorization_code"]
-    scope = doc.get("scope", "") if isinstance(doc.get("scope"), str) else ""
+    scope = self_registration_scope(doc.get("scope", "") if isinstance(doc.get("scope"), str) else "")
     application_type = doc.get("application_type", "native")
     client_name = doc.get("client_name") if isinstance(doc.get("client_name"), str) else None
 

@@ -16,7 +16,7 @@ from app.audit import client_ip, log_event, record_failed_login
 from app.auth.mfa import verify_totp
 from app.auth.password_reset import create_email_verification_token
 from app.auth.lockout import clear_failures, is_locked, record_failure
-from app.auth.passwords import hash_password, verify_password
+from app.auth.passwords import burn_password_check, hash_password, verify_password
 from app.auth.sessions import app_auth_time, get_session_user, sign_in
 from app.config import get_settings
 from app.db.contacts import upsert_contact
@@ -277,6 +277,8 @@ async def login(
         )
 
     user = await _find_user_for_client(db, email, client)
+    if user is None:
+        burn_password_check(password)
 
     if user is None or user.status != "active" or not verify_password(password, user.password_hash):
         await record_failure(redis, "user", email)
@@ -401,10 +403,9 @@ async def signup(
     if len(password) < MIN_PASSWORD_LENGTH:
         return error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
-    existing = await db.execute(
-        select(User).where(User.email == email, User.client_id == client.client_id)
-    )
-    if existing.scalar_one_or_none() is not None:
+    # Across the whole login group, not just this app: a second account with
+    # the same email there would make the owner's own login ambiguous.
+    if await _find_user_for_client(db, email, client) is not None:
         return error("An account with that email already exists")
 
     user = User(

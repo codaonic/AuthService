@@ -43,17 +43,22 @@ async def token_endpoint(
     client = await get_and_validate_client(db, client_id, client_secret, request)
     if grant_type not in client.grant_types:
         raise HTTPException(400, "unauthorized_client")
+    if grant_type == "client_credentials" and client.registration_method in ("dcr", "cimd"):
+        # Covers clients registered before /register stopped offering it.
+        raise HTTPException(400, "unauthorized_client")
     session_ttl = client.session_ttl_seconds
     auth_time: int | None = None
 
     if grant_type == "authorization_code":
         if not code:
             raise HTTPException(400, "invalid_request")
+        # Read and delete in one step, so two concurrent requests can't both
+        # redeem the same code.
         key = f"{CODE_KEY_PREFIX}{code}"
-        auth_code = await redis.hgetall(key)
+        async with redis.pipeline(transaction=True) as pipe:
+            auth_code, _ = await pipe.hgetall(key).delete(key).execute()
         if not auth_code or auth_code["client_id"] != client_id:
             raise HTTPException(400, "invalid_grant")
-        await redis.delete(key)
 
         if redirect_uri and redirect_uri != auth_code["redirect_uri"]:
             raise HTTPException(400, "invalid_grant")
@@ -76,7 +81,11 @@ async def token_endpoint(
             raise HTTPException(400, "invalid_request")
         rt = await validate_and_rotate_refresh_token(db, redis, refresh_token, client_id)
         subject = rt["user_id"]
-        resource = resource or rt["resource"]
+        # A refresh token only renews access to the API it was issued for --
+        # never a way to get a token for some other API.
+        if resource and resource != rt["resource"]:
+            raise HTTPException(400, "invalid_target")
+        resource = rt["resource"]
         scope = resolve_scope(scope, rt["scope"])
         auth_time = rt["auth_time"]
         # The application's sign-in timeout has passed (it may have been

@@ -74,11 +74,12 @@ async def validate_and_rotate_refresh_token(
 ) -> dict:
     token_hash = _hash_token(refresh_token)
     key = f"{REFRESH_KEY_PREFIX}{token_hash}"
-    data = await redis.hgetall(key)
+    # Read and delete in one step: a refresh token is single-use, even when
+    # two requests race with it.
+    async with redis.pipeline(transaction=True) as pipe:
+        data, _ = await pipe.hgetall(key).delete(key).execute()
     if not data or data["client_id"] != client_id:
         raise HTTPException(400, "invalid_grant")
-
-    await redis.delete(key)
 
     row = await db.get(RefreshToken, uuid.UUID(data["row_id"]))
     if row is not None:
