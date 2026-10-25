@@ -55,7 +55,10 @@ services:
     build: .
     container_name: auth_backend
     restart: unless-stopped
-    ports: ["${HOST_PORT:-8113}:8113"]
+    # Loopback-only, like postgres/redis: reachable from this machine (and
+    # by a reverse proxy over nginx-proxy-net), never directly from the
+    # network, so nothing can bypass the proxy's HTTPS.
+    ports: ["127.0.0.1:${HOST_PORT:-8113}:8113"]
     env_file:
       - .env
     environment:

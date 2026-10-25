@@ -147,6 +147,14 @@ Open `/admin` and you'll land on a setup screen to create your own admin email/p
 
 The app itself is reachable at `http://localhost:${HOST_PORT:-8113}` on the host (or just internally at `auth_backend:8113` on `nginx-proxy-net` for your reverse proxy) — OAuth surface at root, setup UI at `/admin`, API docs at `/docs`. Point your reverse proxy's `proxy_pass` at `http://auth_backend:8113`.
 
+The container runs as an unprivileged user (uid `10001`), so the signing-key directory it mounts must belong to that user and stay owner-only — anyone who can read those files can sign valid tokens:
+
+```bash
+sudo chown -R 10001:10001 data/signing_keys && sudo chmod 700 data/signing_keys && sudo chmod 600 data/signing_keys/*
+```
+
+On a public deployment also set `API_DOCS_ENABLED=false` in `.env` to hide `/docs`.
+
 Migrations are **not** automatic — always run `alembic upgrade head` after `up` on a schema change or a fresh volume. Both Postgres and Redis have `restart: unless-stopped`, so a crash self-heals rather than sitting dead until someone notices.
 
 > **Changed `DB_USER`/`DB_PASSWORD` in `.env` after the first `docker compose up`?** Postgres's official image only applies `POSTGRES_USER`/`POSTGRES_PASSWORD` the *first* time it initializes an empty data directory — editing `.env` afterward does nothing on its own, because `./data/postgres` already has a role/password baked in from that first run. You'll see `password authentication failed` from the app even though `.env` looks correct. Fix it by either wiping the volume for a truly fresh start (only if `./data/postgres` has nothing you need):

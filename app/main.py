@@ -10,6 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.admin import api as admin_api
 from app.admin.seed import ensure_default_admin
+from app.config import get_settings
 from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -36,7 +37,14 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Auth Service", lifespan=lifespan)
+_docs = get_settings().api_docs_enabled
+app = FastAPI(
+    title="Auth Service",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

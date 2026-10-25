@@ -154,6 +154,10 @@ class Settings(BaseSettings):
     # if your MCP servers define their own scopes.
     self_registration_scopes: str = "openid profile email offline_access"
 
+    # FastAPI's interactive API docs at /docs, /redoc and /openapi.json.
+    # Handy locally; set API_DOCS_ENABLED=false on a public deployment.
+    api_docs_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:
