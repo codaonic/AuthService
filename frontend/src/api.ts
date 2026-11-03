@@ -130,14 +130,46 @@ export interface AppUser {
   email_verified: boolean;
 }
 
+export type Outcome = "success" | "warning" | "error";
+export type OutcomeCounts = Record<Outcome, number>;
+
 export interface AuditEvent {
+  id: string | null;
+  ts: number;
   time: string;
   level: string;
+  outcome: Outcome;
   event: string;
   extra: Record<string, unknown>;
+}
+
+export interface HeldEmailLink {
+  id: string;
+  kind: "password_reset" | "email_verification";
+  email: string;
+  link: string;
+  reason: "smtp_not_configured" | "smtp_failed";
+  created: number;
+  expires: number;
+}
+
+export interface DayCounts extends OutcomeCounts {
+  /** Start of the day, seconds since the epoch (UTC). */
+  day: number;
 }
 
 export interface DashboardData {
   counts: { pools: number; clients: number; resources: number; users: number };
   recent: AuditEvent[];
+  week: { totals: OutcomeCounts; series: DayCounts[] };
+  email_links: { smtp_configured: boolean; links: HeldEmailLink[] };
+}
+
+export interface Analytics {
+  days: number;
+  totals: OutcomeCounts;
+  series: DayCounts[];
+  applications: (OutcomeCounts & { client_id: string; client_name: string | null; total: number })[];
+  users: (OutcomeCounts & { user: string; total: number })[];
+  events: { event: string; outcome: Outcome; count: number }[];
 }

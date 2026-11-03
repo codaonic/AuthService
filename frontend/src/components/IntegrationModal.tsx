@@ -173,7 +173,7 @@ export function IntegrationModal({
           >
             {availableClients.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.client_name || c.client_id} ({c.client_type}, {c.pool_name})
+                {c.client_name || c.client_id} ({c.client_type}, {c.pool_name ?? "standalone"})
               </option>
             ))}
             <option value="">Generic Reference (Placeholder values)</option>

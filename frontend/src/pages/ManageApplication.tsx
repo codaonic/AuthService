@@ -105,6 +105,7 @@ export function ManageApplication({
   client,
   allClients,
   onClose,
+  onUpdated,
   onChanged,
   onToggleEnabled,
   onDelete,
@@ -112,7 +113,9 @@ export function ManageApplication({
   client: Client;
   allClients: Client[];
   onClose: () => void;
-  /** Reloads the application list, which hands this panel the fresh `client`. */
+  /** Replaces this application in the list with what the server returned. */
+  onUpdated: (client: Client) => void;
+  /** Reloads the whole list, for changes that touch other applications too. */
   onChanged: () => Promise<unknown>;
   onToggleEnabled: () => Promise<void>;
   onDelete: () => Promise<void>;
@@ -128,7 +131,7 @@ export function ManageApplication({
   const { show } = useToast();
   useFocusTrap(panelRef);
 
-  // After a save the list reloads; start again from what the server stored
+  // After a save the list updates; start again from what the server stored
   // (it trims URLs, normalizes origins, upper-cases the thumbprint...).
   useEffect(() => {
     if (resetAfterReload.current) {
@@ -169,41 +172,30 @@ export function ManageApplication({
 
   const save = async () => {
     const saved = draftFrom(client);
-    const calls: Promise<unknown>[] = [];
-    if (changed.has("general") || changed.has("signin") || draft.scope !== saved.scope || draft.embedOrigins !== saved.embedOrigins) {
-      calls.push(
-        api.patch(`/clients/${client.client_id}`, {
-          client_name: draft.name,
-          redirect_uris: draft.redirectUris,
-          scope: draft.scope,
-          session_ttl_seconds: ttlSeconds(draft),
-          post_logout_redirect_uris: draft.postLogoutUris,
-          embed_origins: draft.embedOrigins,
-          ...(sameSet(draft.grants, saved.grants) ? {} : { grant_types: draft.grants }),
-        }),
-      );
-    }
-    if (draft.logoUrl !== saved.logoUrl || draft.brandColor !== saved.brandColor) {
-      calls.push(api.post(`/clients/${client.client_id}/branding`, { logo_url: draft.logoUrl, brand_color: draft.brandColor }));
-    }
-    if (draft.thumbprint !== saved.thumbprint) {
-      calls.push(api.post(`/clients/${client.client_id}/mtls`, { thumbprint: draft.thumbprint }));
-    }
-
     setSaving(true);
     setSaveError(null);
-    const results = await Promise.allSettled(calls);
-    const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-    if (failure) {
-      // Whatever did save shows up as saved after the reload; the rest stays
-      // in the form with the reason next to the Save button.
-      setSaveError(failure.reason instanceof ApiError ? failure.reason.message : "Couldn't save your changes");
-    } else {
+    try {
+      // One request for every field, whichever section it's in.
+      const updated = await api.patch<Client>(`/clients/${client.client_id}`, {
+        client_name: draft.name,
+        redirect_uris: draft.redirectUris,
+        scope: draft.scope,
+        session_ttl_seconds: ttlSeconds(draft),
+        post_logout_redirect_uris: draft.postLogoutUris,
+        embed_origins: draft.embedOrigins,
+        logo_url: draft.logoUrl,
+        brand_color: draft.brandColor,
+        mtls_thumbprint: draft.thumbprint,
+        ...(sameSet(draft.grants, saved.grants) ? {} : { grant_types: draft.grants }),
+      });
       resetAfterReload.current = true;
+      onUpdated(updated);
       show("Changes saved");
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Couldn't save your changes");
+    } finally {
+      setSaving(false);
     }
-    await onChanged();
-    setSaving(false);
   };
 
   // On/off settings apply as soon as they're flipped.
@@ -211,8 +203,7 @@ export function ManageApplication({
   const flip = async (endpoint: string, done: string) => {
     setFlipping(endpoint);
     try {
-      await api.post(`/clients/${client.client_id}/${endpoint}`);
-      await onChanged();
+      onUpdated(await api.post<Client>(`/clients/${client.client_id}/${endpoint}`));
       show(done);
     } catch (err) {
       show(err instanceof ApiError ? err.message : "Couldn't change that setting");

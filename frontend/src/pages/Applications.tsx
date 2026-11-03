@@ -174,16 +174,19 @@ export function Applications() {
     }
   };
 
+  // Setting changes return the updated application, so the list is patched
+  // in place instead of fetched again.
+  const replaceClient = (updated: Client) =>
+    setClients((prev) => prev?.map((c) => (c.client_id === updated.client_id ? { ...c, ...updated } : c)) ?? prev);
+
   const toggleEnabled = async (client: Client) => {
-    await api.post(`/clients/${client.client_id}/toggle-enabled`);
+    replaceClient(await api.post<Client>(`/clients/${client.client_id}/toggle-enabled`));
     show(client.enabled ? `${displayName(client)} disabled` : `${displayName(client)} re-enabled`);
-    load();
   };
 
   const toggleSignup = async (client: Client) => {
-    await api.post(`/clients/${client.client_id}/toggle-signup`);
+    replaceClient(await api.post<Client>(`/clients/${client.client_id}/toggle-signup`));
     show(client.allow_signup ? `Signup turned off for ${displayName(client)}` : `Signup turned on for ${displayName(client)}`);
-    load();
   };
 
   const deleteClient = async (client: Client) => {
@@ -529,6 +532,7 @@ export function Applications() {
           client={managing}
           allClients={clients ?? []}
           onClose={() => setManaging(null)}
+          onUpdated={replaceClient}
           onChanged={load}
           onToggleEnabled={() => toggleEnabled(managing)}
           onDelete={() => deleteClient(managing)}

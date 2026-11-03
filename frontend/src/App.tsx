@@ -10,6 +10,7 @@ import { Resources } from "./pages/Resources";
 import { Users } from "./pages/Users";
 import { LoginGroups } from "./pages/LoginGroups";
 import { AuditLog } from "./pages/AuditLog";
+import { Analytics } from "./pages/Analytics";
 import { Account } from "./pages/Account";
 
 function RequireAdmin({ children }: { children: JSX.Element }) {
@@ -89,6 +90,16 @@ function AppRoutes() {
           <RequireAdmin>
             <Layout>
               <LoginGroups />
+            </Layout>
+          </RequireAdmin>
+        }
+      />
+      <Route
+        path="/admin/analytics"
+        element={
+          <RequireAdmin>
+            <Layout>
+              <Analytics />
             </Layout>
           </RequireAdmin>
         }

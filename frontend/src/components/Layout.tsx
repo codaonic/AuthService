@@ -6,6 +6,7 @@ import {
   AccountIcon,
   ActivityIcon,
   AppsIcon,
+  ChartIcon,
   DashboardIcon,
   GroupsIcon,
   MoonIcon,
@@ -31,6 +32,7 @@ const NAV_GROUPS = [
   {
     label: "System",
     items: [
+      { to: "/admin/analytics", label: "Analytics", icon: ChartIcon },
       { to: "/admin/audit", label: "Activity log", icon: ActivityIcon },
       { to: "/admin/account", label: "Account", icon: AccountIcon },
     ],
