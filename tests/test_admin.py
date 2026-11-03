@@ -366,6 +366,52 @@ async def test_edit_client(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_edit_client_grant_types(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", client_type="confidential", client_secret="s3cret")
+    base = {"client_name": "Acme", "redirect_uris": "https://acme.example.com/cb", "scope": ""}
+
+    resp = await client.patch(
+        "/admin/api/clients/acme-web",
+        json={**base, "grant_types": ["client_credentials", "authorization_code"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["grant_types"] == ["authorization_code", "client_credentials"]
+
+    # Leaving grant_types out keeps them.
+    resp = await client.patch("/admin/api/clients/acme-web", json=base)
+    assert resp.json()["grant_types"] == ["authorization_code", "client_credentials"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "grant_types",
+    [[], ["password"], ["refresh_token"]],
+)
+async def test_edit_client_rejects_invalid_grant_types(client, db_session, grant_types):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web")
+
+    resp = await client.patch(
+        "/admin/api/clients/acme-web",
+        json={"redirect_uris": "https://acme.example.com/cb", "grant_types": grant_types},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_edit_client_public_app_cannot_talk_to_server_directly(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-mobile", client_type="public")
+
+    resp = await client.patch(
+        "/admin/api/clients/acme-mobile",
+        json={"redirect_uris": "https://acme.example.com/cb", "grant_types": ["authorization_code", "client_credentials"]},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_delete_client_is_a_real_delete(client, db_session):
     await _login_admin(client, db_session)
     await create_client(db_session, client_id="acme-web")

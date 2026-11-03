@@ -115,6 +115,23 @@ def _embed_origins(value: str) -> list[str]:
         raise HTTPException(400, str(exc)) from exc
 
 
+_GRANT_TYPES = ("authorization_code", "refresh_token", "client_credentials")
+
+
+def _validated_grant_types(grant_types: list[str], client: Client) -> list[str]:
+    """What an existing application may do, as changed from its Manage page."""
+    if not grant_types or any(g not in _GRANT_TYPES for g in grant_types):
+        raise HTTPException(400, "Choose at least one thing this application is allowed to do")
+    if "refresh_token" in grant_types and "authorization_code" not in grant_types:
+        raise HTTPException(400, "Keeping people signed in needs them to be able to log in")
+    if "client_credentials" in grant_types and (
+        client.client_type == "public" or client.registration_method in ("dcr", "cimd")
+    ):
+        # No secret to prove it's really this app -- see app/oidc/token.py.
+        raise HTTPException(400, "Only an application that keeps a secret can talk to the server directly")
+    return [g for g in _GRANT_TYPES if g in grant_types]
+
+
 def _user_json(user: User, client_name: str | None, pool_name: str | None) -> dict:
     return {
         "id": str(user.id),
@@ -621,6 +638,7 @@ class EditClientBody(BaseModel):
     session_ttl_seconds: int | None = None
     post_logout_redirect_uris: str | None = None
     embed_origins: str | None = None
+    grant_types: list[str] | None = None
 
 
 @router.patch("/clients/{client_id}")
@@ -640,6 +658,8 @@ async def api_edit_client(
         client.post_logout_redirect_uris = _split_lines(body.post_logout_redirect_uris)
     if body.embed_origins is not None:
         client.embed_origins = _embed_origins(body.embed_origins)
+    if body.grant_types is not None:
+        client.grant_types = _validated_grant_types(body.grant_types, client)
     await db.commit()
     pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
     return _client_json(client, pool.name if pool else "")
