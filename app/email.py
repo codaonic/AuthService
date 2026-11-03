@@ -88,28 +88,32 @@ async def dismiss_held_link(redis: Redis, held_id: str) -> None:
         await pipe.execute()
 
 
-async def _send_or_hold(redis: Redis, kind: str, to: str, link: str, ttl_seconds: int, subject: str, body: str) -> None:
+async def _send_or_hold(redis: Redis, kind: str, to: str, link: str, ttl_seconds: int, subject: str, body: str) -> bool:
+    """True if the email went out, False if its link is held for the console."""
     if not is_smtp_configured():
         await _hold_link(redis, kind, to, link, ttl_seconds, "smtp_not_configured")
-        return
+        return False
     try:
         await send_email(to, subject, body)
     except Exception:
         logger.exception("Failed to send the %s email to %s", kind, to)
         await _hold_link(redis, kind, to, link, ttl_seconds, "smtp_failed")
+        return False
+    return True
 
 
-async def send_password_reset_email(redis: Redis, to: str, token: str) -> str:
+async def send_password_reset_email(redis: Redis, to: str, token: str) -> bool:
     """Send a password reset link to the given email address.
 
     Best-effort: a delivery failure shouldn't surface to the caller --
     the response is always the same regardless of whether the email exists
     or the send succeeded, to avoid leaking either fact. A link that can't
     be emailed is held for the admin console instead (see _hold_link).
+    Returns whether it was emailed, for the console's own "send reset".
     """
     settings = get_settings()
     link = f"{settings.issuer.rstrip('/')}/reset-password?token={token}"
-    await _send_or_hold(
+    return await _send_or_hold(
         redis,
         "password_reset",
         to,
@@ -120,17 +124,16 @@ async def send_password_reset_email(redis: Redis, to: str, token: str) -> str:
         f"Reset it here (expires in {settings.password_reset_ttl_seconds // 60} minutes):\n{link}\n\n"
         f"If you didn't request this, you can ignore this email.",
     )
-    return link
 
 
-async def send_verification_email(redis: Redis, to: str, token: str) -> str:
+async def send_verification_email(redis: Redis, to: str, token: str) -> bool:
     """Best-effort -- see send_password_reset_email. Verification is
     informational here, not a login gate, so a failed send must not break
     signup or the resend flow.
     """
     settings = get_settings()
     link = f"{settings.issuer.rstrip('/')}/verify-email?token={token}"
-    await _send_or_hold(
+    return await _send_or_hold(
         redis,
         "email_verification",
         to,
@@ -140,4 +143,3 @@ async def send_verification_email(redis: Redis, to: str, token: str) -> str:
         f"Confirm your email address here (expires in "
         f"{settings.email_verification_ttl_seconds // 3600} hours):\n{link}",
     )
-    return link

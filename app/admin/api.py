@@ -1,5 +1,6 @@
 import logging
 import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -20,6 +21,7 @@ from app.config import get_settings
 from app.db.models import (
     DEFAULT_CLIENT_SESSION_TTL_SECONDS,
     AdminUser,
+    AuditEvent,
     Client,
     ClientAccessGrant,
     ClientRole,
@@ -357,7 +359,18 @@ async def api_dashboard(
 @router.get("/pools")
 async def api_list_pools(admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(UserPool).order_by(UserPool.name))
-    return [_pool_json(p) for p in result.scalars().all()]
+    # How many people each group has, in one query.
+    counts = dict(
+        (
+            await db.execute(
+                select(Client.user_pool_id, func.count(User.id))
+                .join(User, User.client_id == Client.client_id)
+                .where(Client.user_pool_id.is_not(None))
+                .group_by(Client.user_pool_id)
+            )
+        ).all()
+    )
+    return [{**_pool_json(p), "user_count": counts.get(p.id, 0)} for p in result.scalars().all()]
 
 
 class CreatePoolBody(BaseModel):
@@ -489,7 +502,19 @@ async def api_list_contacts(admin: AdminUser = Depends(require_admin), db: Async
 @router.get("/resources")
 async def api_list_resources(admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Resource).order_by(Resource.name))
-    return [_resource_json(r) for r in result.scalars().all()]
+    # Access tokens issued for each resource over the last 30 days, from the
+    # Activity log, in one query.
+    resource_col = AuditEvent.data["resource"].as_string()
+    issued = dict(
+        (
+            await db.execute(
+                select(resource_col, func.count())
+                .where(AuditEvent.event == "token_issued", AuditEvent.ts >= time.time() - 30 * 86400)
+                .group_by(resource_col)
+            )
+        ).all()
+    )
+    return [{**_resource_json(r), "tokens_30d": issued.get(r.resource_id, 0)} for r in result.scalars().all()]
 
 
 class CreateResourceBody(BaseModel):
@@ -1207,9 +1232,14 @@ async def api_toggle_user_status(
         await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
     log_event("user_" + user.status, user_id=str(user.id), email=user.email, admin_id=str(admin.id))
 
-    app_client = (await db.execute(select(Client).where(Client.client_id == user.client_id))).scalar_one_or_none()
-    pool = await db.get(UserPool, app_client.user_pool_id) if app_client and app_client.user_pool_id else None
-    return _user_json(user, app_client.client_name if app_client else user.client_id, pool.name if pool else None)
+    row = (
+        await db.execute(
+            select(Client.client_name, UserPool.name)
+            .outerjoin(UserPool, Client.user_pool_id == UserPool.id)
+            .where(Client.client_id == user.client_id)
+        )
+    ).first()
+    return _user_json(user, row[0] if row else user.client_id, row[1] if row else None)
 
 
 class EditUserBody(BaseModel):
@@ -1282,8 +1312,7 @@ async def _hard_delete_user(db: AsyncSession, redis: Redis, user: User) -> None:
         (Consent, Consent.user_id),
         (WebAuthnCredential, WebAuthnCredential.user_id),
     ]:
-        for row in (await db.execute(select(model).where(col == uid))).scalars().all():
-            await db.delete(row)
+        await db.execute(delete(model).where(col == uid))
     await revoke_all_sessions_for_user(redis, str(uid))
     await revoke_all_refresh_tokens_for_user(db, redis, str(uid))
     await db.delete(user)
@@ -1319,17 +1348,19 @@ async def api_sign_out_user(
         log_event("user_signed_out_by_admin", user_id=str(user.id), admin_id=str(admin.id))
 
 
-@router.post("/users/{user_id}/send-reset", status_code=204)
+@router.post("/users/{user_id}/send-reset")
 async def api_send_password_reset(
     user_id: str,
     admin: AdminUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
+    """`emailed` is false when the link is waiting on the Dashboard instead."""
     user = await db.get(User, uuid.UUID(user_id))
-    if user is not None:
-        token = await create_password_reset_token(redis, str(user.id))
-        await send_password_reset_email(redis, user.email, token)
+    if user is None:
+        raise HTTPException(404, "unknown_user")
+    token = await create_password_reset_token(redis, str(user.id))
+    return {"emailed": await send_password_reset_email(redis, user.email, token)}
 
 
 # --- Analytics ---

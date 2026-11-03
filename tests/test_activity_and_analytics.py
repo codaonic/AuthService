@@ -95,7 +95,7 @@ async def test_reset_link_without_smtp_is_held_for_the_console(client, db_sessio
     user = await create_user(db_session, email="ana@example.com")
 
     resp = await client.post(f"/admin/api/users/{user.id}/send-reset")
-    assert resp.status_code == 204
+    assert resp.json() == {"emailed": False}
 
     body = (await client.get("/admin/api/email-links")).json()
     assert body["smtp_configured"] is False
@@ -182,3 +182,55 @@ async def test_analytics_endpoint_names_applications(client, db_session):
     assert resp.status_code == 200
     [app_row] = resp.json()["applications"]
     assert app_row["client_id"] == "shop" and "client_name" in app_row
+
+
+@pytest.mark.asyncio
+async def test_pools_list_how_many_people_each_has(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="shop", pool_name="acme")
+    await create_client(db_session, client_id="blog", pool_name="acme")
+    await create_client(db_session, client_id="tool", pool_name="empty")
+    await create_user(db_session, email="ana@example.com", client_id="shop")
+    await create_user(db_session, email="bo@example.com", client_id="blog")
+
+    pools = {p["name"]: p["user_count"] for p in (await client.get("/admin/api/pools")).json()}
+    assert pools["acme"] == 2 and pools["empty"] == 0
+
+
+@pytest.mark.asyncio
+async def test_resources_list_tokens_issued_in_last_30_days(client, db_session):
+    await _login_admin(client, db_session)
+    await client.post("/admin/api/resources", json={"resource_id": "https://api.example.com", "name": "API"})
+    await audit.store_events(
+        db_session,
+        [
+            _event("token_issued", resource="https://api.example.com"),
+            _event("token_issued", resource="https://api.example.com"),
+            _event("token_issued", resource="https://api.example.com", ts=time.time() - 31 * 86400),
+        ],
+    )
+
+    [res] = (await client.get("/admin/api/resources")).json()
+    assert res["tokens_30d"] == 2
+
+
+@pytest.mark.asyncio
+async def test_send_reset_for_unknown_user_is_404(client, db_session):
+    await _login_admin(client, db_session)
+    resp = await client.post(f"/admin/api/users/{uuid.uuid4()}/send-reset")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_user_keeps_their_activity(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session)
+    user = await create_user(db_session, email="ana@example.com")
+    await audit.store_events(db_session, [_event("login_success", email="ana@example.com", user_id=str(user.id))])
+
+    resp = await client.delete(f"/admin/api/users/{user.id}")
+    assert resp.status_code == 204
+
+    events = (await client.get("/admin/api/audit", params={"q": "ana@example.com"})).json()
+    assert {e["event"] for e in events} >= {"login_success", "user_deleted"}
+    assert (await analytics(db_session, days=30, user="ana@example.com"))["totals"]["success"] >= 1

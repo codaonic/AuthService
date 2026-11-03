@@ -721,7 +721,7 @@ async def test_admin_send_password_reset(client, db_session, monkeypatch):
     user = await create_user(db_session, email="alice@example.com")
 
     resp = await client.post(f"/admin/api/users/{user.id}/send-reset")
-    assert resp.status_code == 204
+    assert resp.json() == {"emailed": True}
 
     send_mock.assert_awaited_once()
     assert send_mock.await_args.args[0] == "alice@example.com"
