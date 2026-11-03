@@ -2,25 +2,26 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Modal } from "../components/Modal";
 import { Badge } from "../components/Badge";
 import { Menu } from "../components/Menu";
+import { Switch } from "../components/Switch";
 import { CopyableId } from "../components/CopyableId";
 import { EmptyState } from "../components/EmptyState";
-import { PasswordInput } from "../components/PasswordInput";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { AppsIcon, PlusIcon } from "../components/Icons";
 import { IntegrationModal } from "../components/IntegrationModal";
-import { AccessGrant, api, ApiError, AppUser, Client, UserPage, UserRoleRow } from "../api";
-
-const GRANT_LABELS: Record<string, string> = {
-  authorization_code: "Let a person log in",
-  refresh_token: "Keep them signed in without repeating login",
-  client_credentials: "Talk directly to the server with no person involved",
-};
-
-const CLIENT_TYPE_LABELS: Record<string, string> = {
-  confidential: "Confidential — runs on your own server, can keep a secret safely",
-  public: "Public — runs in a browser or on a device, can't keep a secret safely",
-};
+import { LinkListInput } from "../components/LinkListInput";
+import { api, ApiError, Client } from "../api";
+import {
+  appendLine,
+  DurationUnit,
+  durationSeconds,
+  EmbedOriginsField,
+  GRANT_LABELS,
+  PostLogoutUrisField,
+  QuickRedirects,
+  SessionTimeoutField,
+} from "./applicationFields";
+import { displayName, ManageApplication } from "./ManageApplication";
 
 type Preset = "website" | "native" | "service";
 type Sharing = "shared" | "separate";
@@ -31,114 +32,6 @@ const PRESET_DEFAULTS: Record<Preset, { clientType: string; applicationType: str
   service: { clientType: "confidential", applicationType: "service", grants: ["client_credentials"] },
 };
 
-type DurationUnit = "minutes" | "hours" | "days";
-const UNIT_SECONDS: Record<DurationUnit, number> = { minutes: 60, hours: 3600, days: 86400 };
-const DEFAULT_SESSION_TTL_SECONDS = 7 * 86400;
-
-function splitDuration(seconds: number): { value: string; unit: DurationUnit } {
-  if (seconds <= 0) seconds = DEFAULT_SESSION_TTL_SECONDS;
-  for (const unit of ["days", "hours"] as const) {
-    if (seconds % UNIT_SECONDS[unit] === 0) return { value: String(seconds / UNIT_SECONDS[unit]), unit };
-  }
-  return { value: String(Math.round(seconds / 60)), unit: "minutes" };
-}
-
-function durationSeconds(value: string, unit: DurationUnit): number {
-  return Math.round(Number(value) * UNIT_SECONDS[unit]);
-}
-
-function SessionTimeoutField({
-  enabled,
-  value,
-  unit,
-  onChange,
-}: {
-  enabled: boolean;
-  value: string;
-  unit: DurationUnit;
-  onChange: (enabled: boolean, value: string, unit: DurationUnit) => void;
-}) {
-  return (
-    <div className="field">
-      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-        <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked, value, unit)} />
-        Make people log in again after a set time
-      </label>
-      {enabled && (
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            aria-label="Sign-in lasts"
-            type="number"
-            min={1}
-            required
-            style={{ maxWidth: 120 }}
-            value={value}
-            onChange={(e) => onChange(enabled, e.target.value, unit)}
-          />
-          <select
-            aria-label="Unit"
-            style={{ maxWidth: 140 }}
-            value={unit}
-            onChange={(e) => onChange(enabled, value, e.target.value as DurationUnit)}
-          >
-            <option value="minutes">minutes</option>
-            <option value="hours">hours</option>
-            <option value="days">days</option>
-          </select>
-        </div>
-      )}
-      <span className="field__hint">
-        {enabled
-          ? "Counted from when the person last entered their password or passkey. After that they must log in again, even if the app keeps them signed in. Between 5 minutes and 30 days."
-          : "Off: no limit of its own — the standard rules apply. Recommended for AI assistants, MCP clients and APIs, which would otherwise have to reconnect."}
-      </span>
-    </div>
-  );
-}
-
-function PostLogoutUrisField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return (
-    <div className="field">
-      <label htmlFor="post_logout_uris">
-        After-logout URLs <span className="field__hint">(optional — one per line)</span>
-      </label>
-      <textarea
-        id="post_logout_uris"
-        rows={2}
-        placeholder="https://yourapp.com/signed-out"
-        style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="field__hint">
-        Where the logout endpoint may send the browser back to. Only needed if the app logs
-        people out by redirecting their browser.
-      </span>
-    </div>
-  );
-}
-
-function EmbedOriginsField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return (
-    <div className="field">
-      <label htmlFor="embed_origins">
-        Embed origins <span className="field__hint">(optional — one per line)</span>
-      </label>
-      <textarea
-        id="embed_origins"
-        rows={2}
-        placeholder="https://yourapp.com"
-        style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="field__hint">
-        Sites allowed to show this app's sign-in inside their own pages, styled to match them
-        (auth-elements.js). Just the origin — no path. Leave empty to keep sign-in on its own page.
-      </span>
-    </div>
-  );
-}
 
 export function Applications() {
   const [clients, setClients] = useState<Client[] | null>(null);
@@ -168,6 +61,7 @@ export function Applications() {
   const [ttlValue, setTtlValue] = useState("7");
   const [ttlUnit, setTtlUnit] = useState<DurationUnit>("days");
   const [postLogoutUris, setPostLogoutUris] = useState("");
+  const [embedOrigins, setEmbedOrigins] = useState("");
 
   const load = () => api.get<Client[]>("/clients").then(setClients);
 
@@ -258,6 +152,7 @@ export function Applications() {
         session_ttl_seconds:
           preset === "service" || !ttlEnabled ? 0 : durationSeconds(ttlValue, ttlUnit),
         post_logout_redirect_uris: preset === "service" ? "" : postLogoutUris,
+        embed_origins: preset === "service" ? "" : embedOrigins,
       });
       setModalOpen(false);
       setCreated(result);
@@ -267,6 +162,7 @@ export function Applications() {
       setTtlValue("7");
       setTtlUnit("days");
       setPostLogoutUris("");
+      setEmbedOrigins("");
       setScope("");
       setLogoUrl("");
       setBrandColor("");
@@ -286,59 +182,7 @@ export function Applications() {
 
   const toggleSignup = async (client: Client) => {
     await api.post(`/clients/${client.client_id}/toggle-signup`);
-    load();
-  };
-
-  const toggleRestrictAccess = async (client: Client) => {
-    await api.post(`/clients/${client.client_id}/toggle-restrict-access`);
-    load();
-  };
-
-  const toggleRolesEnabled = async (client: Client) => {
-    await api.post(`/clients/${client.client_id}/toggle-roles-enabled`);
-    load();
-  };
-
-  const toggleSignupRoleSelection = async (client: Client) => {
-    await api.post(`/clients/${client.client_id}/toggle-signup-role-selection`);
-    load();
-  };
-
-  // One button in the Manage modal saves everything at once -- the fact
-  // that this is three separate API calls under the hood is not the
-  // admin's problem.
-  const saveAll = async (client: Client, fields: SaveFields) => {
-    const calls: Promise<unknown>[] = [];
-    if (fields.details) {
-      calls.push(
-        api.patch(`/clients/${client.client_id}`, {
-          client_name: fields.details.name,
-          redirect_uris: fields.details.uris,
-          scope: fields.details.scope,
-          session_ttl_seconds: fields.details.sessionTtlSeconds,
-          post_logout_redirect_uris: fields.details.postLogoutUris,
-          embed_origins: fields.details.embedOrigins,
-        }),
-      );
-    }
-    if (fields.branding) {
-      calls.push(
-        api.post(`/clients/${client.client_id}/branding`, {
-          logo_url: fields.branding.logoUrl,
-          brand_color: fields.branding.brandColor,
-        }),
-      );
-    }
-    if (fields.thumbprint !== undefined) {
-      calls.push(api.post(`/clients/${client.client_id}/mtls`, { thumbprint: fields.thumbprint }));
-    }
-    if (calls.length === 0) return;
-    try {
-      await Promise.all(calls);
-      show("Saved");
-    } catch (err) {
-      show(err instanceof ApiError ? err.message : "Couldn't save");
-    }
+    show(client.allow_signup ? `Signup turned off for ${displayName(client)}` : `Signup turned on for ${displayName(client)}`);
     load();
   };
 
@@ -499,54 +343,18 @@ export function Applications() {
               <div className="field">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                   <label htmlFor="redirect_uris">
-                    Where should we send people back to after login? <span className="field__hint">(one per line)</span>
+                    Where should we send people back to after login?
                   </label>
                   {preset === "native" && (
-                    <div style={{ display: "flex", gap: 5, marginBottom: 4 }}>
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        style={{ height: 22, fontSize: 11, padding: "0 6px" }}
-                        onClick={() =>
-                          setRedirectUris((prev) =>
-                            prev ? `${prev}\nhttp://localhost:5173/callback` : "http://localhost:5173/callback"
-                          )
-                        }
-                      >
-                        + Localhost:5173
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        style={{ height: 22, fontSize: 11, padding: "0 6px" }}
-                        onClick={() =>
-                          setRedirectUris((prev) =>
-                            prev ? `${prev}\nhttp://127.0.0.1:8080/callback` : "http://127.0.0.1:8080/callback"
-                          )
-                        }
-                      >
-                        + 127.0.0.1:8080
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        style={{ height: 22, fontSize: 11, padding: "0 6px" }}
-                        onClick={() =>
-                          setRedirectUris((prev) => (prev ? `${prev}\nvscode://callback` : "vscode://callback"))
-                        }
-                      >
-                        + VS Code
-                      </button>
-                    </div>
+                    <QuickRedirects onAdd={(uri) => setRedirectUris((prev) => appendLine(prev, uri))} />
                   )}
                 </div>
-                <textarea
+                <LinkListInput
                   id="redirect_uris"
-                  rows={2}
                   required
                   placeholder="https://yourapp.com/callback"
                   value={redirectUris}
-                  onChange={(e) => setRedirectUris(e.target.value)}
+                  onChange={setRedirectUris}
                 />
               </div>
             )}
@@ -668,6 +476,7 @@ export function Applications() {
                     onChange={(e) => setBrandColor(e.target.value)}
                   />
                 </div>
+                {preset !== "service" && <EmbedOriginsField value={embedOrigins} onChange={setEmbedOrigins} />}
               </div>
             </details>
 
@@ -716,13 +525,13 @@ export function Applications() {
       )}
 
       {managing && (
-        <ManageDrawer
+        <ManageApplication
           client={managing}
+          allClients={clients ?? []}
           onClose={() => setManaging(null)}
-          onSave={(fields) => saveAll(managing, fields)}
-          onToggleRestrictAccess={() => toggleRestrictAccess(managing)}
-          onToggleRolesEnabled={() => toggleRolesEnabled(managing)}
-          onToggleSignupRoleSelection={() => toggleSignupRoleSelection(managing)}
+          onChanged={load}
+          onToggleEnabled={() => toggleEnabled(managing)}
+          onDelete={() => deleteClient(managing)}
         />
       )}
 
@@ -743,10 +552,6 @@ export function Applications() {
       {dialog}
     </>
   );
-}
-
-function displayName(client: Client) {
-  return client.client_name || "Unnamed application";
 }
 
 function SharingCard({
@@ -810,9 +615,18 @@ function ClientRow({
         <Badge variant={client.enabled ? "success" : "neutral"}>{client.enabled ? "Active" : "Disabled"}</Badge>
       </td>
       <td>
-        <Badge variant={client.allow_signup ? "success" : "neutral"}>
-          {client.allow_signup ? "Allowed" : "Admin-only"}
-        </Badge>
+        {client.registration_method === "cimd" || !client.grant_types.includes("authorization_code") ? (
+          <span style={{ color: "var(--text-muted)" }}>—</span>
+        ) : (
+          <label className="signup-cell">
+            <Switch
+              label={`Let people sign up to ${displayName(client)}`}
+              checked={client.allow_signup}
+              onChange={onToggleSignup}
+            />
+            <span>{client.allow_signup ? "Open" : "Admins only"}</span>
+          </label>
+        )}
       </td>
       <td>
         <div className="row-actions">
@@ -824,525 +638,11 @@ function ClientRow({
           </button>
           <Menu
             items={[
-              ...(client.registration_method !== "cimd"
-                ? [{ label: client.allow_signup ? "Disable signup" : "Enable signup", onSelect: onToggleSignup }]
-                : []),
               { label: client.enabled ? "Disable" : "Re-enable", onSelect: onDisable, danger: client.enabled },
             ]}
           />
         </div>
       </td>
     </tr>
-  );
-}
-
-interface SaveFields {
-  // Each section is only present when it actually changed from the
-  // client's current saved values -- Save changes is one button, but it
-  // must not blindly re-POST branding/mtls (or overwrite them with stale
-  // values) just because the admin only touched the name or scope.
-  details?: {
-    name: string;
-    uris: string;
-    scope: string;
-    sessionTtlSeconds: number;
-    postLogoutUris: string;
-    embedOrigins: string;
-  };
-  branding?: { logoUrl: string; brandColor: string };
-  thumbprint?: string;
-}
-
-function ManageDrawer({
-  client,
-  onClose,
-  onSave,
-  onToggleRestrictAccess,
-  onToggleRolesEnabled,
-  onToggleSignupRoleSelection,
-}: {
-  client: Client;
-  onClose: () => void;
-  onSave: (fields: SaveFields) => void;
-  onToggleRestrictAccess: () => void;
-  onToggleRolesEnabled: () => void;
-  onToggleSignupRoleSelection: () => void;
-}) {
-  const editable = client.registration_method !== "cimd";
-  const showBranding = editable && client.grant_types.includes("authorization_code");
-
-  const [thumbprint, setThumbprint] = useState(client.mtls_cert_thumbprint ?? "");
-  const [logoUrl, setLogoUrl] = useState(client.logo_url ?? "");
-  const [brandColor, setBrandColor] = useState(client.brand_color ?? "");
-  const [name, setName] = useState(client.client_name ?? "");
-  const [redirectUris, setRedirectUris] = useState(client.redirect_uris.join("\n"));
-  const [scope, setScope] = useState(client.allowed_scope);
-  const [ttlEnabled, setTtlEnabled] = useState(client.session_ttl_seconds > 0);
-  const [ttlValue, setTtlValue] = useState(splitDuration(client.session_ttl_seconds).value);
-  const [ttlUnit, setTtlUnit] = useState<DurationUnit>(splitDuration(client.session_ttl_seconds).unit);
-  const [postLogoutUris, setPostLogoutUris] = useState(client.post_logout_redirect_uris.join("\n"));
-  const [embedOrigins, setEmbedOrigins] = useState(client.embed_origins.join("\n"));
-  const signsPeopleIn = client.grant_types.includes("authorization_code");
-  const [grants, setGrants] = useState<AccessGrant[] | null>(null);
-  const [poolUsers, setPoolUsers] = useState<AppUser[]>([]);
-  const [grantUserId, setGrantUserId] = useState("");
-  const [grantBusy, setGrantBusy] = useState(false);
-  const [roleNames, setRoleNames] = useState<string[]>([]);
-  const [userRoles, setUserRoles] = useState<UserRoleRow[] | null>(null);
-  const [newRoleName, setNewRoleName] = useState("");
-  const [roleBusy, setRoleBusy] = useState(false);
-  const [addUserOpen, setAddUserOpen] = useState(false);
-  const [userEmail, setUserEmail] = useState("");
-  const [userPassword, setUserPassword] = useState("");
-  const [userConfirmPassword, setUserConfirmPassword] = useState("");
-  const [userEmailVerified, setUserEmailVerified] = useState(true);
-  const [userError, setUserError] = useState<string | null>(null);
-  const [addingUser, setAddingUser] = useState(false);
-  const { show } = useToast();
-
-  const onAddUser = async (e: FormEvent) => {
-    e.preventDefault();
-    setUserError(null);
-    if (userPassword !== userConfirmPassword) {
-      setUserError("Passwords do not match");
-      return;
-    }
-    setAddingUser(true);
-    try {
-      const created = await api.post<{ id: string }>("/users", {
-        email: userEmail,
-        password: userPassword,
-        confirm_password: userConfirmPassword,
-        client_id: client.client_id,
-        email_verified: userEmailVerified,
-      });
-      if (client.restrict_access) {
-        await api.post(`/clients/${client.client_id}/access`, { user_id: created.id });
-      }
-      setAddUserOpen(false);
-      setUserEmail("");
-      setUserPassword("");
-      setUserConfirmPassword("");
-      show(`${userEmail} can now log into ${displayName(client)}`);
-      loadAccess();
-    } catch (err) {
-      setUserError(err instanceof ApiError ? err.message : "Something went wrong");
-    } finally {
-      setAddingUser(false);
-    }
-  };
-
-  const loadAccess = () => {
-    if (client.restrict_access) api.get<AccessGrant[]>(`/clients/${client.client_id}/access`).then(setGrants);
-  };
-
-  const loadRoles = () => {
-    if (!client.roles_enabled) return;
-    api.get<string[]>(`/clients/${client.client_id}/roles`).then(setRoleNames);
-    api.get<UserRoleRow[]>(`/clients/${client.client_id}/user-roles`).then(setUserRoles);
-  };
-
-  useEffect(() => {
-    const userParam = client.pool_name
-      ? `pool=${encodeURIComponent(client.pool_name)}`
-      : `client=${encodeURIComponent(client.client_id)}`;
-    api.get<UserPage>(`/users?${userParam}&page_size=500`).then((p) => setPoolUsers(p.items));
-    loadAccess();
-    loadRoles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client.restrict_access, client.roles_enabled, client.client_id, client.pool_name]);
-
-  const grantAccess = async () => {
-    if (!grantUserId) return;
-    setGrantBusy(true);
-    try {
-      await api.post(`/clients/${client.client_id}/access`, { user_id: grantUserId });
-      setGrantUserId("");
-      loadAccess();
-    } finally {
-      setGrantBusy(false);
-    }
-  };
-
-  const revokeAccess = async (userId: string) => {
-    await api.delete(`/clients/${client.client_id}/access/${userId}`);
-    loadAccess();
-  };
-
-  const addRole = async () => {
-    const name = newRoleName.trim();
-    if (!name) return;
-    setRoleBusy(true);
-    try {
-      await api.post(`/clients/${client.client_id}/roles`, { name });
-      setNewRoleName("");
-      loadRoles();
-    } finally {
-      setRoleBusy(false);
-    }
-  };
-
-  const removeRole = async (name: string) => {
-    await api.delete(`/clients/${client.client_id}/roles/${encodeURIComponent(name)}`);
-    loadRoles();
-  };
-
-  const toggleUserRole = async (userId: string, roleName: string, has: boolean) => {
-    if (has) {
-      await api.delete(`/users/${userId}/roles/${client.client_id}/${encodeURIComponent(roleName)}`);
-    } else {
-      await api.post(`/users/${userId}/roles`, { client_id: client.client_id, role: roleName });
-    }
-    loadRoles();
-  };
-
-  return (
-    <Modal title={displayName(client)} wide onClose={onClose}>
-      <div className="field">
-        <label>Client ID</label>
-        <CopyableId value={client.client_id} max={9999} />
-      </div>
-      <div className="field">
-        <label>Type</label>
-        <span style={{ fontSize: 14 }}>{CLIENT_TYPE_LABELS[client.client_type] ?? client.client_type}</span>
-      </div>
-      <div className="field">
-        <label>Grant types</label>
-        <span style={{ fontSize: 14 }}>{client.grant_types.map((g) => GRANT_LABELS[g] ?? g).join(", ")}</span>
-      </div>
-      <div className="field">
-        <label>Login group</label>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <span style={{ fontSize: 14 }}>{client.pool_name ?? <em style={{ color: "var(--text-muted)" }}>None (standalone)</em>}</span>
-          <button type="button" className="btn btn--secondary" onClick={() => setAddUserOpen(true)}>
-            + Add user
-          </button>
-        </div>
-        <span className="field__hint">
-          {client.restrict_access
-            ? client.pool_name
-              ? "Users in other login groups can't log in here — and within this group, only the people granted access below can."
-              : "Only the users explicitly granted access below can log in."
-            : client.pool_name
-              ? "Anyone added here can log into this app. Users in other login groups can't."
-              : "Any user of this application can log in."}
-        </span>
-      </div>
-
-      {editable && (
-        <div className="field">
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={client.restrict_access} onChange={onToggleRestrictAccess} />
-            Restrict which users in this group can use this app
-          </label>
-          <span className="field__hint">
-            {client.pool_name
-              ? <>Off (default): everyone in <strong>{client.pool_name}</strong> can log in here. On: only
-                people explicitly granted below can — same group, same passwords, but this one app is
-                locked down to a subset. The same pattern as Okta's or Entra ID's "app assignment."</>
-              : <>Off (default): all users of this app can log in. On: only people explicitly granted
-                below can — useful for keeping most accounts out of a privileged interface.</>}
-          </span>
-
-          {client.restrict_access && (
-            <div style={{ marginTop: 12 }}>
-              {grants === null ? (
-                <p className="field__hint">Loading...</p>
-              ) : grants.length === 0 ? (
-                <p className="field__hint">No one has been granted access yet — this app is unreachable until you add someone below.</p>
-              ) : (
-                <ul style={{ listStyle: "none", margin: "0 0 10px", padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {grants.map((g) => (
-                    <li key={g.user_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13.5 }}>
-                      {g.email}
-                      <button type="button" className="btn btn--secondary" onClick={() => revokeAccess(g.user_id)}>
-                        Revoke
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <select value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} style={{ flex: 1 }}>
-                  <option value="">Choose a user{client.pool_name ? ` from ${client.pool_name}` : ""}...</option>
-                  {poolUsers
-                    .filter((u) => !grants?.some((g) => g.user_id === u.id))
-                    .map((u) => (
-                      <option value={u.id} key={u.id}>
-                        {u.email}
-                      </option>
-                    ))}
-                </select>
-                <button type="button" className="btn btn--secondary" disabled={!grantUserId || grantBusy} onClick={grantAccess}>
-                  Grant
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {editable && (
-        <div className="field">
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={client.roles_enabled} onChange={onToggleRolesEnabled} />
-            Use custom roles for this app
-          </label>
-          <span className="field__hint">
-            Off (default). On: define role names below (e.g. "editor", "billing") and assign them
-            to users. This service only reports a user's roles to your app — as a "roles" claim
-            from /userinfo — it never decides what a role is allowed to do. That's up to your app.
-          </span>
-
-          {client.roles_enabled && (
-            <div style={{ marginTop: 12 }}>
-              {client.allow_signup && (
-                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, marginBottom: 12 }}>
-                  <input
-                    type="checkbox"
-                    checked={client.allow_signup_role_selection}
-                    onChange={onToggleSignupRoleSelection}
-                  />
-                  Let people choose a role when they sign up (off by default — otherwise an admin assigns it here)
-                </label>
-              )}
-
-              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                <input
-                  placeholder="Role name, e.g. editor"
-                  value={newRoleName}
-                  onChange={(e) => setNewRoleName(e.target.value)}
-                  style={{ flex: 1 }}
-                />
-                <button type="button" className="btn btn--secondary" disabled={!newRoleName.trim() || roleBusy} onClick={addRole}>
-                  Add role
-                </button>
-              </div>
-
-              {roleNames.length === 0 ? (
-                <p className="field__hint">No roles defined yet.</p>
-              ) : userRoles === null ? (
-                <p className="field__hint">Loading...</p>
-              ) : (
-                <div className="table-wrap">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>User</th>
-                        {roleNames.map((r) => (
-                          <th key={r}>
-                            {r}{" "}
-                            <button
-                              type="button"
-                              className="btn btn--ghost"
-                              title={`Delete role "${r}"`}
-                              onClick={() => removeRole(r)}
-                            >
-                              ×
-                            </button>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {userRoles.map((row) => (
-                        <tr key={row.user_id}>
-                          <td style={{ fontSize: 13.5 }}>{row.email}</td>
-                          {roleNames.map((r) => {
-                            const has = row.roles.includes(r);
-                            return (
-                              <td key={r} style={{ textAlign: "center" }}>
-                                <input
-                                  type="checkbox"
-                                  checked={has}
-                                  onChange={() => toggleUserRole(row.user_id, r, has)}
-                                />
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {addUserOpen && (
-        <Modal title={`Add a user to ${displayName(client)}`} onClose={() => setAddUserOpen(false)}>
-          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
-            {client.pool_name
-              ? <>This user will be able to log into <strong>{displayName(client)}</strong> (and any other
-                app in the <strong>{client.pool_name}</strong> login group).</>
-              : <>This user will be able to log into <strong>{displayName(client)}</strong>.</>}
-          </p>
-          {userError && <div className="alert alert--error">{userError}</div>}
-          <form onSubmit={onAddUser}>
-            <div className="field">
-              <label htmlFor="drawer-add-email">Email</label>
-              <input
-                id="drawer-add-email"
-                type="email"
-                required
-                autoFocus
-                value={userEmail}
-                onChange={(e) => setUserEmail(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="drawer-add-password">Password</label>
-              <PasswordInput
-                id="drawer-add-password"
-                required
-                minLength={8}
-                value={userPassword}
-                onChange={(e) => setUserPassword(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="drawer-add-confirm-password">Confirm password</label>
-              <PasswordInput
-                id="drawer-add-confirm-password"
-                required
-                minLength={8}
-                value={userConfirmPassword}
-                onChange={(e) => setUserConfirmPassword(e.target.value)}
-              />
-            </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginBottom: 16 }}>
-              <input
-                type="checkbox"
-                checked={userEmailVerified}
-                onChange={(e) => setUserEmailVerified(e.target.checked)}
-              />
-              Treat their email as already verified
-            </label>
-            <span className="field__hint" style={{ display: "block", marginTop: -12, marginBottom: 16 }}>
-              Off: they get the same "Unverified" badge and verification email a self-signup gets.
-            </span>
-            <button type="submit" className="btn btn--primary btn--block" disabled={addingUser}>
-              Add user
-            </button>
-          </form>
-        </Modal>
-      )}
-
-      {editable && (
-        <>
-          <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "20px 0" }} />
-
-          <div className="field">
-            <label htmlFor="edit-name">Name</label>
-            <input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Unnamed application" />
-          </div>
-          {client.application_type !== "service" && (
-            <div className="field">
-              <label htmlFor="edit-redirects">
-                Redirect URIs <span className="field__hint">(one per line)</span>
-              </label>
-              <textarea
-                id="edit-redirects"
-                rows={2}
-                style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}
-                value={redirectUris}
-                onChange={(e) => setRedirectUris(e.target.value)}
-              />
-            </div>
-          )}
-          <div className="field">
-            <label htmlFor="edit-scope">
-              Allowed scopes <span className="field__hint">(space-separated)</span>
-            </label>
-            <input id="edit-scope" value={scope} onChange={(e) => setScope(e.target.value)} placeholder="openid profile email" />
-          </div>
-
-          {signsPeopleIn && (
-            <>
-              <SessionTimeoutField
-                enabled={ttlEnabled}
-                value={ttlValue}
-                unit={ttlUnit}
-                onChange={(on, v, u) => {
-                  setTtlEnabled(on);
-                  setTtlValue(v);
-                  setTtlUnit(u);
-                }}
-              />
-              <PostLogoutUrisField value={postLogoutUris} onChange={setPostLogoutUris} />
-            </>
-          )}
-
-          {showBranding && (
-            <>
-              <div className="field">
-                <label htmlFor="logo_url">
-                  Logo URL <span className="field__hint">(shown on this app's login/signup/consent pages)</span>
-                </label>
-                <input id="logo_url" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} placeholder="https://yourapp.com/logo.png" />
-              </div>
-              <div className="field">
-                <label htmlFor="brand_color">Brand color</label>
-                <input id="brand_color" value={brandColor} onChange={(e) => setBrandColor(e.target.value)} placeholder="#1d4ed8" />
-              </div>
-              <EmbedOriginsField value={embedOrigins} onChange={setEmbedOrigins} />
-            </>
-          )}
-
-          <div className="field">
-            <label htmlFor="mtls">
-              mTLS certificate thumbprint <span className="field__hint">(rarely needed)</span>
-            </label>
-            <input
-              id="mtls"
-              value={thumbprint}
-              onChange={(e) => setThumbprint(e.target.value)}
-              placeholder="Cert thumbprint (hex)"
-              style={{ fontFamily: "var(--font-mono)" }}
-            />
-            <span className="field__hint">
-              Only checked for apps that talk directly to the server (not ones a person logs into
-              through a browser) — leave blank unless you've set up mutual TLS for it.
-            </span>
-          </div>
-
-          <button
-            type="button"
-            className="btn btn--primary btn--block"
-            onClick={() => {
-              const fields: SaveFields = {};
-              const sessionTtlSeconds = ttlEnabled ? durationSeconds(ttlValue, ttlUnit) : 0;
-              if (
-                name !== (client.client_name ?? "") ||
-                redirectUris !== client.redirect_uris.join("\n") ||
-                scope !== client.allowed_scope ||
-                sessionTtlSeconds !== client.session_ttl_seconds ||
-                postLogoutUris !== client.post_logout_redirect_uris.join("\n") ||
-                embedOrigins !== client.embed_origins.join("\n")
-              ) {
-                fields.details = { name, uris: redirectUris, scope, sessionTtlSeconds, postLogoutUris, embedOrigins };
-              }
-              if (showBranding && (logoUrl !== (client.logo_url ?? "") || brandColor !== (client.brand_color ?? ""))) {
-                fields.branding = { logoUrl, brandColor };
-              }
-              if (thumbprint !== (client.mtls_cert_thumbprint ?? "")) {
-                fields.thumbprint = thumbprint;
-              }
-              if (!fields.details && !fields.branding && fields.thumbprint === undefined) {
-                show("Nothing to save");
-                return;
-              }
-              onSave(fields);
-            }}
-          >
-            Save changes
-          </button>
-
-        </>
-      )}
-    </Modal>
   );
 }
