@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Modal } from "../components/Modal";
-import { Badge } from "../components/Badge";
+import { Switch } from "../components/Switch";
 import { CopyableId } from "../components/CopyableId";
 import { EmptyState } from "../components/EmptyState";
 import { Menu } from "../components/Menu";
@@ -112,9 +112,10 @@ export function Resources() {
       danger: r.enabled,
       confirmLabel: r.enabled ? "Disable" : "Re-enable",
       onConfirm: async () => {
-        await api.post(`/resources/${encodeURIComponent(r.resource_id)}/toggle-enabled`);
-        show(r.enabled ? `${r.name} disabled` : `${r.name} re-enabled`);
-        load();
+        const updated = await api.post<Resource>(`/resources/${encodeURIComponent(r.resource_id)}/toggle-enabled`);
+        // Patched in place; the token count doesn't change by toggling.
+        setResources((prev) => prev?.map((x) => (x.resource_id === r.resource_id ? { ...x, ...updated } : x)) ?? prev);
+        show(updated.enabled ? `${r.name} accepts new tokens again` : `${r.name} no longer gets new tokens`);
       },
     });
   };
@@ -145,9 +146,9 @@ export function Resources() {
       </div>
 
       <p className="lead">
-        A <strong>resource</strong> is an API or MCP server that <em>accepts and verifies</em> tokens from this
-        auth server. Register your MCP servers here so AI assistants (Claude, Cursor, etc.) can discover them
-        via Protected Resource Metadata (RFC 9728) and request audience-bound access tokens (RFC 8707).
+        The APIs and MCP servers that accept this service's sign-ins. Register one so apps and AI
+        assistants such as Claude or Cursor can find it and get access tokens made for it, and nothing
+        else (RFC 9728 and RFC 8707).
       </p>
 
       {resources?.length === 0 ? (
@@ -166,47 +167,43 @@ export function Resources() {
           <table className="table">
             <thead>
               <tr>
-                <th>Resource</th>
-                <th>Audience / Resource ID</th>
-                <th>PRM Metadata</th>
-                <th>Status</th>
+                <th>API or MCP server</th>
+                <th>Address (token audience)</th>
+                <th style={{ textAlign: "right" }}>Tokens, last 30 days</th>
+                <th>Accepting new tokens</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {resources?.map((r) => (
-                <tr key={r.resource_id} style={{ opacity: r.enabled ? 1 : 0.55 }}>
+                <tr key={r.resource_id} style={{ opacity: r.enabled ? 1 : 0.6 }}>
                   <td>
                     <div style={{ fontWeight: 600 }}>{r.name}</div>
+                    <div className="cell-sub">
+                      {r.metadata_url ? "Publishes its own discovery document" : "Discovery document hosted here"}
+                    </div>
                   </td>
                   <td>
-                    <CopyableId value={r.resource_id} max={36} />
+                    <CopyableId value={r.resource_id} max={40} />
+                  </td>
+                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {(r.tokens_30d ?? 0).toLocaleString()}
                   </td>
                   <td>
-                    {r.metadata_url ? (
-                      <CopyableId value={r.metadata_url} max={36} />
-                    ) : (
-                      <span style={{ color: "var(--text-muted)", fontSize: 13 }}>Hosted on auth server</span>
-                    )}
-                  </td>
-                  <td>
-                    <Badge variant={r.enabled ? "success" : "neutral"}>{r.enabled ? "Active" : "Disabled"}</Badge>
+                    <label className="signup-cell">
+                      <Switch label={`${r.name} accepts new tokens`} checked={r.enabled} onChange={() => toggleEnabled(r)} />
+                      <span>{r.enabled ? "Yes" : "Stopped"}</span>
+                    </label>
                   </td>
                   <td>
                     <div className="row-actions">
-                      <button type="button" className="btn btn--secondary" onClick={() => openEdit(r)}>
-                        Edit
-                      </button>
-                      <button type="button" className="btn btn--danger" onClick={() => onDelete(r)}>
-                        Remove
+                      <button type="button" className="btn btn--secondary" onClick={() => setGuideResource(r)}>
+                        Get code
                       </button>
                       <Menu
                         items={[
-                          {
-                            label: r.enabled ? "Disable" : "Re-enable",
-                            onSelect: () => toggleEnabled(r),
-                            danger: r.enabled,
-                          },
+                          { label: "Edit", onSelect: () => openEdit(r) },
+                          { label: "Remove", onSelect: () => onDelete(r), danger: true },
                         ]}
                       />
                     </div>

@@ -1,520 +1,182 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Modal } from "../components/Modal";
-import { Badge } from "../components/Badge";
-import { Menu } from "../components/Menu";
 import { EmptyState } from "../components/EmptyState";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
-import { AppsIcon, ChevronIcon, GroupsIcon, PlusIcon, UsersIcon } from "../components/Icons";
-import { api, ApiError, AppUser, Client, Pool, UserPage } from "../api";
+import { CloseIcon, GroupsIcon, PlusIcon } from "../components/Icons";
+import { api, ApiError, Client, Pool } from "../api";
 
 function displayName(client: Client) {
   return client.client_name || client.client_id;
 }
 
-function fullName(u: AppUser) {
-  return [u.first_name, u.last_name].filter(Boolean).join(" ");
-}
-
-// ── Individual pool card ──────────────────────────────────────────────────────
-
-const APPS_VISIBLE = 3;
-const USERS_VISIBLE = 4;
-
-function PoolCard({
-  pool,
-  apps,
-  users,
-  onAddApp,
-  onRemoveApp,
-  onToggleUser,
-  onDeleteUser,
-}: {
-  pool: Pool;
-  apps: Client[];
-  users: AppUser[];
-  onAddApp: () => void;
-  onRemoveApp: (c: Client) => void;
-  onToggleUser: (u: AppUser) => void;
-  onDeleteUser: (u: AppUser) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [appsOpen, setAppsOpen] = useState(true);
-  const [usersOpen, setUsersOpen] = useState(true);
-  const [appsExpanded, setAppsExpanded] = useState(false);
-  const [usersExpanded, setUsersExpanded] = useState(false);
-  const [appSearch, setAppSearch] = useState("");
-  const [userSearch, setUserSearch] = useState("");
-
-  const searchedApps = useMemo(() => {
-    const q = appSearch.trim().toLowerCase();
-    if (!q) return apps;
-    return apps.filter(
-      (c) =>
-        c.client_id.toLowerCase().includes(q) ||
-        (c.client_name ?? "").toLowerCase().includes(q),
-    );
-  }, [apps, appSearch]);
-
-  const searchedUsers = useMemo(() => {
-    const q = userSearch.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter(
-      (u) =>
-        u.email.toLowerCase().includes(q) ||
-        fullName(u).toLowerCase().includes(q) ||
-        (u.username ?? "").toLowerCase().includes(q) ||
-        (u.client_name ?? u.client_id).toLowerCase().includes(q),
-    );
-  }, [users, userSearch]);
-
-  // Truncate unless expanded (search bypasses the limit)
-  const filteredApps = appSearch ? searchedApps : searchedApps.slice(0, appsExpanded ? undefined : APPS_VISIBLE);
-  const filteredUsers = userSearch ? searchedUsers : searchedUsers.slice(0, usersExpanded ? undefined : USERS_VISIBLE);
-  const appsHidden = !appSearch && !appsExpanded && searchedApps.length > APPS_VISIBLE;
-  const usersHidden = !userSearch && !usersExpanded && searchedUsers.length > USERS_VISIBLE;
-
-  return (
-    <div
-      style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-lg)",
-        overflow: "hidden",
-      }}
-    >
-      {/* ── Group header ── */}
-      <div
-        style={{
-          padding: "16px 20px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          cursor: "pointer",
-          userSelect: "none",
-        }}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ChevronIcon
-            width={16}
-            height={16}
-            style={{
-              transform: open ? "rotate(90deg)" : "none",
-              transition: "transform 150ms",
-              color: "var(--text-muted)",
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ fontSize: 15, fontWeight: 600 }}>{pool.name}</span>
-          <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 13 }}>
-            {apps.length} app{apps.length === 1 ? "" : "s"} · {users.length} user{users.length === 1 ? "" : "s"}
-          </span>
-        </span>
-        <button
-          type="button"
-          className="btn btn--secondary"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAddApp();
-          }}
-        >
-          + Add application
-        </button>
-      </div>
-
-      {/* ── Expandable body ── */}
-      {open && (
-        <div style={{ borderTop: "1px solid var(--border)", padding: "0 20px 20px" }}>
-
-          {/* ── Applications subsection ── */}
-          <div style={{ marginTop: 16 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                cursor: "pointer",
-                marginBottom: appsOpen ? 10 : 0,
-              }}
-              onClick={() => setAppsOpen((o) => !o)}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: "var(--text-muted)" }}>
-                <ChevronIcon
-                  width={13}
-                  height={13}
-                  style={{ transform: appsOpen ? "rotate(90deg)" : "none", transition: "transform 150ms" }}
-                />
-                <AppsIcon width={14} height={14} />
-                APPLICATIONS ({apps.length})
-              </span>
-            </div>
-
-            {appsOpen && (
-              <>
-                {apps.length > 2 && (
-                  <input
-                    placeholder="Search applications…"
-                    value={appSearch}
-                    onChange={(e) => setAppSearch(e.target.value)}
-                    style={{ marginBottom: 10, width: "100%", maxWidth: 320 }}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                )}
-                {apps.length === 0 ? (
-                  <p className="field__hint" style={{ margin: "4px 0 0" }}>
-                    No applications yet. Use "Add application" above.
-                  </p>
-                ) : filteredApps.length === 0 ? (
-                  <p className="field__hint" style={{ margin: "4px 0 0" }}>No applications match "{appSearch}".</p>
-                ) : (
-                  <>
-                    <div className="table-wrap" style={{ marginBottom: 4 }}>
-                      <table className="table">
-                        <thead>
-                          <tr>
-                            <th>Application</th>
-                            <th>Type</th>
-                            <th>Status</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filteredApps.map((c) => (
-                            <tr key={c.id} style={{ opacity: c.enabled ? 1 : 0.55 }}>
-                              <td>
-                                <div style={{ fontWeight: 500 }}>{displayName(c)}</div>
-                                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{c.client_id}</div>
-                              </td>
-                              <td>{c.client_type}</td>
-                              <td>
-                                <Badge variant={c.enabled ? "success" : "neutral"}>
-                                  {c.enabled ? "Active" : "Disabled"}
-                                </Badge>
-                              </td>
-                              <td>
-                                <div className="row-actions">
-                                  <button
-                                    type="button"
-                                    className="btn btn--danger"
-                                    onClick={() => onRemoveApp(c)}
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {appsHidden && (
-                      <button type="button" className="btn btn--ghost" style={{ fontSize: 13, marginTop: 2 }} onClick={() => setAppsExpanded(true)}>
-                        Show {searchedApps.length - APPS_VISIBLE} more application{searchedApps.length - APPS_VISIBLE === 1 ? "" : "s"}
-                      </button>
-                    )}
-                    {appsExpanded && searchedApps.length > APPS_VISIBLE && (
-                      <button type="button" className="btn btn--ghost" style={{ fontSize: 13, marginTop: 2 }} onClick={() => setAppsExpanded(false)}>
-                        Show less
-                      </button>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* ── Users subsection ── */}
-          <div style={{ marginTop: 20 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                cursor: "pointer",
-                marginBottom: usersOpen ? 10 : 0,
-              }}
-              onClick={() => setUsersOpen((o) => !o)}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: "var(--text-muted)" }}>
-                <ChevronIcon
-                  width={13}
-                  height={13}
-                  style={{ transform: usersOpen ? "rotate(90deg)" : "none", transition: "transform 150ms" }}
-                />
-                <UsersIcon width={14} height={14} />
-                USERS ({users.length})
-              </span>
-            </div>
-
-            {usersOpen && (
-              <>
-                {users.length > 3 && (
-                  <input
-                    placeholder="Search by email, name or application…"
-                    value={userSearch}
-                    onChange={(e) => setUserSearch(e.target.value)}
-                    style={{ marginBottom: 10, width: "100%", maxWidth: 380 }}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                )}
-                {users.length === 0 ? (
-                  <p className="field__hint" style={{ margin: "4px 0 0" }}>
-                    No users yet. Add users from the Applications page.
-                  </p>
-                ) : filteredUsers.length === 0 ? (
-                  <p className="field__hint" style={{ margin: "4px 0 0" }}>No users match "{userSearch}".</p>
-                ) : (
-                  <>
-                    <div className="table-wrap">
-                      <table className="table">
-                        <thead>
-                          <tr>
-                            <th>Email</th>
-                            <th>Name</th>
-                            <th>Application</th>
-                            <th>Status</th>
-                            <th>Email verified</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filteredUsers.map((u) => {
-                            const name = fullName(u) || u.username || "";
-                            return (
-                              <tr key={u.id} style={{ opacity: u.status === "active" ? 1 : 0.55 }}>
-                                <td>{u.email}</td>
-                                <td style={{ fontSize: 13, color: name ? undefined : "var(--text-muted)" }}>
-                                  {name || <em>—</em>}
-                                </td>
-                                <td style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                                  {u.client_name || u.client_id}
-                                </td>
-                                <td>
-                                  <Badge variant={u.status === "active" ? "success" : "neutral"}>
-                                    {u.status === "active" ? "Active" : "Disabled"}
-                                  </Badge>
-                                </td>
-                                <td>
-                                  <Badge variant={u.email_verified ? "success" : "warning"}>
-                                    {u.email_verified ? "Verified" : "Unverified"}
-                                  </Badge>
-                                </td>
-                                <td>
-                                  <div className="row-actions">
-                                    <button type="button" className="btn btn--secondary" onClick={() => onToggleUser(u)}>
-                                      {u.status === "active" ? "Disable" : "Enable"}
-                                    </button>
-                                    <Menu items={[{ label: "Delete", danger: true, onSelect: () => onDeleteUser(u) }]} />
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    {usersHidden && (
-                      <button type="button" className="btn btn--ghost" style={{ fontSize: 13, marginTop: 2 }} onClick={() => setUsersExpanded(true)}>
-                        Show {searchedUsers.length - USERS_VISIBLE} more user{searchedUsers.length - USERS_VISIBLE === 1 ? "" : "s"}
-                      </button>
-                    )}
-                    {usersExpanded && searchedUsers.length > USERS_VISIBLE && (
-                      <button type="button" className="btn btn--ghost" style={{ fontSize: 13, marginTop: 2 }} onClick={() => setUsersExpanded(false)}>
-                        Show less
-                      </button>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Page ─────────────────────────────────────────────────────────────────────
-
 export function LoginGroups() {
   const [pools, setPools] = useState<Pool[] | null>(null);
   const [clients, setClients] = useState<Client[] | null>(null);
-  const [users, setUsers] = useState<AppUser[] | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [assignPool, setAssignPool] = useState<Pool | null>(null);
   const { confirm, dialog } = useConfirmDialog();
   const { show } = useToast();
 
-  const load = () => {
-    api.get<Pool[]>("/pools").then(setPools);
-    api.get<Client[]>("/clients").then(setClients);
-    api.get<UserPage>("/users?page_size=500").then((p) => setUsers(p.items));
-  };
+  // Two requests, side by side. Each group's people are counted by the server
+  // rather than loading every user here.
+  const load = () =>
+    Promise.all([api.get<Pool[]>("/pools").then(setPools), api.get<Client[]>("/clients").then(setClients)]);
 
-  useEffect(() => { load(); }, []);
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.post("/pools", { name });
-      setModalOpen(false);
-      setName("");
-      load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const removeClientFromPool = (pool: Pool, client: Client) => {
-    confirm({
-      title: `Remove ${displayName(client)} from ${pool.name}?`,
-      description:
-        "The application becomes standalone — its users stay, but no longer share identity with the other apps in this group.",
-      danger: true,
-      confirmLabel: "Remove",
-      onConfirm: async () => {
-        await api.post(`/pools/${encodeURIComponent(pool.name)}/remove-client`, {
-          client_id: client.client_id,
-        });
-        show(`${displayName(client)} removed from ${pool.name}`);
-        load();
-      },
-    });
-  };
-
-  const toggleUserStatus = async (u: AppUser) => {
-    await api.post(`/users/${u.id}/toggle-status`);
+  useEffect(() => {
     load();
-  };
+  }, []);
 
-  const removeUser = (u: AppUser) => {
+  const appsByPool = useMemo(() => {
+    const map = new Map<string, Client[]>();
+    for (const c of clients ?? []) if (c.pool_name) map.set(c.pool_name, [...(map.get(c.pool_name) ?? []), c]);
+    return map;
+  }, [clients]);
+  const standalone = (clients ?? []).filter((c) => !c.pool_name);
+
+  const removeApp = (pool: Pool, client: Client) =>
     confirm({
-      title: `Delete ${u.email}?`,
-      description:
-        "Permanently removes this account and immediately revokes all active sessions.",
+      title: `Take ${displayName(client)} out of ${pool.name}?`,
+      description: `It keeps its own users, but people from the other apps in ${pool.name} can't log in to it anymore, and its users can't log in to them.`,
       danger: true,
-      confirmLabel: "Delete",
+      confirmLabel: "Take it out",
       onConfirm: async () => {
-        await api.delete(`/users/${u.id}`);
-        show(`${u.email} deleted`);
-        load();
+        await api.post(`/pools/${encodeURIComponent(pool.name)}/remove-client`, { client_id: client.client_id });
+        show(`${displayName(client)} now has its own accounts`);
+        await load();
       },
     });
-  };
 
-  const byPool = useMemo(() => {
-    const map = new Map<string, { pool: Pool; apps: Client[]; users: AppUser[] }>();
-    for (const p of pools ?? []) map.set(p.name, { pool: p, apps: [], users: [] });
-    for (const c of clients ?? []) {
-      if (c.pool_name && map.has(c.pool_name)) map.get(c.pool_name)!.apps.push(c);
-    }
-    const clientToPool = new Map<string, string>();
-    for (const c of clients ?? []) {
-      if (c.pool_name) clientToPool.set(c.client_id, c.pool_name);
-    }
-    for (const u of users ?? []) {
-      const pName = clientToPool.get(u.client_id);
-      if (pName && map.has(pName)) map.get(pName)!.users.push(u);
-    }
-    return map;
-  }, [pools, clients, users]);
+  const deleteGroup = (pool: Pool, apps: Client[]) =>
+    confirm({
+      title: `Delete ${pool.name}?`,
+      description: apps.length
+        ? `${apps.map(displayName).join(", ")} will each keep their own users but stop sharing accounts. No one's account is deleted.`
+        : "This group has no applications. No one's account is deleted.",
+      danger: true,
+      confirmLabel: "Delete group",
+      onConfirm: async () => {
+        await api.delete(`/pools/${encodeURIComponent(pool.name)}`);
+        show(`${pool.name} deleted`);
+        await load();
+      },
+    });
 
-  const standaloneClients = useMemo(
-    () => (clients ?? []).filter((c) => !c.pool_name),
-    [clients],
-  );
-
-  const loading = pools === null || clients === null || users === null;
+  const loading = pools === null || clients === null;
 
   return (
     <>
       <div className="header">
         <div className="header__title-row">
-          <span className="header__icon"><GroupsIcon /></span>
+          <span className="header__icon">
+            <GroupsIcon />
+          </span>
           <h1 className="title">Login groups</h1>
         </div>
-        <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
-          <PlusIcon width={16} height={16} style={{ verticalAlign: -3 }} /> Create group
+        <button type="button" className="btn btn--primary" onClick={() => setCreateOpen(true)}>
+          <PlusIcon width={16} height={16} /> Create group
         </button>
       </div>
-
       <p className="lead">
-        A <strong>login group</strong> combines applications so their users share one identity —
-        sign up once and log into any of them. Applications outside a group have their own isolated
-        users.
+        Applications in the same login group share accounts: people sign up once and use the same email
+        and password in every app of the group. An application outside a group has its own accounts.
       </p>
 
-      {!loading && byPool.size === 0 && (
+      {loading ? (
+        <p className="field__hint">Loading…</p>
+      ) : pools.length === 0 ? (
         <EmptyState
           icon={<GroupsIcon width={20} height={20} />}
           title="No login groups yet"
-          description="Create a group here, then assign applications to it."
+          description="Create a group, then add the applications that should share accounts."
           action={
-            <button type="button" className="btn btn--primary" onClick={() => setModalOpen(true)}>
+            <button type="button" className="btn btn--primary" onClick={() => setCreateOpen(true)}>
               <PlusIcon width={16} height={16} /> Create group
             </button>
           }
         />
+      ) : (
+        <div className="group-list">
+          {pools.map((pool) => {
+            const apps = appsByPool.get(pool.name) ?? [];
+            const people = pool.user_count ?? 0;
+            return (
+              <section key={pool.id} className="panel group-card" aria-labelledby={`group-${pool.id}`}>
+                <div className="group-card__head">
+                  <div>
+                    <h2 id={`group-${pool.id}`} className="panel__title">
+                      {pool.name}
+                    </h2>
+                    <p className="group-card__sentence">
+                      {apps.length === 0
+                        ? "No applications yet. Add one to start sharing accounts."
+                        : apps.length === 1
+                          ? `Only ${displayName(apps[0])} so far. Add another app to share its accounts.`
+                          : `One account works in ${apps.map(displayName).join(", ")}.`}
+                    </p>
+                  </div>
+                  <Link className="group-card__people" to={`/admin/users?${new URLSearchParams({ pool: pool.name })}`}>
+                    <strong>{people.toLocaleString()}</strong> {people === 1 ? "person" : "people"}
+                  </Link>
+                </div>
+
+                {apps.length > 0 && (
+                  <ul className="app-chips" aria-label={`Applications in ${pool.name}`}>
+                    {apps.map((c) => (
+                      <li key={c.id} className="app-chip">
+                        <span>{displayName(c)}</span>
+                        <button type="button" aria-label={`Take ${displayName(c)} out of ${pool.name}`} onClick={() => removeApp(pool, c)}>
+                          <CloseIcon width={12} height={12} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="group-card__actions">
+                  <button type="button" className="btn btn--secondary" onClick={() => setAssignPool(pool)} disabled={standalone.length === 0}>
+                    Add an application
+                  </button>
+                  <button type="button" className="btn btn--ghost" onClick={() => deleteGroup(pool, apps)}>
+                    Delete group
+                  </button>
+                </div>
+              </section>
+            );
+          })}
+
+          {standalone.length > 0 && (
+            <section className="group-standalone">
+              <h2 className="panel__title">Applications with their own accounts</h2>
+              <p className="panel__hint" style={{ marginTop: 6 }}>
+                {standalone.map(displayName).join(", ")}. Add any of them to a group to share accounts.
+              </p>
+            </section>
+          )}
+        </div>
       )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {Array.from(byPool.entries()).map(([poolName, { pool, apps, users: groupUsers }]) => (
-          <PoolCard
-            key={poolName}
-            pool={pool}
-            apps={apps}
-            users={groupUsers}
-            onAddApp={() => setAssignPool(pool)}
-            onRemoveApp={(c) => removeClientFromPool(pool, c)}
-            onToggleUser={toggleUserStatus}
-            onDeleteUser={removeUser}
-          />
-        ))}
-      </div>
-
-      {modalOpen && (
-        <Modal title="Create a login group" onClose={() => setModalOpen(false)}>
-          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
-            Create a group here, then add applications to it. Users of any app in the group can
-            log into all the others.
-          </p>
-          {error && <div className="alert alert--error">{error}</div>}
-          <form onSubmit={onSubmit}>
-            <div className="field">
-              <label htmlFor="name">Name</label>
-              <input
-                id="name"
-                required
-                autoFocus
-                placeholder="e.g. acme-staff"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-            </div>
-            <button type="submit" className="btn btn--primary btn--block" disabled={submitting}>
-              Create group
-            </button>
-          </form>
-        </Modal>
+      {createOpen && (
+        <CreateGroupModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={async (name) => {
+            setCreateOpen(false);
+            show(`${name} created`);
+            await load();
+          }}
+        />
       )}
 
       {assignPool && (
         <AssignAppModal
           pool={assignPool}
-          availableClients={standaloneClients}
+          availableClients={standalone}
           onClose={() => setAssignPool(null)}
-          onAssigned={(clientName) => {
+          onAssigned={async (clientName) => {
             setAssignPool(null);
-            show(`${clientName} added to ${assignPool.name}`);
-            load();
+            show(`${clientName} now shares accounts in ${assignPool.name}`);
+            await load();
           }}
         />
       )}
@@ -524,7 +186,42 @@ export function LoginGroups() {
   );
 }
 
-// ── Assign-app modal ──────────────────────────────────────────────────────────
+function CreateGroupModal({ onClose, onCreated }: { onClose: () => void; onCreated: (name: string) => void }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.post("/pools", { name: name.trim() });
+      onCreated(name.trim());
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="Create a login group" onClose={onClose}>
+      <p className="modal__lead">Then add the applications that should share accounts.</p>
+      {error && <div className="alert alert--error">{error}</div>}
+      <form onSubmit={onSubmit}>
+        <div className="field">
+          <label htmlFor="group-name">Name</label>
+          <input id="group-name" required autoFocus placeholder="e.g. acme-customers" value={name} onChange={(e) => setName(e.target.value)} />
+          <span className="field__hint">Only you see this name.</span>
+        </div>
+        <button type="submit" className="btn btn--primary btn--block" disabled={submitting}>
+          Create group
+        </button>
+      </form>
+    </Modal>
+  );
+}
 
 function AssignAppModal({
   pool,
@@ -547,11 +244,9 @@ function AssignAppModal({
     setError(null);
     setSubmitting(true);
     try {
-      await api.post(`/pools/${encodeURIComponent(pool.name)}/assign-client`, {
-        client_id: selectedId,
-      });
+      await api.post(`/pools/${encodeURIComponent(pool.name)}/assign-client`, { client_id: selectedId });
       const chosen = availableClients.find((c) => c.client_id === selectedId);
-      onAssigned(chosen ? (chosen.client_name || chosen.client_id) : selectedId);
+      onAssigned(chosen ? displayName(chosen) : selectedId);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
@@ -560,43 +255,26 @@ function AssignAppModal({
   };
 
   return (
-    <Modal title={`Add application to ${pool.name}`} onClose={onClose}>
-      <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
-        Pick a standalone application to join this group. Its users will be able to log into all
-        other apps in <strong>{pool.name}</strong>, and vice versa.
+    <Modal title={`Add an application to ${pool.name}`} onClose={onClose}>
+      <p className="modal__lead">
+        Its users will be able to log in to every app in <strong>{pool.name}</strong>, and the group's
+        users to it. Check that no one has two accounts with the same email across these apps first.
       </p>
-      {availableClients.length === 0 && (
-        <div className="alert alert--error" style={{ marginBottom: 12 }}>
-          No standalone applications available. All existing apps are already in a group.
-        </div>
-      )}
       {error && <div className="alert alert--error">{error}</div>}
       <form onSubmit={onSubmit}>
         <div className="field">
           <label htmlFor="assign-app">Application</label>
-          <select
-            id="assign-app"
-            required
-            value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value)}
-            disabled={availableClients.length === 0}
-          >
-            <option value="">Select an application…</option>
+          <select id="assign-app" required value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+            <option value="">Choose an application…</option>
             {availableClients.map((c) => (
               <option key={c.id} value={c.client_id}>
-                {c.client_name || c.client_id}
+                {displayName(c)}
               </option>
             ))}
           </select>
-          <span className="field__hint">
-            Only standalone applications (not already in a group) are listed here.
-          </span>
+          <span className="field__hint">Only applications with their own accounts are listed. To move an app between groups, use Manage on the Applications page.</span>
         </div>
-        <button
-          type="submit"
-          className="btn btn--primary btn--block"
-          disabled={submitting || !selectedId || availableClients.length === 0}
-        >
+        <button type="submit" className="btn btn--primary btn--block" disabled={submitting || !selectedId}>
           Add to group
         </button>
       </form>

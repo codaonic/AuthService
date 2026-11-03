@@ -46,12 +46,16 @@ export interface Admin {
 export interface Pool {
   id: string;
   name: string;
+  /** Only in the /pools listing. */
+  user_count?: number;
 }
 
 export interface Resource {
   resource_id: string;
   name: string;
   metadata_url: string | null;
+  /** Access tokens issued for it over the last 30 days (only in the listing). */
+  tokens_30d?: number;
   enabled: boolean;
 }
 

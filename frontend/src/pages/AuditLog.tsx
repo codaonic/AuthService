@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ActivityIcon } from "../components/Icons";
 import { ActivityList } from "../components/ActivityList";
 import { EmptyState } from "../components/EmptyState";
@@ -11,8 +12,10 @@ const PAGE = 100;
 export function AuditLog() {
   const [events, setEvents] = useState<AuditEvent[] | null>(null);
   const [outcome, setOutcome] = useState<Outcome | "">("");
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
+  // A person's panel links here already searched for them (?q=email).
+  const [params] = useSearchParams();
+  const [search, setSearch] = useState(params.get("q") ?? "");
+  const [query, setQuery] = useState(params.get("q") ?? "");
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const request = useRef(0);

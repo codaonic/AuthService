@@ -35,7 +35,7 @@ export function Login() {
           <AuthIcon size={52} />
         </div>
         <h1 className="auth-card__title">Admin sign in</h1>
-        <p className="auth-card__subtitle">Auth Service · OAuth 2.1 &amp; OIDC Server</p>
+        <p className="auth-card__subtitle">Manage your applications, users and sign-in settings.</p>
         {error && <div className="alert alert--error" role="alert">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="field">

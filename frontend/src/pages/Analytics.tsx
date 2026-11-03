@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChartIcon } from "../components/Icons";
 import { BreakdownBars, DailyChart, formatCount, OutcomeTag, OutcomeTotals } from "../components/charts";
 import { eventLabel } from "../events";
@@ -7,10 +8,12 @@ import { Analytics as AnalyticsData, api, Client } from "../api";
 const PERIODS = [7, 30, 90];
 
 export function Analytics() {
+  // Other pages link here already narrowed, e.g. ?user=ana@example.com.
+  const [params] = useSearchParams();
   const [days, setDays] = useState(30);
-  const [clientId, setClientId] = useState("");
-  const [person, setPerson] = useState("");
-  const [personInput, setPersonInput] = useState("");
+  const [clientId, setClientId] = useState(params.get("client_id") ?? "");
+  const [person, setPerson] = useState(params.get("user") ?? "");
+  const [personInput, setPersonInput] = useState(params.get("user") ?? "");
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const request = useRef(0);

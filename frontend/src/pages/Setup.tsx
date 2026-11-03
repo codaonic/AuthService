@@ -37,9 +37,9 @@ export function Setup() {
           <AuthIcon size={52} />
         </div>
         <h1 className="auth-card__title">Create your admin account</h1>
-        <p style={{ fontSize: 13.5, color: "var(--text-muted)", margin: "0 0 20px", textAlign: "center" }}>
-          This is the first time this service has been started. Choose the email and password
-          you'll use to sign in and manage it — no default credential is ever created.
+        <p className="auth-card__subtitle">
+          This is the first start, so there's no admin yet. Choose the email and password you'll use to
+          manage this service. There is no default password.
         </p>
         {error && <div className="alert alert--error" role="alert">{error}</div>}
         <form onSubmit={onSubmit}>
@@ -56,7 +56,9 @@ export function Setup() {
             />
           </div>
           <div className="field">
-            <label htmlFor="password">Password</label>
+            <label htmlFor="password">
+              Password <span className="field__hint">(at least 8 characters)</span>
+            </label>
             <PasswordInput
               id="password"
               required
@@ -67,7 +69,7 @@ export function Setup() {
             />
           </div>
           <div className="field">
-            <label htmlFor="confirm_password">Confirm password</label>
+            <label htmlFor="confirm_password">Password again</label>
             <PasswordInput
               id="confirm_password"
               required
