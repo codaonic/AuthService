@@ -489,7 +489,7 @@ async def signup(
     # Verification is informational, not a login gate -- a failed send
     # shouldn't block account creation. See plan/password-recovery-mcp-passkeys-plan.md §5.2.
     token = await create_email_verification_token(redis, str(user.id))
-    await send_verification_email(user.email, token)
+    await send_verification_email(redis, user.email, token)
 
     session_id = await sign_in(
         redis,

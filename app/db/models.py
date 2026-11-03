@@ -6,6 +6,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
@@ -273,3 +274,21 @@ class WebAuthnCredential(Base):
     transports: Mapped[list[str]] = mapped_column(JSON, default=list)
     nickname: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditEvent(Base):
+    """One entry of the admin console's Activity log (see app/audit.py).
+
+    Written in the background, after the event has already gone to stdout,
+    so recording one never slows down the request that caused it. Old
+    entries are pruned after Settings.audit_retention_days.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    ts: Mapped[float] = mapped_column(Float, index=True)
+    level: Mapped[str] = mapped_column(String(16))
+    event: Mapped[str] = mapped_column(String, index=True)
+    # Everything else the event carried (client_id, email, ip, ...).
+    data: Mapped[dict] = mapped_column(JSON, default=dict)

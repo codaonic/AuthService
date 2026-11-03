@@ -1,8 +1,13 @@
+import json
 import logging
+import secrets
+import time
 from email.message import EmailMessage
 
 import aiosmtplib
+from redis.asyncio import Redis
 
+from app.audit import log_event
 from app.config import get_settings
 
 logger = logging.getLogger("app.email")
@@ -37,106 +42,102 @@ async def send_email(to: str, subject: str, body: str) -> None:
     logger.info("Sent email to %s: %s", to, subject)
 
 
-async def send_password_reset_email(to: str, token: str) -> str:
+# When an email can't go out (no SMTP set up, or sending failed), its link is
+# held here for the admin console's Dashboard instead of being printed to the
+# terminal, where it would also end up in container logs. Each one lives in
+# Redis only until the link itself expires, and the link never goes into the
+# Activity log: a stored reset link is a working way into that account.
+OUTBOX_PREFIX = "email_outbox:"
+OUTBOX_INDEX = "email_outbox_index"
+
+
+async def _hold_link(redis: Redis, kind: str, to: str, link: str, ttl_seconds: int, reason: str) -> None:
+    held_id = secrets.token_urlsafe(12)
+    now = time.time()
+    record = {
+        "id": held_id,
+        "kind": kind,
+        "email": to,
+        "link": link,
+        "reason": reason,
+        "created": round(now, 3),
+        "expires": round(now + ttl_seconds, 3),
+    }
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.set(f"{OUTBOX_PREFIX}{held_id}", json.dumps(record), ex=ttl_seconds)
+        pipe.zadd(OUTBOX_INDEX, {held_id: now + ttl_seconds})
+        await pipe.execute()
+    log_event("email_link_held", level=logging.WARNING, kind=kind, email=to, reason=reason)
+    logger.warning("Couldn't email the %s link for %s (%s); it's on the admin console's Dashboard", kind, to, reason)
+
+
+async def held_links(redis: Redis) -> list[dict]:
+    """Links waiting to be passed on by an admin, newest first."""
+    await redis.zremrangebyscore(OUTBOX_INDEX, "-inf", time.time())
+    ids = await redis.zrange(OUTBOX_INDEX, 0, -1)
+    if not ids:
+        return []
+    records = [json.loads(r) for r in await redis.mget([f"{OUTBOX_PREFIX}{i}" for i in ids]) if r]
+    return sorted(records, key=lambda r: r["created"], reverse=True)
+
+
+async def dismiss_held_link(redis: Redis, held_id: str) -> None:
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.delete(f"{OUTBOX_PREFIX}{held_id}")
+        pipe.zrem(OUTBOX_INDEX, held_id)
+        await pipe.execute()
+
+
+async def _send_or_hold(redis: Redis, kind: str, to: str, link: str, ttl_seconds: int, subject: str, body: str) -> None:
+    if not is_smtp_configured():
+        await _hold_link(redis, kind, to, link, ttl_seconds, "smtp_not_configured")
+        return
+    try:
+        await send_email(to, subject, body)
+    except Exception:
+        logger.exception("Failed to send the %s email to %s", kind, to)
+        await _hold_link(redis, kind, to, link, ttl_seconds, "smtp_failed")
+
+
+async def send_password_reset_email(redis: Redis, to: str, token: str) -> str:
     """Send a password reset link to the given email address.
 
     Best-effort: a delivery failure shouldn't surface to the caller --
     the response is always the same regardless of whether the email exists
-    or the send succeeded, to avoid leaking either fact.
-
-    If SMTP setup is not done (or if delivery fails), the reset link is
-    printed to the terminal so developers/admins can still reset passwords
-    in local or development environments.
+    or the send succeeded, to avoid leaking either fact. A link that can't
+    be emailed is held for the admin console instead (see _hold_link).
     """
     settings = get_settings()
     link = f"{settings.issuer.rstrip('/')}/reset-password?token={token}"
-
-    if not is_smtp_configured():
-        terminal_msg = (
-            f"\n"
-            f"======================================================================\n"
-            f"[PASSWORD RESET] SMTP is not configured.\n"
-            f"Target email : {to}\n"
-            f"Reset link   : {link}\n"
-            f"======================================================================\n"
-        )
-        print(terminal_msg, flush=True)
-        logger.warning(
-            "[PASSWORD RESET] SMTP is not configured. Password reset link for %s: %s",
-            to,
-            link,
-        )
-        return link
-
-    try:
-        await send_email(
-            to,
-            "Reset your password",
-            f"Someone requested a password reset for this account.\n\n"
-            f"Reset it here (expires in {settings.password_reset_ttl_seconds // 60} minutes):\n{link}\n\n"
-            f"If you didn't request this, you can ignore this email.",
-        )
-    except Exception:
-        terminal_msg = (
-            f"\n"
-            f"======================================================================\n"
-            f"[PASSWORD RESET] Failed to send email via SMTP ({settings.smtp_host}:{settings.smtp_port}).\n"
-            f"Target email : {to}\n"
-            f"Reset link   : {link}\n"
-            f"======================================================================\n"
-        )
-        print(terminal_msg, flush=True)
-        logger.exception("Failed to send password reset email to %s. Reset link: %s", to, link)
-
+    await _send_or_hold(
+        redis,
+        "password_reset",
+        to,
+        link,
+        settings.password_reset_ttl_seconds,
+        "Reset your password",
+        f"Someone requested a password reset for this account.\n\n"
+        f"Reset it here (expires in {settings.password_reset_ttl_seconds // 60} minutes):\n{link}\n\n"
+        f"If you didn't request this, you can ignore this email.",
+    )
     return link
 
 
-async def send_verification_email(to: str, token: str) -> str:
+async def send_verification_email(redis: Redis, to: str, token: str) -> str:
     """Best-effort -- see send_password_reset_email. Verification is
     informational here, not a login gate, so a failed send must not break
     signup or the resend flow.
-
-    If SMTP setup is not done (or if delivery fails), the verification link
-    is printed to the terminal so developers/admins can still verify accounts
-    in local or development environments.
     """
     settings = get_settings()
     link = f"{settings.issuer.rstrip('/')}/verify-email?token={token}"
-
-    if not is_smtp_configured():
-        terminal_msg = (
-            f"\n"
-            f"======================================================================\n"
-            f"[EMAIL VERIFICATION] SMTP is not configured.\n"
-            f"Target email      : {to}\n"
-            f"Verification link : {link}\n"
-            f"======================================================================\n"
-        )
-        print(terminal_msg, flush=True)
-        logger.warning(
-            "[EMAIL VERIFICATION] SMTP is not configured. Verification link for %s: %s",
-            to,
-            link,
-        )
-        return link
-
-    try:
-        await send_email(
-            to,
-            "Verify your email",
-            f"Confirm your email address here (expires in "
-            f"{settings.email_verification_ttl_seconds // 3600} hours):\n{link}",
-        )
-    except Exception:
-        terminal_msg = (
-            f"\n"
-            f"======================================================================\n"
-            f"[EMAIL VERIFICATION] Failed to send email via SMTP ({settings.smtp_host}:{settings.smtp_port}).\n"
-            f"Target email      : {to}\n"
-            f"Verification link : {link}\n"
-            f"======================================================================\n"
-        )
-        print(terminal_msg, flush=True)
-        logger.exception("Failed to send verification email to %s. Verification link: %s", to, link)
-
+    await _send_or_hold(
+        redis,
+        "email_verification",
+        to,
+        link,
+        settings.email_verification_ttl_seconds,
+        "Verify your email",
+        f"Confirm your email address here (expires in "
+        f"{settings.email_verification_ttl_seconds // 3600} hours):\n{link}",
+    )
     return link

@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.auth import get_current_admin
+from app.admin.analytics import analytics, outcome
 from app.audit import client_ip, log_event, record_failed_login, recent_events
 from app.auth.lockout import clear_failures, is_locked, record_failure
 from app.auth.password_reset import create_email_verification_token, create_password_reset_token
@@ -35,7 +36,13 @@ from app.db.contacts import upsert_contact
 from app.db.pools import get_or_create_pool
 from app.db.redis_client import get_redis
 from app.db.session import get_db
-from app.email import send_password_reset_email, send_verification_email
+from app.email import (
+    dismiss_held_link,
+    held_links,
+    is_smtp_configured,
+    send_password_reset_email,
+    send_verification_email,
+)
 from app.middleware.rate_limit import limiter
 from app.oidc.embed import normalize_origin
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
@@ -58,6 +65,21 @@ async def require_admin(
 
 def _admin_json(admin: AdminUser) -> dict:
     return {"id": str(admin.id), "email": admin.email, "must_change_password": admin.must_change_password}
+
+
+async def _client_with_pool(db: AsyncSession, client_id: str) -> tuple[Client, str]:
+    """The client and its login group's name, in one query -- every handler
+    that changes a client returns both."""
+    row = (
+        await db.execute(
+            select(Client, UserPool.name)
+            .outerjoin(UserPool, Client.user_pool_id == UserPool.id)
+            .where(Client.client_id == client_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(404, "unknown_client")
+    return row[0], row[1] or ""
 
 
 def _client_json(client: Client, pool_name: str) -> dict:
@@ -83,7 +105,7 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "session_ttl_seconds": client.session_ttl_seconds,
         "post_logout_redirect_uris": client.post_logout_redirect_uris or [],
         "embed_origins": client.embed_origins or [],
-        "pool_name": pool_name,
+        "pool_name": pool_name or None,
     }
 
 
@@ -142,7 +164,7 @@ def _user_json(user: User, client_name: str | None, pool_name: str | None) -> di
         "phone": user.phone,
         "client_id": user.client_id,
         "client_name": client_name,
-        "pool_name": pool_name,
+        "pool_name": pool_name or None,
         "status": user.status,
         "email_verified": user.email_verified,
     }
@@ -165,9 +187,12 @@ def _format_events(raw_events: list[dict]) -> list[dict]:
     events = []
     for raw in raw_events:
         ts, level, event = raw["ts"], raw["level"], raw["event"]
-        extra = {k: v for k, v in raw.items() if k not in ("ts", "level", "event")}
+        extra = {k: v for k, v in raw.items() if k not in ("id", "ts", "level", "event")}
         events.append(
             {
+                "id": raw.get("id"),
+                "ts": ts,
+                "outcome": outcome(event, level),
                 "time": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "level": level,
                 "event": event,
@@ -305,13 +330,25 @@ async def api_me(admin: AdminUser = Depends(require_admin)):
 
 
 @router.get("/dashboard")
-async def api_dashboard(admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    counts = {}
-    for label, model in [("pools", UserPool), ("clients", Client), ("resources", Resource), ("users", User)]:
-        result = await db.execute(select(func.count()).select_from(model))
-        counts[label] = result.scalar_one()
+async def api_dashboard(
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Everything the Dashboard shows, in one request."""
+    models = {"pools": UserPool, "clients": Client, "resources": Resource, "users": User}
+    row = (
+        await db.execute(select(*(select(func.count()).select_from(m).scalar_subquery() for m in models.values())))
+    ).one()
+    counts = dict(zip(models, row))
 
-    return {"counts": counts, "recent": _format_events(recent_events(8))}
+    week = await analytics(db, 7, top=0)
+    return {
+        "counts": counts,
+        "recent": _format_events(await recent_events(db, 8)),
+        "week": {"totals": week["totals"], "series": week["series"]},
+        "email_links": {"smtp_configured": is_smtp_configured(), "links": await held_links(redis)},
+    }
 
 
 # --- Login groups (pools) ---
@@ -639,16 +676,18 @@ class EditClientBody(BaseModel):
     post_logout_redirect_uris: str | None = None
     embed_origins: str | None = None
     grant_types: list[str] | None = None
+    # Also settable here so the Manage page saves in one request; the
+    # /branding and /mtls endpoints stay for existing callers.
+    logo_url: str | None = None
+    brand_color: str | None = None
+    mtls_thumbprint: str | None = None
 
 
 @router.patch("/clients/{client_id}")
 async def api_edit_client(
     client_id: str, body: EditClientBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.client_name = body.client_name.strip() or None
     client.redirect_uris = [u.strip() for u in body.redirect_uris.splitlines() if u.strip()]
     client.allowed_scope = body.scope
@@ -660,9 +699,14 @@ async def api_edit_client(
         client.embed_origins = _embed_origins(body.embed_origins)
     if body.grant_types is not None:
         client.grant_types = _validated_grant_types(body.grant_types, client)
+    if body.logo_url is not None:
+        client.logo_url = body.logo_url.strip() or None
+    if body.brand_color is not None:
+        client.brand_color = body.brand_color.strip() or None
+    if body.mtls_thumbprint is not None:
+        client.mtls_cert_thumbprint = body.mtls_thumbprint.strip().upper() or None
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.delete("/clients/{client_id}", status_code=204)
@@ -678,20 +722,8 @@ async def api_delete_client(
     # client_id first, since none of those foreign keys cascade at the DB
     # level. Order matters: user_role_assignments references client_roles,
     # so it has to go before client_roles does.
-    for assignment in (
-        await db.execute(select(UserRoleAssignment).where(UserRoleAssignment.client_id == client_id))
-    ).scalars().all():
-        await db.delete(assignment)
-    for role in (await db.execute(select(ClientRole).where(ClientRole.client_id == client_id))).scalars().all():
-        await db.delete(role)
-    for grant in (
-        await db.execute(select(ClientAccessGrant).where(ClientAccessGrant.client_id == client_id))
-    ).scalars().all():
-        await db.delete(grant)
-    for consent in (await db.execute(select(Consent).where(Consent.client_id == client_id))).scalars().all():
-        await db.delete(consent)
-    for token in (await db.execute(select(RefreshToken).where(RefreshToken.client_id == client_id))).scalars().all():
-        await db.delete(token)
+    for model in (UserRoleAssignment, ClientRole, ClientAccessGrant, Consent, RefreshToken):
+        await db.execute(delete(model).where(model.client_id == client_id))
 
     # Delete all users who registered through this client.
     for u in (await db.execute(select(User).where(User.client_id == client_id))).scalars().all():
@@ -723,14 +755,10 @@ class MtlsBody(BaseModel):
 async def api_set_client_mtls(
     client_id: str, body: MtlsBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.mtls_cert_thumbprint = body.thumbprint.strip().upper() or None
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 class BrandingBody(BaseModel):
@@ -745,29 +773,21 @@ async def api_set_client_branding(
     """Applied to this client's login/signup/consent pages -- see
     app/oidc/authorize.py's _branding() and app/templates/base.html.
     """
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.logo_url = body.logo_url.strip() or None
     client.brand_color = body.brand_color.strip() or None
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.post("/clients/{client_id}/toggle-signup")
 async def api_toggle_client_signup(
     client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.allow_signup = not client.allow_signup
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.post("/clients/{client_id}/toggle-enabled")
@@ -777,27 +797,20 @@ async def api_toggle_client_enabled(
     admin: AdminUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.enabled = not client.enabled
     await db.commit()
     log_event(
         "client_" + ("enabled" if client.enabled else "disabled"), client_id=client_id, admin_id=str(admin.id)
     )
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.post("/clients/{client_id}/toggle-restrict-access")
 async def api_toggle_client_restrict_access(
     client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.restrict_access = not client.restrict_access
     await db.commit()
     log_event(
@@ -805,8 +818,7 @@ async def api_toggle_client_restrict_access(
         client_id=client_id,
         admin_id=str(admin.id),
     )
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.get("/clients/{client_id}/access")
@@ -884,28 +896,20 @@ async def api_revoke_client_access(
 async def api_toggle_client_roles_enabled(
     client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.roles_enabled = not client.roles_enabled
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.post("/clients/{client_id}/toggle-signup-role-selection")
 async def api_toggle_signup_role_selection(
     client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Client).where(Client.client_id == client_id))
-    client = result.scalar_one_or_none()
-    if client is None:
-        raise HTTPException(404, "unknown_client")
+    client, pool_name = await _client_with_pool(db, client_id)
     client.allow_signup_role_selection = not client.allow_signup_role_selection
     await db.commit()
-    pool = await db.get(UserPool, client.user_pool_id) if client.user_pool_id else None
-    return _client_json(client, pool.name if pool else "")
+    return _client_json(client, pool_name)
 
 
 @router.get("/clients/{client_id}/roles")
@@ -1179,7 +1183,7 @@ async def api_create_user(
 
     if not body.email_verified:
         token = await create_email_verification_token(redis, str(user.id))
-        await send_verification_email(user.email, token)
+        await send_verification_email(redis, user.email, token)
 
     return _user_json(user, app_client.client_name, pool.name if pool else None)
 
@@ -1325,15 +1329,57 @@ async def api_send_password_reset(
     user = await db.get(User, uuid.UUID(user_id))
     if user is not None:
         token = await create_password_reset_token(redis, str(user.id))
-        await send_password_reset_email(user.email, token)
+        await send_password_reset_email(redis, user.email, token)
+
+
+# --- Analytics ---
+
+
+@router.get("/analytics")
+async def api_analytics(
+    days: int = 30,
+    client_id: str | None = None,
+    user: str | None = None,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await analytics(db, min(max(days, 1), 365), client_id=client_id or None, user=user or None)
+    names = dict((await db.execute(select(Client.client_id, Client.client_name))).all())
+    for row in result["applications"]:
+        row["client_name"] = names.get(row["client_id"])
+    return result
+
+
+# --- Emails that couldn't be sent ---
+
+
+@router.get("/email-links")
+async def api_held_email_links(admin: AdminUser = Depends(require_admin), redis: Redis = Depends(get_redis)):
+    """Reset and verification links that couldn't be emailed (see app/email.py)."""
+    return {"smtp_configured": is_smtp_configured(), "links": await held_links(redis)}
+
+
+@router.delete("/email-links/{held_id}", status_code=204)
+async def api_dismiss_email_link(
+    held_id: str, admin: AdminUser = Depends(require_admin), redis: Redis = Depends(get_redis)
+):
+    await dismiss_held_link(redis, held_id)
 
 
 # --- Audit log ---
 
 
 @router.get("/audit")
-async def api_audit_log(admin: AdminUser = Depends(require_admin)):
-    return _format_events(recent_events())
+async def api_audit_log(
+    before: float | None = None,
+    outcome: str | None = None,
+    q: str | None = None,
+    limit: int = 100,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Newest first. Pass the last entry's `ts` as `before` for the next page."""
+    return _format_events(await recent_events(db, min(max(limit, 1), 500), before=before, outcome=outcome, search=q))
 
 
 # --- Admin's own account ---

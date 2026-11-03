@@ -384,6 +384,48 @@ async def test_edit_client_grant_types(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_edit_client_saves_branding_and_mtls_in_one_request(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme")
+
+    resp = await client.patch(
+        "/admin/api/clients/acme-web",
+        json={
+            "redirect_uris": "https://acme.example.com/cb",
+            "logo_url": " https://acme.example.com/logo.png ",
+            "brand_color": "#0f766e",
+            "mtls_thumbprint": "ab12",
+        },
+    )
+    body = resp.json()
+    assert body["logo_url"] == "https://acme.example.com/logo.png"
+    assert body["brand_color"] == "#0f766e"
+    assert body["mtls_cert_thumbprint"] == "AB12"
+    assert body["pool_name"] == "acme"
+
+
+@pytest.mark.asyncio
+async def test_toggle_returns_client_with_its_login_group(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme", allow_signup=True)
+
+    body = (await client.post("/admin/api/clients/acme-web/toggle-signup")).json()
+    assert body["allow_signup"] is False and body["pool_name"] == "acme"
+    assert (await client.post("/admin/api/clients/missing/toggle-signup")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_dashboard_counts(client, db_session):
+    await _login_admin(client, db_session)
+    await create_client(db_session, client_id="acme-web", pool_name="acme")
+
+    body = (await client.get("/admin/api/dashboard")).json()
+    assert body["counts"]["clients"] == 1 and body["counts"]["pools"] == 1 and body["counts"]["users"] == 0
+    assert len(body["week"]["series"]) == 7
+    assert body["email_links"]["links"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "grant_types",
     [[], ["password"], ["refresh_token"]],
@@ -508,7 +550,7 @@ async def test_create_user_unverified_sends_verification_email(client, db_sessio
 
     sent = {}
 
-    async def fake_send(email, token):
+    async def fake_send(redis, email, token):
         sent["email"] = email
 
     monkeypatch.setattr("app.admin.api.send_verification_email", fake_send)

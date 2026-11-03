@@ -10,6 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.admin import api as admin_api
 from app.admin.seed import ensure_default_admin
+from app.audit import start_audit_writer, stop_audit_writer
 from app.config import get_settings
 from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
@@ -34,7 +35,9 @@ async def lifespan(_app: FastAPI):
     await wait_for_database()
     await init_db_schema()
     await ensure_default_admin()
+    await start_audit_writer()
     yield
+    await stop_audit_writer()
 
 
 _docs = get_settings().api_docs_enabled

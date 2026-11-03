@@ -61,7 +61,7 @@ async def forgot_password_submit(
     user = await _find_user_for_client(db, email, client)
     if user is not None and user.status == "active":
         token = await create_password_reset_token(redis, str(user.id))
-        await send_password_reset_email(user.email, token)
+        await send_password_reset_email(redis, user.email, token)
         log_event("password_reset_requested", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
     # Always the same response -- never reveal whether the account exists.
@@ -162,7 +162,7 @@ async def resend_verification_submit(
     user = await _find_user_for_client(db, email, client)
     if user is not None and not user.email_verified:
         token = await create_email_verification_token(redis, str(user.id))
-        await send_verification_email(user.email, token)
+        await send_verification_email(redis, user.email, token)
 
     return templates.TemplateResponse(
         request, "resend_verification.html", {"flow_id": flow_id, "client_id": client.client_id, "sent": True}

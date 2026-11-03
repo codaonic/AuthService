@@ -135,6 +135,9 @@ class Settings(BaseSettings):
         return bool(v)
 
     password_reset_ttl_seconds: int = 30 * 60
+    # How long the admin console's Activity log keeps an entry. stdout still
+    # gets every event; point a log aggregator at it to keep them longer.
+    audit_retention_days: int = 90
     email_verification_ttl_seconds: int = 60 * 60 * 24
 
     webauthn_rp_name: str = "Auth Service"
