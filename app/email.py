@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import secrets
@@ -49,9 +50,15 @@ async def send_email(to: str, subject: str, body: str) -> None:
 # Activity log: a stored reset link is a working way into that account.
 OUTBOX_PREFIX = "email_outbox:"
 OUTBOX_INDEX = "email_outbox_index"
+# sha256(token) -> held id, so a link leaves the Dashboard as soon as it's used.
+OUTBOX_TOKEN_PREFIX = "email_outbox_token:"
 
 
-async def _hold_link(redis: Redis, kind: str, to: str, link: str, ttl_seconds: int, reason: str) -> None:
+def _token_key(token: str) -> str:
+    return f"{OUTBOX_TOKEN_PREFIX}{hashlib.sha256(token.encode()).hexdigest()}"
+
+
+async def _hold_link(redis: Redis, kind: str, to: str, link: str, token: str, ttl_seconds: int, reason: str) -> None:
     held_id = secrets.token_urlsafe(12)
     now = time.time()
     record = {
@@ -65,6 +72,7 @@ async def _hold_link(redis: Redis, kind: str, to: str, link: str, ttl_seconds: i
     }
     async with redis.pipeline(transaction=True) as pipe:
         pipe.set(f"{OUTBOX_PREFIX}{held_id}", json.dumps(record), ex=ttl_seconds)
+        pipe.set(_token_key(token), held_id, ex=ttl_seconds)
         pipe.zadd(OUTBOX_INDEX, {held_id: now + ttl_seconds})
         await pipe.execute()
     log_event("email_link_held", level=logging.WARNING, kind=kind, email=to, reason=reason)
@@ -88,16 +96,26 @@ async def dismiss_held_link(redis: Redis, held_id: str) -> None:
         await pipe.execute()
 
 
-async def _send_or_hold(redis: Redis, kind: str, to: str, link: str, ttl_seconds: int, subject: str, body: str) -> bool:
+async def release_held_link(redis: Redis, token: str) -> None:
+    """The link carrying `token` was used: take it off the Dashboard."""
+    held_id = await redis.get(_token_key(token))
+    if held_id:
+        await dismiss_held_link(redis, held_id)
+        await redis.delete(_token_key(token))
+
+
+async def _send_or_hold(
+    redis: Redis, kind: str, to: str, link: str, token: str, ttl_seconds: int, subject: str, body: str
+) -> bool:
     """True if the email went out, False if its link is held for the console."""
     if not is_smtp_configured():
-        await _hold_link(redis, kind, to, link, ttl_seconds, "smtp_not_configured")
+        await _hold_link(redis, kind, to, link, token, ttl_seconds, "smtp_not_configured")
         return False
     try:
         await send_email(to, subject, body)
     except Exception:
         logger.exception("Failed to send the %s email to %s", kind, to)
-        await _hold_link(redis, kind, to, link, ttl_seconds, "smtp_failed")
+        await _hold_link(redis, kind, to, link, token, ttl_seconds, "smtp_failed")
         return False
     return True
 
@@ -118,6 +136,7 @@ async def send_password_reset_email(redis: Redis, to: str, token: str) -> bool:
         "password_reset",
         to,
         link,
+        token,
         settings.password_reset_ttl_seconds,
         "Reset your password",
         f"Someone requested a password reset for this account.\n\n"
@@ -138,6 +157,7 @@ async def send_verification_email(redis: Redis, to: str, token: str) -> bool:
         "email_verification",
         to,
         link,
+        token,
         settings.email_verification_ttl_seconds,
         "Verify your email",
         f"Confirm your email address here (expires in "

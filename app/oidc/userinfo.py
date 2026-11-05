@@ -54,7 +54,7 @@ async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
     if user is None or user.status != "active":
         raise HTTPException(401, "invalid_token")
 
-    response = {"sub": str(user.id), "email": user.email}
+    response = {"sub": str(user.id), "email": user.email, "email_verified": user.email_verified}
 
     # Only when this specific client opted into roles at all -- most
     # clients never define any, and shouldn't see an empty "roles": []

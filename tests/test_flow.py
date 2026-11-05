@@ -406,3 +406,45 @@ async def test_signing_keys_are_owner_only(client, tmp_path):
     keys = list((tmp_path / "keys").glob("*.pem"))
     assert keys
     assert all(stat.S_IMODE(k.stat().st_mode) == 0o600 for k in keys)
+
+
+def _claims(access_token: str) -> dict:
+    import base64
+    import json
+
+    payload = access_token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+@pytest.mark.asyncio
+async def test_email_verified_reaches_the_app_at_the_next_refresh(client, db_session):
+    from sqlalchemy import select
+
+    from app.db.models import User
+
+    verifier, challenge = make_pkce_pair()
+    code = await _run_authorize_to_code(client, db_session, verifier, challenge)
+    body = (
+        await client.post(
+            "/token",
+            data={"grant_type": "authorization_code", "code": code, "code_verifier": verifier, "client_id": "test-client"},
+        )
+    ).json()
+    assert _claims(body["access_token"])["email_verified"] is False
+    info = (await client.get("/userinfo", headers={"Authorization": f"Bearer {body['access_token']}"})).json()
+    assert info["email_verified"] is False
+
+    user = (await db_session.execute(select(User).where(User.email == "alice@example.com"))).scalar_one()
+    user.email_verified = True
+    await db_session.commit()
+
+    # /userinfo reads it live; the token carries it from the next refresh on.
+    info = (await client.get("/userinfo", headers={"Authorization": f"Bearer {body['access_token']}"})).json()
+    assert info["email_verified"] is True
+    refreshed = (
+        await client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "refresh_token": body["refresh_token"], "client_id": "test-client"},
+        )
+    ).json()
+    assert _claims(refreshed["access_token"])["email_verified"] is True

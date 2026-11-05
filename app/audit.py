@@ -30,6 +30,9 @@ _RECENT_EVENTS_MAXLEN = 500
 _recent_events: deque[dict] = deque(maxlen=_RECENT_EVENTS_MAXLEN)
 _queue: asyncio.Queue[dict] | None = None
 _writer: asyncio.Task | None = None
+# Every event is also published here, so open admin console pages update
+# without a refresh (see GET /admin/api/stream).
+LIVE_CHANNEL = "audit_live"
 _WRITE_BATCH = 200
 _PRUNE_EVERY_SECONDS = 60 * 60
 
@@ -56,10 +59,17 @@ def log_event(event: str, level: int = logging.INFO, **fields: Any) -> None:
         _queue.put_nowait(payload)
 
 
-async def start_audit_writer() -> None:
+async def start_audit_writer(session_factory=None, redis=None) -> None:
+    """Defaults to the app's own database and Redis; tests pass their own."""
     global _queue, _writer
+    if session_factory is None:
+        from app.db.session import runtime_session_factory as session_factory
+    if redis is None:
+        from app.db.redis_client import get_redis
+
+        redis = get_redis()
     _queue = asyncio.Queue()
-    _writer = asyncio.create_task(_write_forever(_queue))
+    _writer = asyncio.create_task(_write_forever(_queue, session_factory, redis))
 
 
 async def stop_audit_writer() -> None:
@@ -78,16 +88,22 @@ async def stop_audit_writer() -> None:
     _writer = None
 
 
-async def _write_forever(queue: asyncio.Queue[dict]) -> None:
-    from app.db.session import runtime_session_factory
-
+async def _write_forever(queue: asyncio.Queue[dict], session_factory, redis) -> None:
     last_prune = 0.0
     while True:
         batch = [await queue.get()]
         while len(batch) < _WRITE_BATCH and not queue.empty():
             batch.append(queue.get_nowait())
         try:
-            async with runtime_session_factory() as db:
+            # Published before storing, so open consoles see it straight away.
+            async with redis.pipeline(transaction=False) as pipe:
+                for p in batch:
+                    pipe.publish(LIVE_CHANNEL, json.dumps(p, default=str))
+                await pipe.execute()
+        except Exception:
+            logging.getLogger("app.audit.writer").exception("Couldn't publish %d activity log entries", len(batch))
+        try:
+            async with session_factory() as db:
                 await store_events(db, batch)
                 if time.time() - last_prune > _PRUNE_EVERY_SECONDS:
                     await prune_events(db)

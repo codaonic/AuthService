@@ -96,6 +96,7 @@ async def token_endpoint(
     else:
         raise HTTPException(400, "unsupported_grant_type")
 
+    user = None
     if grant_type != "client_credentials":
         # A user disabled after issuing this code/refresh token shouldn't be
         # able to keep minting access tokens from it. set_tenant_pool is
@@ -116,8 +117,14 @@ async def token_endpoint(
         if registered is not None and not registered.enabled:
             raise HTTPException(400, "invalid_target: resource is disabled")
 
+    # Re-read on every refresh, so an app sees a newly verified email at the
+    # next token refresh.
     access_token, expires_in = mint_access_token(
-        sub=subject, aud=resource, client_id=client_id, scope=scope
+        sub=subject,
+        aud=resource,
+        client_id=client_id,
+        scope=scope,
+        email_verified=user.email_verified if user is not None else None,
     )
     log_event(
         "token_issued",

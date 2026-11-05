@@ -1,3 +1,4 @@
+import json
 import logging
 import secrets
 import time
@@ -5,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy import delete, func, select
@@ -12,11 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.auth import get_current_admin
 from app.admin.analytics import analytics, outcome
-from app.audit import client_ip, log_event, record_failed_login, recent_events
+from app.audit import LIVE_CHANNEL, client_ip, log_event, record_failed_login, recent_events
 from app.auth.lockout import clear_failures, is_locked, record_failure
 from app.auth.password_reset import create_email_verification_token, create_password_reset_token
 from app.auth.passwords import hash_password_async, verify_password_async
-from app.auth.sessions import create_session, delete_session, revoke_all_sessions_for_user
+from app.auth.sessions import create_session, delete_session, get_session_user, revoke_all_sessions_for_user
 from app.config import get_settings
 from app.db.models import (
     DEFAULT_CLIENT_SESSION_TTL_SECONDS,
@@ -382,6 +384,7 @@ async def api_create_pool(
     body: CreatePoolBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     pool = await get_or_create_pool(db, body.name)
+    log_event("pool_created", pool_name=pool.name, admin_id=str(admin.id))
     return _pool_json(pool)
 
 
@@ -687,6 +690,7 @@ async def api_create_client(
     db.add(client)
     await db.commit()
 
+    log_event("client_created", client_id=client.client_id, admin_id=str(admin.id))
     result = {**_client_json(client, pool.name if pool else ""), "client_secret": client_secret}
     return result
 
@@ -1205,6 +1209,7 @@ async def api_create_user(
     )
     await db.commit()
     await db.refresh(user)
+    log_event("user_created", user_id=str(user.id), email=user.email, client_id=user.client_id, admin_id=str(admin.id))
 
     if not body.email_verified:
         token = await create_email_verification_token(redis, str(user.id))
@@ -1395,6 +1400,55 @@ async def api_dismiss_email_link(
     held_id: str, admin: AdminUser = Depends(require_admin), redis: Redis = Depends(get_redis)
 ):
     await dismiss_held_link(redis, held_id)
+
+
+# --- Live updates ---
+
+_STREAM_HEARTBEAT_SECONDS = 15
+_STREAM_SESSION_CHECK_SECONDS = 30
+
+
+@router.get("/stream")
+async def api_stream(
+    request: Request,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Activity log events as they happen (Server-Sent Events), so open
+    console pages update without a refresh. Ends when the admin signs out."""
+    session_id = request.cookies.get(get_settings().admin_session_cookie_name)
+    # Nothing below needs the database; don't hold a connection open as long
+    # as the page is.
+    await db.close()
+
+    async def events():
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(LIVE_CHANNEL)
+        last_check = time.monotonic()
+        try:
+            yield "retry: 3000\n\n"
+            while not await request.is_disconnected():
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=_STREAM_HEARTBEAT_SECONDS)
+                if message and message["type"] == "message":
+                    [event] = _format_events([json.loads(message["data"])])
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+                else:
+                    yield ": still here\n\n"
+                if time.monotonic() - last_check > _STREAM_SESSION_CHECK_SECONDS:
+                    if await get_session_user(redis, session_id) is None:
+                        return
+                    last_check = time.monotonic()
+        finally:
+            await pubsub.unsubscribe(LIVE_CHANNEL)
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        # X-Accel-Buffering: nginx passes each event on instead of buffering.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Audit log ---

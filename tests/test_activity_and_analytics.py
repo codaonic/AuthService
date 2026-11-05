@@ -234,3 +234,74 @@ async def test_deleting_a_user_keeps_their_activity(client, db_session):
     events = (await client.get("/admin/api/audit", params={"q": "ana@example.com"})).json()
     assert {e["event"] for e in events} >= {"login_success", "user_deleted"}
     assert (await analytics(db_session, days=30, user="ana@example.com"))["totals"]["success"] >= 1
+
+
+# --- Used links leave the Dashboard; open consoles hear about events ---
+
+
+@pytest.mark.asyncio
+async def test_used_verification_link_leaves_the_dashboard(client, db_session, redis_client, monkeypatch):
+    from app.auth.password_reset import create_email_verification_token
+    from app.email import held_links, send_verification_email
+
+    monkeypatch.setenv("SMTP_HOST", "")
+    get_settings.cache_clear()
+    await create_client(db_session)
+    user = await create_user(db_session, email="ana@example.com")
+    token = await create_email_verification_token(redis_client, str(user.id))
+    await send_verification_email(redis_client, user.email, token)
+    assert len(await held_links(redis_client)) == 1
+
+    resp = await client.get("/verify-email", params={"token": token})
+    assert resp.status_code == 200
+    assert await held_links(redis_client) == []
+
+
+@pytest.mark.asyncio
+async def test_used_reset_link_leaves_the_dashboard(client, db_session, redis_client, monkeypatch):
+    from app.auth.password_reset import create_password_reset_token
+    from app.email import held_links, send_password_reset_email
+
+    monkeypatch.setenv("SMTP_HOST", "")
+    get_settings.cache_clear()
+    await create_client(db_session)
+    user = await create_user(db_session, email="ana@example.com")
+    token = await create_password_reset_token(redis_client, str(user.id))
+    await send_password_reset_email(redis_client, user.email, token)
+
+    resp = await client.post(
+        "/reset-password", data={"token": token, "password": "new-password!", "confirm_password": "new-password!"}
+    )
+    assert resp.status_code == 200
+    assert await held_links(redis_client) == []
+
+
+@pytest.mark.asyncio
+async def test_writer_publishes_events_for_open_consoles_and_stores_them(db_session, redis_client):
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(audit.LIVE_CHANNEL)
+    await audit.start_audit_writer(async_sessionmaker(db_session.bind, expire_on_commit=False), redis_client)
+    try:
+        audit.log_event("email_verified", user_id="u-1", email="ana@example.com")
+        message = None
+        for _ in range(50):
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+            if message:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await audit.stop_audit_writer()
+        await pubsub.aclose()
+
+    assert message is not None and '"email_verified"' in message["data"]
+    audit._recent_events.clear()  # as after a restart: only what was stored
+    assert [e["event"] for e in await audit.recent_events(db_session)] == ["email_verified"]
+
+
+@pytest.mark.asyncio
+async def test_stream_needs_an_admin(client):
+    assert (await client.get("/admin/api/stream")).status_code == 401
