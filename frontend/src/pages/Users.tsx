@@ -10,6 +10,7 @@ import { useToast } from "../components/ToastProvider";
 import { PasswordInput } from "../components/PasswordInput";
 import { CloseIcon, PlusIcon, UsersIcon } from "../components/Icons";
 import { api, ApiError, AppUser, AuditEvent, Client, UserPage } from "../api";
+import { useDebounced, useLiveEvents } from "../live";
 
 function appName(c: Client) {
   return c.client_name || c.client_id;
@@ -67,6 +68,19 @@ export function Users() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, clientFilter, pool, currentPage]);
+
+  // Stay current without a refresh: a click on a verification link shows up
+  // straight away; new signups and changes from elsewhere reload this page.
+  const reloadSoon = useDebounced(() => load(), 500);
+  useLiveEvents((m) => {
+    if (m === "resync") return void load();
+    const userId = typeof m.extra.user_id === "string" ? m.extra.user_id : null;
+    if (m.event === "email_verified" && userId) {
+      setPage((p) => p && { ...p, items: p.items.map((u) => (u.id === userId ? { ...u, email_verified: true } : u)) });
+    } else if (m.event === "signup_success" || m.event.startsWith("user_")) {
+      reloadSoon();
+    }
+  });
 
   // One row per person: the same email can have an account in several apps.
   const people = useMemo(() => {
@@ -335,6 +349,13 @@ function PersonPanel({
   useEffect(() => {
     api.get<AuditEvent[]>(`/audit?${new URLSearchParams({ q: email, limit: "15" })}`).then(setActivity);
   }, [email]);
+
+  // Their new activity appears here as it happens.
+  useLiveEvents((m) => {
+    if (m === "resync") return;
+    const theirs = m.extra.email === email || accounts.some((a) => a.id === m.extra.user_id);
+    if (theirs) setActivity((prev) => prev && [m, ...prev.filter((e) => e.id !== m.id)].slice(0, 15));
+  });
 
   return (
     <>

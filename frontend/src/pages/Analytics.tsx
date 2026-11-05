@@ -4,6 +4,7 @@ import { ChartIcon } from "../components/Icons";
 import { BreakdownBars, DailyChart, formatCount, OutcomeTag, OutcomeTotals } from "../components/charts";
 import { eventLabel } from "../events";
 import { Analytics as AnalyticsData, api, Client } from "../api";
+import { LiveIndicator, useDebounced, useLiveEvents } from "../live";
 
 const PERIODS = [7, 30, 90];
 
@@ -17,6 +18,7 @@ export function Analytics() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const request = useRef(0);
+  const [tick, setTick] = useState(0);
 
   // The application list only changes elsewhere, so it's loaded once.
   useEffect(() => {
@@ -36,7 +38,11 @@ export function Analytics() {
     api.get<AnalyticsData>(`/analytics?${params}`).then((d) => {
       if (id === request.current) setData(d);
     });
-  }, [days, clientId, person]);
+  }, [days, clientId, person, tick]);
+
+  // New events refresh the numbers, at most every few seconds.
+  const refreshSoon = useDebounced(() => setTick((t) => t + 1), 3000);
+  useLiveEvents(() => refreshSoon());
 
   const names = new Map(clients.map((c) => [c.client_id, c.client_name || c.client_id]));
   const appName = (id: string) => names.get(id) ?? id;
@@ -56,12 +62,15 @@ export function Analytics() {
           </span>
           <h1 className="title">Analytics</h1>
         </div>
+        <div className="header__aside">
+        <LiveIndicator />
         <div className="segmented" role="radiogroup" aria-label="Period">
           {PERIODS.map((p) => (
             <button key={p} type="button" role="radio" aria-checked={days === p} onClick={() => setDays(p)}>
               {p} days
             </button>
           ))}
+        </div>
         </div>
       </div>
       <p className="lead">

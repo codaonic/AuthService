@@ -6,6 +6,7 @@ import { EmptyState } from "../components/EmptyState";
 import { OUTCOMES, OutcomeIcon } from "../components/charts";
 import { OUTCOME_LABELS } from "../events";
 import { api, AuditEvent, Outcome } from "../api";
+import { LiveIndicator, useLiveEvents } from "../live";
 
 const PAGE = 100;
 
@@ -46,6 +47,20 @@ export function AuditLog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outcome, query]);
 
+  // New entries appear at the top as they happen, if they match the filters.
+  useLiveEvents((m) => {
+    if (m === "resync") {
+      fetchPage().then((page) => {
+        setEvents(page);
+        setHasMore(page.length === PAGE);
+      });
+      return;
+    }
+    if (outcome && m.outcome !== outcome) return;
+    if (query && !JSON.stringify(m).toLowerCase().includes(query.toLowerCase())) return;
+    setEvents((prev) => prev && [m, ...prev.filter((e) => e.id !== m.id)]);
+  });
+
   const loadOlder = async () => {
     if (!events?.length) return;
     setLoadingMore(true);
@@ -69,6 +84,7 @@ export function AuditLog() {
           </span>
           <h1 className="title">Activity log</h1>
         </div>
+        <LiveIndicator />
       </div>
       <p className="lead">
         Sign-ins, signups and changes made in this console. Entries are kept for 90 days by default

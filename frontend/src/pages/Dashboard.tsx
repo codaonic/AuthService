@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, DashboardData, HeldEmailLink } from "../api";
+import { api, AuditEvent, DashboardData, HeldEmailLink } from "../api";
+import { LiveIndicator, useDebounced, useLiveEvents } from "../live";
 import { ActivityList } from "../components/ActivityList";
 import { DailyChart, OutcomeTotals } from "../components/charts";
 import { useToast } from "../components/ToastProvider";
@@ -18,6 +19,25 @@ const KIND_LABELS: Record<HeldEmailLink["kind"], string> = {
   email_verification: "Email verification",
 };
 
+// Events after which the list of unsent email links may have changed.
+const LINK_EVENTS = new Set(["email_link_held", "email_verified", "password_reset_completed"]);
+
+// Events that change one of the counts at the top.
+const changesCounts = (event: string) =>
+  event === "signup_success" || /^(client|pool|resource|user)_(created|registered|deleted)$/.test(event);
+
+/** Counts a live event into the last-7-days numbers. */
+function addToWeek(week: DashboardData["week"], e: AuditEvent): DashboardData["week"] {
+  const day = Math.floor(e.ts / 86400) * 86400;
+  const series = week.series.some((d) => d.day === day)
+    ? week.series
+    : [...week.series.slice(1), { day, success: 0, warning: 0, error: 0 }];
+  return {
+    totals: { ...week.totals, [e.outcome]: week.totals[e.outcome] + 1 },
+    series: series.map((d) => (d.day === day ? { ...d, [e.outcome]: d[e.outcome] + 1 } : d)),
+  };
+}
+
 function expiresIn(expires: number): string {
   const minutes = Math.max(0, Math.round((expires * 1000 - Date.now()) / 60000));
   if (minutes < 60) return `${minutes} min`;
@@ -28,10 +48,22 @@ function expiresIn(expires: number): string {
 export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
 
-  // Everything on this page comes from one request.
+  // Everything on this page comes from one request...
+  const load = () => api.get<DashboardData>("/dashboard").then(setData);
   useEffect(() => {
-    api.get<DashboardData>("/dashboard").then(setData);
+    load();
   }, []);
+
+  // ...and then stays current as things happen, without a refresh.
+  const reloadSoon = useDebounced(() => load(), 800);
+  useLiveEvents((m) => {
+    if (m === "resync") return void load();
+    if (changesCounts(m.event)) return void reloadSoon();
+    setData((d) => d && { ...d, recent: [m, ...d.recent.filter((e) => e.id !== m.id)].slice(0, 8), week: addToWeek(d.week, m) });
+    if (LINK_EVENTS.has(m.event)) {
+      api.get<DashboardData["email_links"]>("/email-links").then((links) => setData((d) => d && { ...d, email_links: links }));
+    }
+  });
 
   if (!data) return null;
 
@@ -44,6 +76,7 @@ export function Dashboard() {
           </span>
           <h1 className="title">Dashboard</h1>
         </div>
+        <LiveIndicator />
       </div>
 
       {data.email_links.links.length > 0 && (

@@ -2,6 +2,7 @@ import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAdmin } from "../AdminContext";
 import { useTheme } from "../theme";
 import { api } from "../api";
+import { LiveEventsProvider } from "../live";
 import {
   AccountIcon,
   ActivityIcon,
@@ -53,6 +54,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const initial = admin?.email?.[0]?.toUpperCase() ?? "?";
 
   return (
+    <LiveEventsProvider>
     <div className="shell">
       <nav className="nav">
         <Link to="/admin" className="nav__brand">
@@ -113,5 +115,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
     </div>
+    </LiveEventsProvider>
   );
 }
