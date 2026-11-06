@@ -18,6 +18,7 @@ from webauthn import (
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
 from app.audit import client_ip, log_event
+from app.auth.lockout import is_locked, record_failure
 from app.auth.passwords import hash_password_async, verify_password_async
 from app.auth.sessions import (
     get_session_user,
@@ -38,6 +39,7 @@ from app.db.models import User, WebAuthnCredential
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
+from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 from app.middleware.rate_limit import limiter
 from app.oidc.authorize import (
     _continue_flow,
@@ -243,8 +245,14 @@ async def change_account_password(
     current_session_id = request.cookies.get(settings.session_cookie_name)
     if current_session_id:
         await revoke_other_sessions(redis, str(user.id), current_session_id)
+    # Apps signed in with the old password keep a refresh token for up to
+    # 30 days; revoke them too, as a password reset does, so someone who
+    # knew the old password loses access everywhere.
+    await revoke_all_refresh_tokens_for_user(db, redis, str(user.id))
 
-    ctx = await _account_context(request, db, redis, user, success="Password updated")
+    ctx = await _account_context(
+        request, db, redis, user, success="Password updated. You've been signed out of your other devices and apps."
+    )
     return templates.TemplateResponse(request, "account.html", ctx)
 
 
@@ -292,11 +300,25 @@ async def revoke_other_account_sessions(
 
 @router.post("/account/webauthn/register/options")
 async def webauthn_register_options(
-    request: Request, db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)
+    request: Request,
+    current_password: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     user = await _current_user(request, db, redis)
     if user is None:
         raise HTTPException(401, "Not signed in")
+    # A passkey is a lasting way in, so a signed-in browser alone isn't
+    # enough to add one: someone holding a stolen session would otherwise
+    # keep access after the password is changed. Wrong guesses count toward
+    # the same lockout as the login form. The registration challenge (needed
+    # by /verify) is only issued after this check.
+    if await is_locked(redis, "user", user.email):
+        raise HTTPException(429, "Too many attempts. Try again in a few minutes.")
+    if not current_password or not await verify_password_async(current_password, user.password_hash):
+        await record_failure(redis, "user", user.email)
+        log_event("passkey_add_failed", user_id=str(user.id), email=user.email, reason="wrong_password", ip=client_ip(request))
+        raise HTTPException(403, "Your current password is incorrect.")
 
     result = await db.execute(select(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id))
     existing = result.scalars().all()

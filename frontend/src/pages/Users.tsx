@@ -489,7 +489,13 @@ function AccountCard({
       });
       onUpdated(updated);
       setEditing(false);
-      show(form.client_id && form.client_id !== u.client_id ? `Moved to ${accountApp(updated)} and signed out everywhere` : "Changes saved");
+      show(
+        form.client_id && form.client_id !== u.client_id
+          ? `Moved to ${accountApp(updated)} and signed out everywhere`
+          : updated.email !== u.email
+            ? "Saved. The new email needs verifying: use Send verification link"
+            : "Changes saved",
+      );
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't save your changes");
     } finally {

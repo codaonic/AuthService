@@ -19,6 +19,8 @@ const EVENT_LABELS: Record<string, string> = {
   client_verified_email_optional: "Verified email no longer required",
   email_link_held: "Email couldn't be sent",
   webauthn_registered: "Added a passkey",
+  passkey_add_failed: "Passkey not added: wrong password",
+  user_email_changed: "Email changed by an admin",
   webauthn_login_success: "Logged in with a passkey",
   mtls_auth_failed: "Client certificate rejected",
   anomalous_activity: "Unusual activity",
@@ -67,6 +69,7 @@ const VALUE_LABELS: Record<string, string> = {
   invalid_credentials: "Wrong email or password",
   invalid_mfa_code: "Wrong 2FA code",
   locked_out: "Too many attempts",
+  wrong_password: "Wrong password",
 };
 
 export function eventDetails(extra: Record<string, unknown>): { label: string; value: string }[] {

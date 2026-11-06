@@ -116,6 +116,10 @@
   <p style="color:var(--color-text-secondary); font-size:13.5px; margin:0 0 16px;">No passkeys registered yet.</p>
   {% endif %}
 
+  <div class="field">
+    <label for="passkey-current-password">Your current password</label>
+    <input id="passkey-current-password" type="password" autocomplete="current-password" placeholder="Needed to add a passkey">
+  </div>
   <button type="button" class="btn btn--primary btn--block" data-webauthn-register>
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 5v14M5 12h14"/>

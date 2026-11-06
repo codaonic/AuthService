@@ -1327,6 +1327,11 @@ async def api_edit_user(
         raise HTTPException(400, f"'{body.email}' already exists in that application")
 
     client_changed = target_client_id != user.client_id
+    if body.email != user.email:
+        # The new address hasn't been confirmed by anyone; an app that
+        # requires a verified email will ask them to confirm it.
+        user.email_verified = False
+        log_event("user_email_changed", user_id=str(user.id), email=body.email, admin_id=str(admin.id))
     user.email = body.email
     user.username = body.username or None
     user.first_name = body.first_name or None

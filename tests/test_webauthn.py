@@ -42,7 +42,8 @@ async def _login_via_password(client, db_session, email="alice@example.com", pas
 async def test_register_passkey_options_returns_challenge(client, db_session):
     await _login_via_password(client, db_session)
 
-    resp = await client.post("/account/webauthn/register/options")
+    # Adding a passkey needs the current password.
+    resp = await client.post("/account/webauthn/register/options", data={"current_password": "pw-12345!"})
     assert resp.status_code == 200
     body = resp.json()
     assert "challenge" in body
@@ -59,7 +60,7 @@ async def test_register_passkey_options_requires_session(client, db_session):
 async def test_register_passkey_full_flow(client, db_session):
     await _login_via_password(client, db_session)
 
-    opts_resp = await client.post("/account/webauthn/register/options")
+    opts_resp = await client.post("/account/webauthn/register/options", data={"current_password": "pw-12345!"})
     assert opts_resp.status_code == 200
 
     fake_verification = SimpleNamespace(

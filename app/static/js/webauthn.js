@@ -96,11 +96,20 @@ async function loginWithPasskey(button) {
 async function registerPasskey(button) {
   button.disabled = true;
   try {
-    const optsResp = await fetch("/account/webauthn/register/options", { method: "POST" });
+    // Adding a passkey needs the current password (see the server side).
+    const passwordInput = document.getElementById("passkey-current-password");
+    const body = new FormData();
+    body.append("current_password", passwordInput ? passwordInput.value : "");
+    const optsResp = await fetch("/account/webauthn/register/options", { method: "POST", body });
     if (!optsResp.ok) {
-      alert("Could not start passkey registration.");
+      let message = "Could not start adding a passkey.";
+      try {
+        message = (await optsResp.json()).detail || message;
+      } catch (e) {}
+      alert(message);
       return;
     }
+    if (passwordInput) passwordInput.value = "";
     const options = decodeCreationOptions(await optsResp.json());
     const credential = await navigator.credentials.create({ publicKey: options });
     const nickname = prompt('Name this passkey (e.g. "MacBook Touch ID")', "") || "";
