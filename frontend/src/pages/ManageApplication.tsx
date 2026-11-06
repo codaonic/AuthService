@@ -263,7 +263,7 @@ export function ManageApplication({
                 <GeneralSection client={client} draft={draft} set={set} editable={editable} />
               )}
               {current === "signin" && (
-                <SignInSection client={client} draft={draft} set={set} flip={flip} flipping={flipping} />
+                <SignInSection client={client} draft={draft} set={set} flip={flip} flipping={flipping} confirm={confirm} />
               )}
               {current === "people" && (
                 <PeopleSection client={client} allClients={allClients} flip={flip} flipping={flipping} onChanged={onChanged} confirm={confirm} />
@@ -351,6 +351,11 @@ function Summary({
       client.allow_signup
         ? { text: "Anyone can create an account", section: "signin" }
         : { text: "Only admins can add accounts", section: "signin" },
+    );
+    facts.push(
+      client.require_verified_email
+        ? { text: "Email must be verified first", section: "signin" }
+        : { text: "Unverified emails can get in", section: "signin", tone: "warn" },
     );
     const others = allClients
       .filter((c) => c.pool_name && c.pool_name === client.pool_name && c.id !== client.id)
@@ -500,16 +505,47 @@ function SignInSection({
   set,
   flip,
   flipping,
+  confirm,
 }: {
   client: Client;
   draft: Draft;
   set: SetDraft;
   flip: Flip;
   flipping: string | null;
+  confirm: ReturnType<typeof useConfirmDialog>["confirm"];
 }) {
+  // Turning it on holds back everyone not yet verified, so say how many first.
+  const toggleVerifiedEmail = async (on: boolean) => {
+    if (!on) return flip("toggle-require-verified-email", "People can get in before verifying their email");
+    const { count } = await api.get<{ count: number }>(`/clients/${client.client_id}/unverified-users`);
+    if (count === 0) return flip("toggle-require-verified-email", "A verified email is now required");
+    confirm({
+      title: "Require a verified email?",
+      description: `${count === 1 ? "1 person" : `${count} people`} who can log in to ${displayName(client)} haven't verified their email. Next time they try, they'll be asked to open the link we email them first. You can verify someone by hand on the Users page.`,
+      confirmLabel: "Require it",
+      onConfirm: () => flip("toggle-require-verified-email", "A verified email is now required"),
+    });
+  };
+
   return (
     <>
       <SectionHeading title="Sign-in & signup" />
+      <SettingRow
+        title="Require a verified email"
+        hint={
+          client.require_verified_email
+            ? "On: after signing up or logging in, people who haven't confirmed their email see \"Check your email\" and carry on once they open the link."
+            : "Off: people get in straight away; the verification email is only informational."
+        }
+        control={
+          <Switch
+            label="Require a verified email"
+            checked={client.require_verified_email}
+            disabled={flipping !== null}
+            onChange={toggleVerifiedEmail}
+          />
+        }
+      />
       <SettingRow
         title="Let people create their own account"
         hint={

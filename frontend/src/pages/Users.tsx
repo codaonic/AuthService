@@ -502,6 +502,16 @@ function AccountCard({
     show(emailed ? `Password reset emailed to ${u.email}` : "Email isn't sending, so the reset link is on the Dashboard");
   };
 
+  const markVerified = async () => {
+    onUpdated(await api.post<AppUser>(`/users/${u.id}/mark-verified`));
+    show(`${u.email} is now verified`);
+  };
+
+  const sendVerification = async () => {
+    const { emailed } = await api.post<{ emailed: boolean }>(`/users/${u.id}/send-verification`);
+    show(emailed ? `Verification link emailed to ${u.email}` : "Email isn't sending, so the link is on the Dashboard");
+  };
+
   const signOut = async () => {
     await api.post(`/users/${u.id}/sign-out`);
     show(`${u.email} was signed out everywhere`);
@@ -590,6 +600,16 @@ function AccountCard({
           <button type="button" className="btn btn--secondary" onClick={startEdit}>
             Edit details
           </button>
+          {!u.email_verified && (
+            <>
+              <button type="button" className="btn btn--secondary" onClick={sendVerification}>
+                Send verification link
+              </button>
+              <button type="button" className="btn btn--secondary" onClick={markVerified}>
+                Mark email as verified
+              </button>
+            </>
+          )}
           <button type="button" className="btn btn--secondary" onClick={sendReset}>
             Send password reset
           </button>

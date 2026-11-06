@@ -93,6 +93,8 @@ export interface Client {
   restrict_access: boolean;
   roles_enabled: boolean;
   allow_signup_role_selection: boolean;
+  /** People must confirm their email before they get into this app. */
+  require_verified_email: boolean;
   cimd_fetched_at: string | null;
   session_ttl_seconds: number;
   post_logout_redirect_uris: string[];

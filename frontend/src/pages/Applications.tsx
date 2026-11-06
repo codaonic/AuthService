@@ -52,6 +52,7 @@ export function Applications() {
   const [sharing, setSharing] = useState<Sharing>("shared");
   const [sharedPool, setSharedPool] = useState("");
   const [allowSignup, setAllowSignup] = useState(true);
+  const [requireVerified, setRequireVerified] = useState(true);
   const [clientType, setClientType] = useState("confidential");
   const [grants, setGrants] = useState<string[]>(PRESET_DEFAULTS.website.grants);
   const [scope, setScope] = useState("");
@@ -147,6 +148,7 @@ export function Applications() {
         application_type: PRESET_DEFAULTS[preset].applicationType,
         user_pool: resolvedPool(),
         allow_signup: allowSignup,
+        require_verified_email: preset === "service" ? false : requireVerified,
         logo_url: logoUrl,
         brand_color: brandColor,
         session_ttl_seconds:
@@ -408,6 +410,19 @@ export function Applications() {
                   On: anyone can sign up themselves (from this app, or any other app in the same
                   login group). Off: only you can add users — from Manage on this app, or the
                   Users page.
+                </span>
+              </div>
+            )}
+
+            {preset !== "service" && (
+              <div className="field">
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                  <input type="checkbox" checked={requireVerified} onChange={(e) => setRequireVerified(e.target.checked)} />
+                  Require a verified email before people get in
+                </label>
+                <span className="field__hint">
+                  On: people confirm their email from a link before they can use the app. Off: they get
+                  in straight away.
                 </span>
               </div>
             )}
