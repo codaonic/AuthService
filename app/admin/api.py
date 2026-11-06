@@ -105,6 +105,7 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "restrict_access": client.restrict_access,
         "roles_enabled": client.roles_enabled,
         "allow_signup_role_selection": client.allow_signup_role_selection,
+        "require_verified_email": client.require_verified_email,
         "cimd_fetched_at": client.cimd_fetched_at.isoformat() if client.cimd_fetched_at else None,
         "session_ttl_seconds": client.session_ttl_seconds,
         "post_logout_redirect_uris": client.post_logout_redirect_uris or [],
@@ -644,6 +645,8 @@ class CreateClientBody(BaseModel):
     application_type: str = "web"
     user_pool: str = ""
     allow_signup: bool = False
+    # On for apps added from the console; turn off for one that shouldn't wait.
+    require_verified_email: bool = True
     logo_url: str = ""
     brand_color: str = ""
     # Omitted: websites get the 7-day default, everything else (mobile/AI
@@ -681,6 +684,7 @@ async def api_create_client(
         registration_method="static",
         application_type=body.application_type,
         allow_signup=body.allow_signup,
+        require_verified_email=body.require_verified_email,
         logo_url=body.logo_url.strip() or None,
         brand_color=body.brand_color.strip() or None,
         session_ttl_seconds=session_ttl,
@@ -939,6 +943,38 @@ async def api_toggle_signup_role_selection(
     client.allow_signup_role_selection = not client.allow_signup_role_selection
     await db.commit()
     return _client_json(client, pool_name)
+
+
+@router.post("/clients/{client_id}/toggle-require-verified-email")
+async def api_toggle_require_verified_email(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    client, pool_name = await _client_with_pool(db, client_id)
+    client.require_verified_email = not client.require_verified_email
+    await db.commit()
+    log_event(
+        "client_verified_email_" + ("required" if client.require_verified_email else "optional"),
+        client_id=client_id,
+        admin_id=str(admin.id),
+    )
+    return _client_json(client, pool_name)
+
+
+@router.get("/clients/{client_id}/unverified-users")
+async def api_count_unverified_users(
+    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    """How many people who can log in to this app haven't verified their
+    email -- the ones asked to verify if the app starts requiring it."""
+    client, _ = await _client_with_pool(db, client_id)
+    accounts = select(func.count()).select_from(User).where(User.email_verified.is_(False), User.status == "active")
+    if client.user_pool_id is not None:
+        accounts = accounts.where(
+            User.client_id.in_(select(Client.client_id).where(Client.user_pool_id == client.user_pool_id))
+        )
+    else:
+        accounts = accounts.where(User.client_id == client.client_id)
+    return {"count": await db.scalar(accounts) or 0}
 
 
 @router.get("/clients/{client_id}/roles")
@@ -1366,6 +1402,49 @@ async def api_send_password_reset(
         raise HTTPException(404, "unknown_user")
     token = await create_password_reset_token(redis, str(user.id))
     return {"emailed": await send_password_reset_email(redis, user.email, token)}
+
+
+@router.post("/users/{user_id}/mark-verified")
+async def api_mark_email_verified(
+    user_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """For someone whose email you've confirmed another way."""
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is None:
+        raise HTTPException(404, "unknown_user")
+    user.email_verified = True
+    await db.commit()
+    # Any verification link still waiting on the Dashboard is no longer needed.
+    for held in await held_links(redis):
+        if held["kind"] == "email_verification" and held["email"] == user.email:
+            await dismiss_held_link(redis, held["id"])
+    log_event("email_verified", user_id=str(user.id), email=user.email, client_id=user.client_id, admin_id=str(admin.id))
+    row = (
+        await db.execute(
+            select(Client.client_name, UserPool.name)
+            .outerjoin(UserPool, Client.user_pool_id == UserPool.id)
+            .where(Client.client_id == user.client_id)
+        )
+    ).first()
+    return _user_json(user, row[0] if row else user.client_id, row[1] if row else None)
+
+
+@router.post("/users/{user_id}/send-verification")
+async def api_send_verification(
+    user_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """`emailed` is false when the link is waiting on the Dashboard instead."""
+    user = await db.get(User, uuid.UUID(user_id))
+    if user is None:
+        raise HTTPException(404, "unknown_user")
+    token = await create_email_verification_token(redis, str(user.id))
+    return {"emailed": await send_verification_email(redis, user.email, token)}
 
 
 # --- Analytics ---

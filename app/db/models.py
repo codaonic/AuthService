@@ -134,6 +134,12 @@ class Client(Base):
     # client's defined roles. Meaningless unless roles_enabled and
     # allow_signup are both also on.
     allow_signup_role_selection: Mapped[bool] = mapped_column(Boolean, default=False)
+    # On: people must confirm their email before they get into this app --
+    # after signing up, logging in, or with an existing session they see a
+    # "check your email" page instead (see _continue_flow). Off for
+    # self-registered clients and for apps that existed before the setting;
+    # the admin console turns it on for every app added there.
+    require_verified_email: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     # How long a sign-in counts for this application, measured from the
     # moment the user last actually authenticated. Past it, /authorize asks
     # for credentials again and refresh tokens stop working. 0 (the default,

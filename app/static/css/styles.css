@@ -850,3 +850,22 @@ body.embed {
 .embed .page__footer--brand {
   margin-top: 0;
 }
+
+/* "Check your email" page */
+.check-email__text {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.check-email__text + .check-email__text {
+  margin-top: -6px;
+}
+
+.check-email__status {
+  margin: 0 0 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text);
+}

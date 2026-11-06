@@ -313,3 +313,42 @@ async def test_wrong_password_keeps_the_typed_email(client, db_session):
     resp = await client.post("/login", data={"flow_id": flow_id, "email": "alice@example.com", "password": "wrong"})
 
     assert 'value="alice@example.com"' in resp.text
+
+
+@pytest.mark.asyncio
+async def test_embedded_signup_waits_for_a_verified_email_inside_the_frame(client, db_session, monkeypatch):
+    """With "require a verified email" on, the embedded form shows "check
+    your email" in the frame, then hands the page its code once verified."""
+    links: list[str] = []
+
+    async def fake_send(to, subject, body):
+        links.extend(w for w in body.split() if "/verify-email?token=" in w)
+
+    monkeypatch.setattr("app.email.send_email", fake_send)
+    app_client = await _embeddable_client(db_session, allow_signup=True)
+    app_client.require_verified_email = True
+    await db_session.commit()
+    _, challenge = make_pkce_pair()
+
+    form = await client.get("/authorize", params=_embed_params(challenge, screen="signup"))
+    flow_id = extract_hidden_value(form.text, "flow_id")
+    waiting = await client.post(
+        "/signup",
+        data={
+            "flow_id": flow_id,
+            "first_name": "Ava",
+            "last_name": "Stone",
+            "email": "ava@example.com",
+            "password": "ava-password-1",
+            "confirm_password": "ava-password-1",
+        },
+    )
+    assert "Check your email" in waiting.text
+    assert waiting.headers["content-security-policy"] == f"frame-ancestors {ORIGIN}"
+    assert 'class="embed"' in waiting.text
+
+    token = links[0].split("token=")[1]
+    assert (await client.get("/verify-email", params={"token": token})).status_code == 200
+    done = await client.post("/verify-email/continue", data={"flow_id": flow_id})
+    assert done.headers["content-security-policy"] == f"frame-ancestors {ORIGIN}"
+    assert _data_attr(done.text, "code")

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Check your email{% endblock %}
+
+{% block icon %}
+<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="5.5" width="17" height="13" rx="2"/>
+  <path d="M4 7l8 6 8-6"/>
+</svg>
+{% endblock %}
+
+{% block heading %}Check your email{% endblock %}
+
+{% block subheading %}
+<p class="card__subtitle">{{ client_name or client_id }} needs you to confirm your email address first.</p>
+{% endblock %}
+
+{% block content %}
+<p class="check-email__text">
+  We sent a link to <strong>{{ email }}</strong>. Open it to verify your email, and you'll carry on
+  here automatically.
+</p>
+<p class="check-email__text">If the link has expired or hasn't arrived, send a new one.</p>
+
+{% if resent is sameas true %}
+<div class="alert alert--success" role="status"><span>We sent a new link to {{ email }}.</span></div>
+{% elif resent is sameas false %}
+<div class="alert" role="status"><span>A link was sent less than a minute ago. Check your inbox and spam folder.</span></div>
+{% endif %}
+
+{# Shown only when something changes: verified, or this sign-in expired. #}
+<p class="check-email__status" id="check-email-status" role="status" aria-live="polite" hidden></p>
+
+{# Submitted by check-email.js once the email is verified. #}
+<form method="post" action="/verify-email/continue" id="check-email-continue" data-status-url="/verify-email/status?flow_id={{ flow_id | urlencode }}" hidden>
+  <input type="hidden" name="flow_id" value="{{ flow_id }}">
+</form>
+
+<form method="post" action="/verify-email/resend">
+  <input type="hidden" name="flow_id" value="{{ flow_id }}">
+  <button type="submit" class="btn btn--primary btn--block">Resend the link</button>
+</form>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', path='js/check-email.js') }}?v={{ asset_version() }}" defer></script>
+{% endblock %}

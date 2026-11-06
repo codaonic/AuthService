@@ -486,10 +486,10 @@ async def signup(
     await db.refresh(user)
     log_event("signup_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
 
-    # Verification is informational, not a login gate -- a failed send
-    # shouldn't block account creation. See plan/password-recovery-mcp-passkeys-plan.md §5.2.
-    token = await create_email_verification_token(redis, str(user.id))
-    await send_verification_email(redis, user.email, token)
+    # A failed send shouldn't block account creation. For an app that
+    # requires a verified email, _continue_flow below holds them on the
+    # "check your email" page until they've clicked the link.
+    await _send_verification_once(redis, user)
 
     session_id = await sign_in(
         redis,
@@ -509,6 +509,31 @@ async def signup(
         max_age=settings.session_ttl_seconds,
     )
     return response
+
+
+# How long a sign-in waits on the "check your email" page, and how often
+# that page can send another link.
+VERIFY_WAIT_SECONDS = 30 * 60
+VERIFY_RESEND_SECONDS = 60
+
+
+async def _send_verification_once(redis: Redis, user: User) -> bool:
+    """Sends a verification link unless one went out in the last minute.
+    Returns whether it sent one."""
+    if not await redis.set(f"verify_sent:{user.id}", "1", nx=True, ex=VERIFY_RESEND_SECONDS):
+        return False
+    token = await create_email_verification_token(redis, str(user.id))
+    await send_verification_email(redis, user.email, token)
+    return True
+
+
+async def _check_email_page(request: Request, redis: Redis, flow_id: str, client: Client, user: User, resent: bool | None = None):
+    return await _page(
+        redis,
+        request,
+        "check_email.html",
+        {"flow_id": flow_id, "client_id": client.client_id, **_branding(client), "email": user.email, "resent": resent},
+    )
 
 
 async def _continue_flow(
@@ -553,6 +578,20 @@ async def _continue_flow(
             },
             status_code=403,
         )
+
+    if client.require_verified_email:
+        await bypass_tenant_rls(db)
+        user = await db.get(User, uuid.UUID(user_id))
+        if user is not None and not user.email_verified:
+            # Every way in (signup, password, passkey, an existing session)
+            # comes through here, so none of them skips this. The flow waits
+            # longer than usual, since the email can take a while.
+            key = f"{FLOW_KEY_PREFIX}{flow_id}"
+            async with redis.pipeline(transaction=True) as pipe:
+                await pipe.hset(key, "pending_user_id", user_id).expire(key, VERIFY_WAIT_SECONDS).execute()
+            await _send_verification_once(redis, user)
+            log_event("email_verification_required", client_id=client.client_id, user_id=user_id, email=user.email)
+            return await _check_email_page(request, redis, flow_id, client, user)
 
     result = await db.execute(
         select(Consent).where(
@@ -666,3 +705,59 @@ async def _issue_code(
     if flow["state"]:
         params["state"] = flow["state"]
     return RedirectResponse(f"{flow['redirect_uri']}?{urlencode(params)}", status_code=303)
+
+
+# --- Waiting for a verified email ---
+
+
+async def _pending(db: AsyncSession, redis: Redis, flow_id: str) -> tuple[dict, User | None]:
+    """The sign-in waiting on the "check your email" page, and its person."""
+    flow = await redis.hgetall(f"{FLOW_KEY_PREFIX}{flow_id}")
+    if not flow.get("pending_user_id"):
+        return flow, None
+    await bypass_tenant_rls(db)
+    return flow, await db.get(User, uuid.UUID(flow["pending_user_id"]))
+
+
+@router.get("/verify-email/status")
+async def verification_status(flow_id: str, db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)):
+    """Asked every few seconds by the "check your email" page, so it can
+    carry on by itself once the link has been clicked (in any tab or device)."""
+    _, user = await _pending(db, redis, flow_id)
+    if user is None:
+        return {"verified": False, "expired": True}
+    return {"verified": user.email_verified, "expired": False}
+
+
+@router.post("/verify-email/continue")
+async def continue_after_verification(
+    request: Request,
+    flow_id: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    flow, user = await _pending(db, redis, flow_id)
+    if user is None:
+        raise HTTPException(400, "invalid_request: this sign-in has expired -- start again from the application")
+    client = await _load_client(db, flow["client_id"])
+    if not user.email_verified:
+        return await _check_email_page(request, redis, flow_id, client, user)
+    await redis.hdel(f"{FLOW_KEY_PREFIX}{flow_id}", "pending_user_id")
+    auth_time = int(flow["auth_time"]) if flow.get("auth_time") else None
+    return await _continue_flow(request, db, redis, flow_id, str(user.id), auth_time=auth_time)
+
+
+@router.post("/verify-email/resend")
+@limiter.limit(get_settings().rate_limit_signup)
+async def resend_while_waiting(
+    request: Request,
+    flow_id: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    flow, user = await _pending(db, redis, flow_id)
+    if user is None:
+        raise HTTPException(400, "invalid_request: this sign-in has expired -- start again from the application")
+    client = await _load_client(db, flow["client_id"])
+    return await _check_email_page(request, redis, flow_id, client, user, resent=await _send_verification_once(redis, user))
+
