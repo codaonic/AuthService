@@ -197,7 +197,7 @@ async def authorize(
     client = await _load_client(db, client_id)
     embed = ""
     if response_mode == "web_message":
-        if not origin or origin not in (client.embed_origins or []) or not embedding.valid_frame_id(frame_id):
+        if not origin or origin not in embedding.allowed_embed_origins(client) or not embedding.valid_frame_id(frame_id):
             raise HTTPException(400, "invalid_request: this page may not embed sign-in for this application")
         embed = embedding.encode(origin, frame_id, embedding.parse_appearance(appearance))
         redirect_uri = origin

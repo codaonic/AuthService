@@ -7,8 +7,10 @@ can never read it.
 
 How it stays safe:
 
-- Only origins an admin listed on the client (`Client.embed_origins`) may
-  embed it. Self-registered clients have none, so they can't embed at all.
+- Only the client's own sites may embed it: the origins of its redirect
+  URIs (the sites that already receive its codes), plus any extra origins
+  an admin listed (`Client.embed_origins`). See allowed_embed_origins().
+  Self-registered clients can't embed at all.
 - Embed pages are served with `frame-ancestors <that origin>`, so a browser
   refuses to show them inside any other site -- every other page keeps
   refusing all framing.
@@ -20,6 +22,7 @@ How it stays safe:
   hide or fake parts of the form.
 """
 
+import ipaddress
 import json
 import re
 from urllib.parse import urlsplit
@@ -48,10 +51,23 @@ APPEARANCE_OPTIONS: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
 THEMES = {"light", "dark"}
 
 
+def _local_host(host: str) -> bool:
+    """localhost, or a loopback or private network address (192.168.x.x,
+    10.x.x.x, 172.16-31.x.x, ...) -- where plain http is fine for development."""
+    if host in _LOCAL_HOSTS:
+        return True
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
+
+
 def normalize_origin(value: str) -> str:
     """`scheme://host[:port]`, lower-cased, or ValueError.
 
-    https only, except plain http on localhost for development.
+    https only, except plain http on localhost or a private network address
+    for development.
     """
     parts = urlsplit(value.strip())
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
@@ -60,12 +76,38 @@ def normalize_origin(value: str) -> str:
         raise ValueError(f"an origin has no path, query or fragment: {value!r}")
     netloc = parts.netloc.lower()
     host = netloc.rsplit(":", 1)[0] if not netloc.startswith("[") else netloc.split("]")[0] + "]"
-    if parts.scheme == "http" and host not in _LOCAL_HOSTS:
-        raise ValueError(f"embedding origins must use https (http only for localhost): {value!r}")
+    if parts.scheme == "http" and not _local_host(host):
+        raise ValueError(
+            f"embedding origins must use https (plain http only for localhost or a local network address): {value!r}"
+        )
     # Browsers leave the default port out of an origin (window.location.origin).
     if (parts.scheme, parts.port) in (("https", 443), ("http", 80)):
         netloc = host
     return f"{parts.scheme}://{netloc}"
+
+
+def origin_of(uri: str) -> str | None:
+    """The web origin of a redirect URI, or None for one that isn't on a web
+    page a browser could embed from (an app's own scheme, plain http on a
+    public address, ...)."""
+    parts = urlsplit(uri.strip())
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    try:
+        return normalize_origin(f"{parts.scheme}://{parts.netloc}")
+    except ValueError:
+        return None
+
+
+def allowed_embed_origins(client) -> list[str]:
+    """Where `client`'s sign-in may be shown inside a page: its redirect URIs'
+    sites, which receive its codes anyway, so embedding works as soon as the
+    application exists -- plus any extra sites an admin listed. Nothing for
+    self-registered clients, whose redirect URIs nobody here vetted."""
+    if client.registration_method in ("dcr", "cimd"):
+        return []
+    origins = [o for o in (origin_of(u) for u in client.redirect_uris or []) if o]
+    return list(dict.fromkeys([*origins, *(client.embed_origins or [])]))
 
 
 def parse_appearance(raw: str | None) -> dict:

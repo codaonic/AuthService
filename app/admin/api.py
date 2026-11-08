@@ -48,7 +48,7 @@ from app.email import (
     send_verification_email,
 )
 from app.middleware.rate_limit import limiter
-from app.oidc.embed import normalize_origin
+from app.oidc.embed import allowed_embed_origins, normalize_origin
 from app.oidc.refresh import revoke_all_refresh_tokens_for_user
 
 router = APIRouter(prefix="/admin/api")
@@ -110,6 +110,8 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "session_ttl_seconds": client.session_ttl_seconds,
         "post_logout_redirect_uris": client.post_logout_redirect_uris or [],
         "embed_origins": client.embed_origins or [],
+        # What actually may embed: its redirect URIs' sites plus embed_origins.
+        "embed_allowed_origins": allowed_embed_origins(client),
         "pool_name": pool_name or None,
     }
 

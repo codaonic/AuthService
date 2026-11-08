@@ -352,3 +352,58 @@ async def test_embedded_signup_waits_for_a_verified_email_inside_the_frame(clien
     done = await client.post("/verify-email/continue", data={"flow_id": flow_id})
     assert done.headers["content-security-policy"] == f"frame-ancestors {ORIGIN}"
     assert _data_attr(done.text, "code")
+
+
+@pytest.mark.asyncio
+async def test_an_apps_own_redirect_site_can_embed_without_extra_setup(client, db_session):
+    """Redirect and embedded sign-in both work as soon as the app exists."""
+    await _embeddable_client(db_session, origins=(), redirect_uris=(f"{ORIGIN}/auth/callback",))
+    _, challenge = make_pkce_pair()
+
+    resp = await client.get("/authorize", params=_embed_params(challenge))
+    assert resp.status_code == 200
+    assert resp.headers["content-security-policy"] == f"frame-ancestors {ORIGIN}"
+
+
+@pytest.mark.asyncio
+async def test_self_registered_apps_still_cannot_embed(client, db_session):
+    app_client = await _embeddable_client(db_session, origins=(), redirect_uris=(f"{ORIGIN}/auth/callback",))
+    app_client.registration_method = "dcr"
+    await db_session.commit()
+    _, challenge = make_pkce_pair()
+
+    assert (await client.get("/authorize", params=_embed_params(challenge))).status_code == 400
+
+
+def test_local_network_addresses_may_use_plain_http():
+    from app.oidc.embed import normalize_origin, origin_of
+
+    assert normalize_origin("http://192.168.100.175:8082/") == "http://192.168.100.175:8082"
+    assert normalize_origin("http://10.0.0.5") == "http://10.0.0.5"
+    assert normalize_origin("http://localhost:5173") == "http://localhost:5173"
+    with pytest.raises(ValueError):
+        normalize_origin("http://8.8.8.8")  # a public address needs https
+    with pytest.raises(ValueError):
+        normalize_origin("http://shop.example.com")
+
+    # Redirect URIs an app opens itself (not a web page) give no origin.
+    assert origin_of("com.vendor.app:/callback") is None
+    assert origin_of("http://192.168.100.175:8082/") == "http://192.168.100.175:8082"
+
+
+@pytest.mark.asyncio
+async def test_admin_saves_a_local_network_site_and_sees_where_embedding_works(client, db_session):
+    await create_admin(db_session, email="admin@example.com", password="admin-password!")
+    await client.post("/admin/api/login", json={"email": "admin@example.com", "password": "admin-password!"})
+    created = await client.post(
+        "/admin/api/clients",
+        json={"client_id": "vender-app-c", "client_type": "public", "redirect_uris": "http://192.168.100.175:8082/"},
+    )
+    assert created.json()["embed_allowed_origins"] == ["http://192.168.100.175:8082"]
+
+    resp = await client.patch(
+        "/admin/api/clients/vender-app-c",
+        json={"redirect_uris": "http://192.168.100.175:8082/", "embed_origins": "http://192.168.100.175:8082/"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["embed_allowed_origins"] == ["http://192.168.100.175:8082"]
