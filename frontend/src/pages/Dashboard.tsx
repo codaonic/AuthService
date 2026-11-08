@@ -5,7 +5,7 @@ import { LiveIndicator, useDebounced, useLiveEvents } from "../live";
 import { ActivityList } from "../components/ActivityList";
 import { DailyChart, OutcomeTotals } from "../components/charts";
 import { useToast } from "../components/ToastProvider";
-import { AppsIcon, DashboardIcon, GroupsIcon, MailIcon, ResourcesIcon, UsersIcon } from "../components/Icons";
+import { AppsIcon, ChevronIcon, DashboardIcon, GroupsIcon, MailIcon, ResourcesIcon, UsersIcon } from "../components/Icons";
 
 const STAT_META: Record<string, { label: string; icon: typeof AppsIcon; accent: string; soft: string; to: string }> = {
   clients: { label: "Applications", icon: AppsIcon, accent: "#4f46e5", soft: "rgba(79, 70, 229, 0.12)", to: "/admin/clients" },
@@ -170,6 +170,8 @@ function HeldLinks({
   onDismissed: (id: string) => void;
 }) {
   const { show } = useToast();
+  // Each link is one short line; its details and actions open below it.
+  const [open, setOpen] = useState<string | null>(null);
 
   const copy = async (link: HeldEmailLink) => {
     try {
@@ -185,43 +187,51 @@ function HeldLinks({
     onDismissed(link.id);
   };
 
+  // One card per waiting link: what it is, who it's for and its actions on
+  // one row; the arrow opens why it's waiting and when it expires.
   return (
-    <section className="panel held-links" aria-labelledby="held-links-title">
-      <div className="held-links__intro">
-        <span className="held-links__icon">
-          <MailIcon width={18} height={18} />
-        </span>
-        <div>
-          <h2 id="held-links-title" className="panel__title">
-            {links.length === 1 ? "1 email couldn't be sent" : `${links.length} emails couldn't be sent`}
-          </h2>
-          <p className="panel__hint">
-            {smtpConfigured
-              ? "Sending failed, so these links are waiting here. "
-              : "Email isn't set up (SMTP_HOST), so these links are waiting here. "}
-            Send each one to the person it's for. Anyone with a link can use it until it expires.
-          </p>
-        </div>
-      </div>
-      <ul className="held-links__list">
-        {links.map((l) => (
-          <li key={l.id}>
-            <div className="held-links__who">
-              <strong>{KIND_LABELS[l.kind]}</strong>
-              <span>{l.email}</span>
-            </div>
-            <span className="held-links__expires">Expires in {expiresIn(l.expires)}</span>
-            <div className="held-links__actions">
+    <section className="held-links" aria-label={links.length === 1 ? "1 email couldn't be sent" : `${links.length} emails couldn't be sent`}>
+      {links.map((l) => {
+        const expanded = open === l.id;
+        return (
+          <article key={l.id} className={`held-card${expanded ? " is-open" : ""}`}>
+            <div className="held-card__row">
+              <span className="held-card__icon" aria-hidden="true">
+                <MailIcon width={15} height={15} />
+              </span>
+              <strong className="held-card__kind">{KIND_LABELS[l.kind]}</strong>
+              <span className="held-card__email" title={l.email}>
+                {l.email}
+              </span>
               <button type="button" className="btn btn--secondary" onClick={() => copy(l)}>
                 Copy link
               </button>
               <button type="button" className="btn btn--ghost" onClick={() => dismiss(l)}>
                 Dismiss
               </button>
+              <button
+                type="button"
+                className="held-card__toggle"
+                aria-expanded={expanded}
+                aria-controls={`held-${l.id}`}
+                aria-label={expanded ? "Hide details" : "Show details"}
+                onClick={() => setOpen(expanded ? null : l.id)}
+              >
+                <ChevronIcon width={16} height={16} />
+              </button>
             </div>
-          </li>
-        ))}
-      </ul>
+            {expanded && (
+              <p id={`held-${l.id}`} className="held-card__detail">
+                {l.reason === "smtp_failed" || smtpConfigured
+                  ? "Sending this email failed"
+                  : "Email isn't set up on this server (SMTP_HOST)"}
+                , so send this link to {l.email} yourself. Anyone with it can use it until it expires in{" "}
+                {expiresIn(l.expires)}.
+              </p>
+            )}
+          </article>
+        );
+      })}
     </section>
   );
 }

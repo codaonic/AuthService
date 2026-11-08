@@ -1,4 +1,5 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAdmin } from "../AdminContext";
 import { useTheme } from "../theme";
 import { api } from "../api";
@@ -44,6 +45,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { admin, setAdmin } = useAdmin();
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
+  // On a phone the navigation folds into a menu under the top bar.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => setMenuOpen(false), [location.pathname]);
 
   const signOut = async () => {
     await api.post("/logout");
@@ -67,6 +72,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </span>
         </Link>
 
+        <button
+          type="button"
+          className="nav__menu-toggle"
+          aria-expanded={menuOpen}
+          aria-controls="nav-body"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          onClick={() => setMenuOpen((o) => !o)}
+        >
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            {menuOpen ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
+          </svg>
+        </button>
+
+        <div id="nav-body" className={`nav__body${menuOpen ? " is-open" : ""}`}>
         {NAV_GROUPS.map((group, i) => (
           <div key={i}>
             {group.label && <div className="nav__group-label">{group.label}</div>}
@@ -99,6 +118,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <SignOutIcon width={16} height={16} /> Sign out
             </button>
           </form>
+        </div>
         </div>
       </nav>
       <main className="main">
