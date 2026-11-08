@@ -1,8 +1,10 @@
 import { ClipboardEvent, KeyboardEvent, useRef, useState } from "react";
 import { CloseIcon } from "./Icons";
 
-// scheme://something -- https, http on localhost, or an app scheme like vscode://
-const LINK = /^[a-z][a-z0-9+.-]*:\/\/\S+$/i;
+// scheme://something (https, http, vscode://...) or a mobile app's own
+// scheme with one slash (com.vendor.app:/callback). "localhost:3000" or a
+// bare "shop.example.com/x" have no scheme and are refused.
+const LINK = /^[a-z][a-z0-9+.-]*:\/\/?[^\s/]\S*$/i;
 
 const split = (value: string) => value.split("\n").map((l) => l.trim()).filter(Boolean);
 

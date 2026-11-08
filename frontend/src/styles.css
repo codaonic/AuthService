@@ -3069,3 +3069,11 @@ button.breakdown__row.is-selected {
   gap: 14px;
   flex-wrap: wrap;
 }
+
+/* The field rule that makes inputs full-width would stretch the color
+   swatch across the row and squeeze the text box beside it. */
+.field input[type="color"].color-swatch {
+  width: 40px;
+  flex: 0 0 40px;
+  padding: 2px;
+}

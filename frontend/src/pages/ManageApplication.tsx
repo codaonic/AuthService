@@ -91,9 +91,9 @@ function changedSections(draft: Draft, client: Client): Set<Section> {
     draft.postLogoutUris !== saved.postLogoutUris
   )
     changed.add("signin");
-  if (draft.logoUrl !== saved.logoUrl || draft.brandColor !== saved.brandColor || draft.embedOrigins !== saved.embedOrigins)
-    changed.add("appearance");
-  if (draft.scope !== saved.scope || draft.thumbprint !== saved.thumbprint) changed.add("advanced");
+  if (draft.logoUrl !== saved.logoUrl || draft.brandColor !== saved.brandColor) changed.add("appearance");
+  if (draft.scope !== saved.scope || draft.thumbprint !== saved.thumbprint || draft.embedOrigins !== saved.embedOrigins)
+    changed.add("advanced");
   return changed;
 }
 
@@ -375,11 +375,6 @@ function Summary({
         : "No sign-in time limit of its own",
       section: "signin",
     });
-    if (client.embed_origins.length)
-      facts.push({
-        text: `Sign-in shown inside ${client.embed_origins.length === 1 ? "1 site" : `${client.embed_origins.length} sites`}`,
-        section: "appearance",
-      });
   }
 
   return (
@@ -1081,7 +1076,6 @@ function AppearanceSection({ draft, set }: { draft: Draft; set: SetDraft }) {
           </div>
           <span className="field__hint">Used for buttons and links on its login pages.</span>
         </div>
-        <EmbedOriginsField value={draft.embedOrigins} onChange={(v) => set("embedOrigins", v)} />
       </div>
     </>
   );
@@ -1111,6 +1105,9 @@ function AdvancedSection({
           <input id="manage-scope" value={draft.scope} onChange={(e) => set("scope", e.target.value)} placeholder="openid profile email" />
           <span className="field__hint">Leave blank for the default access level.</span>
         </div>
+        {client.grant_types.includes("authorization_code") && (
+          <EmbedOriginsField value={draft.embedOrigins} onChange={(v) => set("embedOrigins", v)} />
+        )}
         <div className="field">
           <label htmlFor="manage-mtls">mTLS certificate thumbprint</label>
           <input

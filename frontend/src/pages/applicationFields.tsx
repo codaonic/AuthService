@@ -104,12 +104,13 @@ export function EmbedOriginsField({ value, onChange }: { value: string; onChange
   return (
     <div className="field">
       <label htmlFor="embed_origins">
-        Embed origins <span className="field__hint">(optional)</span>
+        Other sites that show the sign-in inside their pages <span className="field__hint">(optional)</span>
       </label>
-      <LinkListInput id="embed_origins" placeholder="https://yourapp.com" value={value} onChange={onChange} />
+      <LinkListInput id="embed_origins" placeholder="https://www.yourapp.com" value={value} onChange={onChange} />
       <span className="field__hint">
-        Sites allowed to show this app's sign-in inside their own pages, styled to match them
-        (auth-elements.js). Just the origin — no path. Leave empty to keep sign-in on its own page.
+        The sites people are sent back to after login can already show this app's sign-in inside
+        their pages (auth-elements.js). Add another site here only if its page is on a different
+        address. Just the address, no path.
       </span>
     </div>
   );

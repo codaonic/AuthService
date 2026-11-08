@@ -68,7 +68,7 @@ export function IntegrationModal({
       setTab(
         activeClient?.application_type === "service"
           ? "curl"
-          : activeClient?.embed_origins?.length
+          : activeClient?.embed_allowed_origins?.length
           ? "embed"
           : "widget",
       );
@@ -566,10 +566,10 @@ async def call_mcp_tool(tool_name: str, arguments: dict):
                 one-time code, which your backend exchanges for tokens.
               </p>
 
-              {activeClient && activeClient.embed_origins.length > 0 ? (
+              {activeClient && activeClient.embed_allowed_origins.length > 0 ? (
                 <div className="alert">
-                  Embedding is on for {clientDisplayName}, from:{" "}
-                  {activeClient.embed_origins.map((origin, i) => (
+                  {clientDisplayName} can be embedded on:{" "}
+                  {activeClient.embed_allowed_origins.map((origin, i) => (
                     <span key={origin}>
                       {i > 0 && ", "}
                       <code>{origin}</code>
@@ -578,9 +578,10 @@ async def call_mcp_tool(tool_name: str, arguments: dict):
                 </div>
               ) : (
                 <div className="alert alert--error">
-                  Embedding is off for this application. Open <strong>Applications → Manage</strong> and
-                  add your site under <strong>Embed origins</strong> (for example{" "}
-                  <code>https://yourapp.com</code>, no path). Until then the form won't load.
+                  No website can embed this application yet: it has no web address under{" "}
+                  <strong>Where people are sent back to after login</strong> (Applications → Manage →
+                  Sign-in &amp; signup). Add your site's callback there, for example{" "}
+                  <code>https://yourapp.com/auth/callback</code>, and its pages can show the sign-in.
                 </div>
               )}
 

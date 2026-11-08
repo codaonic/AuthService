@@ -15,7 +15,6 @@ import {
   appendLine,
   DurationUnit,
   durationSeconds,
-  EmbedOriginsField,
   GRANT_LABELS,
   PostLogoutUrisField,
   QuickRedirects,
@@ -62,7 +61,6 @@ export function Applications() {
   const [ttlValue, setTtlValue] = useState("7");
   const [ttlUnit, setTtlUnit] = useState<DurationUnit>("days");
   const [postLogoutUris, setPostLogoutUris] = useState("");
-  const [embedOrigins, setEmbedOrigins] = useState("");
 
   const load = () => api.get<Client[]>("/clients").then(setClients);
 
@@ -154,7 +152,6 @@ export function Applications() {
         session_ttl_seconds:
           preset === "service" || !ttlEnabled ? 0 : durationSeconds(ttlValue, ttlUnit),
         post_logout_redirect_uris: preset === "service" ? "" : postLogoutUris,
-        embed_origins: preset === "service" ? "" : embedOrigins,
       });
       setModalOpen(false);
       setCreated(result);
@@ -164,7 +161,6 @@ export function Applications() {
       setTtlValue("7");
       setTtlUnit("days");
       setPostLogoutUris("");
-      setEmbedOrigins("");
       setScope("");
       setLogoUrl("");
       setBrandColor("");
@@ -494,7 +490,6 @@ export function Applications() {
                     onChange={(e) => setBrandColor(e.target.value)}
                   />
                 </div>
-                {preset !== "service" && <EmbedOriginsField value={embedOrigins} onChange={setEmbedOrigins} />}
               </div>
             </details>
 
