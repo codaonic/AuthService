@@ -187,6 +187,7 @@ def _resource_json(resource: Resource) -> dict:
         "name": resource.name,
         "metadata_url": resource.metadata_url,
         "enabled": resource.enabled,
+        "require_verified_email": resource.require_verified_email,
     }
 
 
@@ -527,6 +528,8 @@ class CreateResourceBody(BaseModel):
     resource_id: str
     name: str
     metadata_url: str = ""
+    # On for servers registered from the console.
+    require_verified_email: bool = True
 
 
 @router.post("/resources", status_code=201)
@@ -537,7 +540,12 @@ async def api_create_resource(
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(400, f"'{body.resource_id}' already exists")
 
-    resource = Resource(resource_id=body.resource_id, name=body.name, metadata_url=body.metadata_url or None)
+    resource = Resource(
+        resource_id=body.resource_id,
+        name=body.name,
+        metadata_url=body.metadata_url or None,
+        require_verified_email=body.require_verified_email,
+    )
     db.add(resource)
     await db.commit()
     log_event("resource_created", resource_id=body.resource_id, admin_id=str(admin.id))
@@ -582,6 +590,23 @@ async def api_toggle_resource_enabled(
     await db.commit()
     log_event(
         "resource_" + ("enabled" if resource.enabled else "disabled"),
+        resource_id=resource_id,
+        admin_id=str(admin.id),
+    )
+    return _resource_json(resource)
+
+
+@router.post("/resources/{resource_id:path}/toggle-require-verified-email")
+async def api_toggle_resource_require_verified_email(
+    resource_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    resource = (await db.execute(select(Resource).where(Resource.resource_id == resource_id))).scalar_one_or_none()
+    if resource is None:
+        raise HTTPException(404, "unknown_resource")
+    resource.require_verified_email = not resource.require_verified_email
+    await db.commit()
+    log_event(
+        "resource_verified_email_" + ("required" if resource.require_verified_email else "optional"),
         resource_id=resource_id,
         admin_id=str(admin.id),
     )

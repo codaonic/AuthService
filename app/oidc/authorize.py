@@ -21,7 +21,7 @@ from app.auth.passwords import burn_password_check, hash_password_async, verify_
 from app.auth.sessions import app_auth_time, get_session_user, sign_in
 from app.config import get_settings
 from app.db.contacts import upsert_contact
-from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, User, UserRoleAssignment
+from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, Resource, User, UserRoleAssignment
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
@@ -527,6 +527,18 @@ async def _send_verification_once(redis: Redis, user: User) -> bool:
     return True
 
 
+async def _verified_email_required(db: AsyncSession, client: Client, resource_id: str | None) -> bool:
+    """Required by the application, or by the API or MCP server the token is
+    for -- the second covers apps that register themselves as they connect."""
+    if client.require_verified_email:
+        return True
+    if not resource_id:
+        return False
+    return bool(
+        await db.scalar(select(Resource.require_verified_email).where(Resource.resource_id == resource_id))
+    )
+
+
 async def _check_email_page(request: Request, redis: Redis, flow_id: str, client: Client, user: User, resent: bool | None = None):
     return await _page(
         redis,
@@ -579,7 +591,7 @@ async def _continue_flow(
             status_code=403,
         )
 
-    if client.require_verified_email:
+    if await _verified_email_required(db, client, flow.get("resource")):
         await bypass_tenant_rls(db)
         user = await db.get(User, uuid.UUID(user_id))
         if user is not None and not user.email_verified:

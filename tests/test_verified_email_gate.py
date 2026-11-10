@@ -208,3 +208,54 @@ async def test_admin_can_verify_someone_or_send_a_new_link(client, db_session, r
     body = (await client.post(f"/admin/api/users/{user.id}/mark-verified")).json()
     assert body["email_verified"] is True
     assert await held_links(redis_client) == []  # their waiting links are gone too
+
+
+# --- Required by the API or MCP server ---
+
+
+async def _mcp_server(db_session, require=True):
+    from app.db.models import Resource
+
+    resource = (await db_session.execute(select(Resource).where(Resource.resource_id == RESOURCE))).scalar_one()
+    resource.require_verified_email = require
+    await db_session.commit()
+
+
+async def _self_registered_app(db_session):
+    """Like the app an AI client registers for itself when it connects."""
+    await _app(db_session, require=False)
+    client = (await db_session.execute(select(Client).where(Client.client_id == "shop"))).scalar_one()
+    client.registration_method = "dcr"
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_requires_it_holds_signups_from_self_registered_apps(client, db_session, sent_links):
+    await _self_registered_app(db_session)
+    await _mcp_server(db_session, require=True)
+
+    flow_id, resp = await _signup(client)
+    assert "Check your email" in resp.text
+
+    await client.get("/verify-email", params={"token": _token(sent_links[0])})
+    done = await client.post("/verify-email/continue", data={"flow_id": flow_id})
+    assert "is requesting access" in done.text
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_does_not_require_it_lets_them_in(client, db_session, sent_links):
+    await _self_registered_app(db_session)
+    await _mcp_server(db_session, require=False)
+
+    _, resp = await _signup(client)
+    assert "is requesting access" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_servers_registered_from_the_console_require_it_by_default(client, db_session):
+    await _login_admin(client, db_session)
+    created = await client.post("/admin/api/resources", json={"resource_id": "https://mcp.example.com", "name": "MCP"})
+    assert created.json()["require_verified_email"] is True
+
+    toggled = await client.post("/admin/api/resources/https://mcp.example.com/toggle-require-verified-email")
+    assert toggled.json()["require_verified_email"] is False

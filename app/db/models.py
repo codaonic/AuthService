@@ -184,6 +184,11 @@ class Resource(Base):
     # unaffected either way; this only gates resources an admin explicitly
     # catalogued and then explicitly turned off.
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # On: anyone signing in to get a token for this API or MCP server must
+    # have a verified email first, whichever application they come through --
+    # including the self-registered ones AI clients create as they connect.
+    # See _continue_flow. Off for resources that existed before the setting.
+    require_verified_email: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
 
 
 class Consent(Base):
