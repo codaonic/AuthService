@@ -259,3 +259,26 @@ async def test_servers_registered_from_the_console_require_it_by_default(client,
 
     toggled = await client.post("/admin/api/resources/https://mcp.example.com/toggle-require-verified-email")
     assert toggled.json()["require_verified_email"] is False
+
+
+@pytest.mark.asyncio
+async def test_editing_a_server_can_change_the_verified_email_setting(client, db_session, monkeypatch):
+    from collections import deque
+
+    from app import audit
+
+    # The activity buffer is shared by the whole test run; start this one clean.
+    monkeypatch.setattr(audit, "_recent_events", deque(maxlen=500))
+    await _login_admin(client, db_session)
+    await client.post("/admin/api/resources", json={"resource_id": "https://mcp.example.com", "name": "MCP"})
+
+    # Saving without the setting leaves it alone (on, as registered).
+    kept = await client.patch("/admin/api/resources/https://mcp.example.com", json={"name": "MCP server"})
+    assert kept.json()["name"] == "MCP server" and kept.json()["require_verified_email"] is True
+
+    off = await client.patch(
+        "/admin/api/resources/https://mcp.example.com", json={"name": "MCP server", "require_verified_email": False}
+    )
+    assert off.json()["require_verified_email"] is False
+    events = (await client.get("/admin/api/audit", params={"q": "resource_verified_email"})).json()
+    assert [e["event"] for e in events] == ["resource_verified_email_optional"]

@@ -555,6 +555,8 @@ async def api_create_resource(
 class EditResourceBody(BaseModel):
     name: str = ""
     metadata_url: str = ""
+    # None = leave unchanged.
+    require_verified_email: bool | None = None
 
 
 @router.patch("/resources/{resource_id:path}")
@@ -571,6 +573,13 @@ async def api_edit_resource(
     if body.name.strip():
         resource.name = body.name.strip()
     resource.metadata_url = body.metadata_url.strip() or None
+    if body.require_verified_email is not None and body.require_verified_email != resource.require_verified_email:
+        resource.require_verified_email = body.require_verified_email
+        log_event(
+            "resource_verified_email_" + ("required" if resource.require_verified_email else "optional"),
+            resource_id=resource_id,
+            admin_id=str(admin.id),
+        )
     await db.commit()
     log_event("resource_updated", resource_id=resource_id, admin_id=str(admin.id))
     return _resource_json(resource)

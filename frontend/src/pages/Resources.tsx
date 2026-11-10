@@ -3,7 +3,6 @@ import { Modal } from "../components/Modal";
 import { Switch } from "../components/Switch";
 import { CopyableId } from "../components/CopyableId";
 import { EmptyState } from "../components/EmptyState";
-import { Menu } from "../components/Menu";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { PlusIcon, ResourcesIcon } from "../components/Icons";
@@ -15,7 +14,8 @@ export function Resources() {
   const [resources, setResources] = useState<Resource[] | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editResource, setEditResource] = useState<Resource | null>(null);
-  const [guideResource, setGuideResource] = useState<Resource | null>(null);
+  // The integration guide: for one server, or with a picker when resource is null.
+  const [guide, setGuide] = useState<{ resource: Resource | null } | null>(null);
 
   const [resourceId, setResourceId] = useState("");
   const [name, setName] = useState("");
@@ -26,6 +26,7 @@ export function Resources() {
 
   const [editName, setEditName] = useState("");
   const [editMetadataUrl, setEditMetadataUrl] = useState("");
+  const [editRequireVerified, setEditRequireVerified] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
 
@@ -53,22 +54,6 @@ export function Resources() {
     }
   });
 
-  const setVerifiedEmail = (r: Resource, on: boolean) => {
-    const apply = async () => {
-      const updated = await api.post<Resource>(`/resources/${encodeURIComponent(r.resource_id)}/toggle-require-verified-email`);
-      setResources((prev) => prev?.map((x) => (x.resource_id === r.resource_id ? { ...x, ...updated } : x)) ?? prev);
-      show(updated.require_verified_email ? `${r.name} now needs a verified email` : `${r.name} no longer needs a verified email`);
-    };
-    if (!on) return void apply();
-    confirm({
-      title: `Require a verified email for ${r.name}?`,
-      description:
-        "Anyone signing in to use it, from any app or AI client, must confirm their email first. People who haven't will see \"Check your email\" and carry on once they open the link.",
-      confirmLabel: "Require it",
-      onConfirm: apply,
-    });
-  };
-
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
@@ -87,7 +72,7 @@ export function Resources() {
       show(`Registered ${created.name}`);
       load();
       // Directly open integration guide for the newly created resource!
-      setGuideResource(created);
+      setGuide({ resource: created });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
@@ -99,6 +84,7 @@ export function Resources() {
     setEditResource(r);
     setEditName(r.name);
     setEditMetadataUrl(r.metadata_url || "");
+    setEditRequireVerified(r.require_verified_email);
     setEditError(null);
   };
 
@@ -111,6 +97,7 @@ export function Resources() {
       await api.patch(`/resources/${encodeURIComponent(editResource.resource_id)}`, {
         name: editName.trim(),
         metadata_url: editMetadataUrl.trim(),
+        require_verified_email: editRequireVerified,
       });
       setEditResource(null);
       show(`Saved changes to ${editName}`);
@@ -169,7 +156,7 @@ export function Resources() {
             <button
               type="button"
               className="btn btn--secondary"
-              onClick={() => setGuideResource(resources[0])}
+              onClick={() => setGuide({ resource: null })}
             >
               Integration Guide
             </button>
@@ -206,7 +193,6 @@ export function Resources() {
                 <th>Address (token audience)</th>
                 <th style={{ textAlign: "right" }}>Tokens, last 30 days</th>
                 <th>Accepting new tokens</th>
-                <th>Verified email</th>
                 <th></th>
               </tr>
             </thead>
@@ -232,26 +218,13 @@ export function Resources() {
                     </label>
                   </td>
                   <td>
-                    <label className="signup-cell">
-                      <Switch
-                        label={`${r.name} requires a verified email`}
-                        checked={r.require_verified_email}
-                        onChange={(on) => setVerifiedEmail(r, on)}
-                      />
-                      <span>{r.require_verified_email ? "Required" : "Not required"}</span>
-                    </label>
-                  </td>
-                  <td>
                     <div className="row-actions">
-                      <button type="button" className="btn btn--secondary" onClick={() => setGuideResource(r)}>
-                        Get code
+                      <button type="button" className="btn btn--secondary" onClick={() => openEdit(r)}>
+                        Edit
                       </button>
-                      <Menu
-                        items={[
-                          { label: "Edit", onSelect: () => openEdit(r) },
-                          { label: "Remove", onSelect: () => onDelete(r), danger: true },
-                        ]}
-                      />
+                      <button type="button" className="btn btn--danger" onClick={() => onDelete(r)}>
+                        Remove
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -354,6 +327,16 @@ export function Resources() {
                 placeholder="https://mcp.yourdomain.com/.well-known/oauth-protected-resource"
               />
             </div>
+            <div className="field">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                <input type="checkbox" checked={editRequireVerified} onChange={(e) => setEditRequireVerified(e.target.checked)} />
+                Require a verified email before anyone gets access
+              </label>
+              <span className="field__hint">
+                Applies to every app and AI client that connects to it. People who haven't verified see
+                "Check your email" first and carry on once they open the link.
+              </span>
+            </div>
             <button type="submit" className="btn btn--primary btn--block" disabled={editing}>
               {editing ? "Saving…" : "Save changes"}
             </button>
@@ -362,12 +345,7 @@ export function Resources() {
       )}
 
       {/* Integration Guide Modal */}
-      {guideResource && (
-        <IntegrationModal
-          resource={guideResource}
-          onClose={() => setGuideResource(null)}
-        />
-      )}
+      {guide && <IntegrationModal resource={guide.resource} onClose={() => setGuide(null)} />}
 
       {dialog}
     </>
