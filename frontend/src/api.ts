@@ -57,6 +57,8 @@ export interface Resource {
   /** Access tokens issued for it over the last 30 days (only in the listing). */
   tokens_30d?: number;
   enabled: boolean;
+  /** Anyone getting a token for it must have verified their email. */
+  require_verified_email: boolean;
 }
 
 export interface SystemEndpoints {

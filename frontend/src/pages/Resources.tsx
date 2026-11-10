@@ -9,6 +9,7 @@ import { useToast } from "../components/ToastProvider";
 import { PlusIcon, ResourcesIcon } from "../components/Icons";
 import { IntegrationModal } from "../components/IntegrationModal";
 import { api, ApiError, Resource } from "../api";
+import { LiveIndicator, useDebounced, useLiveEvents } from "../live";
 
 export function Resources() {
   const [resources, setResources] = useState<Resource[] | null>(null);
@@ -19,6 +20,7 @@ export function Resources() {
   const [resourceId, setResourceId] = useState("");
   const [name, setName] = useState("");
   const [metadataUrl, setMetadataUrl] = useState("");
+  const [requireVerified, setRequireVerified] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -36,6 +38,37 @@ export function Resources() {
     load();
   }, []);
 
+  // Stays current without a refresh: token counts grow as tokens are issued,
+  // and the list reloads when a server is added, changed or removed elsewhere.
+  const reloadSoon = useDebounced(() => load(), 600);
+  useLiveEvents((m) => {
+    if (m === "resync") return void load();
+    if (m.event === "token_issued" && typeof m.extra.resource === "string") {
+      const issuedFor = m.extra.resource;
+      setResources(
+        (prev) => prev?.map((r) => (r.resource_id === issuedFor ? { ...r, tokens_30d: (r.tokens_30d ?? 0) + 1 } : r)) ?? prev,
+      );
+    } else if (m.event.startsWith("resource_")) {
+      reloadSoon();
+    }
+  });
+
+  const setVerifiedEmail = (r: Resource, on: boolean) => {
+    const apply = async () => {
+      const updated = await api.post<Resource>(`/resources/${encodeURIComponent(r.resource_id)}/toggle-require-verified-email`);
+      setResources((prev) => prev?.map((x) => (x.resource_id === r.resource_id ? { ...x, ...updated } : x)) ?? prev);
+      show(updated.require_verified_email ? `${r.name} now needs a verified email` : `${r.name} no longer needs a verified email`);
+    };
+    if (!on) return void apply();
+    confirm({
+      title: `Require a verified email for ${r.name}?`,
+      description:
+        "Anyone signing in to use it, from any app or AI client, must confirm their email first. People who haven't will see \"Check your email\" and carry on once they open the link.",
+      confirmLabel: "Require it",
+      onConfirm: apply,
+    });
+  };
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
@@ -45,6 +78,7 @@ export function Resources() {
         resource_id: resourceId.trim(),
         name: name.trim(),
         metadata_url: metadataUrl.trim(),
+        require_verified_email: requireVerified,
       });
       setModalOpen(false);
       setResourceId("");
@@ -129,7 +163,8 @@ export function Resources() {
           </span>
           <h1 className="title">APIs & MCP servers</h1>
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <LiveIndicator />
           {resources && resources.length > 0 && (
             <button
               type="button"
@@ -171,6 +206,7 @@ export function Resources() {
                 <th>Address (token audience)</th>
                 <th style={{ textAlign: "right" }}>Tokens, last 30 days</th>
                 <th>Accepting new tokens</th>
+                <th>Verified email</th>
                 <th></th>
               </tr>
             </thead>
@@ -193,6 +229,16 @@ export function Resources() {
                     <label className="signup-cell">
                       <Switch label={`${r.name} accepts new tokens`} checked={r.enabled} onChange={() => toggleEnabled(r)} />
                       <span>{r.enabled ? "Yes" : "Stopped"}</span>
+                    </label>
+                  </td>
+                  <td>
+                    <label className="signup-cell">
+                      <Switch
+                        label={`${r.name} requires a verified email`}
+                        checked={r.require_verified_email}
+                        onChange={(on) => setVerifiedEmail(r, on)}
+                      />
+                      <span>{r.require_verified_email ? "Required" : "Not required"}</span>
                     </label>
                   </td>
                   <td>
@@ -261,6 +307,16 @@ export function Resources() {
               />
               <span className="field__hint">
                 Leave blank to use the auth server's hosted RFC 9728 endpoint for this resource.
+              </span>
+            </div>
+            <div className="field">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                <input type="checkbox" checked={requireVerified} onChange={(e) => setRequireVerified(e.target.checked)} />
+                Require a verified email before anyone gets access
+              </label>
+              <span className="field__hint">
+                Applies to every app and AI client that connects to it, including ones that register
+                themselves. People who haven't verified see "Check your email" first.
               </span>
             </div>
             <button type="submit" className="btn btn--primary btn--block" disabled={submitting}>
