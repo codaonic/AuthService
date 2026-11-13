@@ -8,6 +8,7 @@ import { EmptyState } from "../components/EmptyState";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { PasswordInput } from "../components/PasswordInput";
+import { TeamPicker } from "../components/TeamPicker";
 import { CloseIcon, PlusIcon, UsersIcon } from "../components/Icons";
 import { api, ApiError, AppUser, AuditEvent, Client, UserPage } from "../api";
 import { useDebounced, useLiveEvents } from "../live";
@@ -566,6 +567,8 @@ function AccountCard({
         </label>
       </div>
 
+      {!editing && <AccountTeams userId={u.id} />}
+
       {editing ? (
         <form onSubmit={save} className="account-card__form">
           {error && <div className="alert alert--error">{error}</div>}
@@ -631,6 +634,40 @@ function AccountCard({
   );
 }
 
+/** The teams this account is in, changed right here: each pick saves. */
+function AccountTeams({ userId }: { userId: string }) {
+  const { show } = useToast();
+  const [ids, setIds] = useState<string[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    api.get<{ id: string }[]>(`/users/${userId}/teams`).then((t) => setIds(t.map((x) => x.id)));
+  }, [userId]);
+
+  const save = async (next: string[]) => {
+    const before = ids;
+    setIds(next);
+    setSaving(true);
+    try {
+      const saved = await api.put<{ id: string; name: string }[]>(`/users/${userId}/teams`, { team_ids: next });
+      setIds(saved.map((t) => t.id));
+      show(next.length > (before?.length ?? 0) ? "Added to the team" : "Taken out of the team");
+    } catch (err) {
+      setIds(before);
+      show(err instanceof ApiError ? err.message : "Couldn't change their teams", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (ids === null) return null;
+  return (
+    <div className="account-card__teams">
+      <span className="account-card__teams-label">Teams</span>
+      <TeamPicker value={ids} onChange={save} disabled={saving} />
+    </div>
+  );
+}
+
 function AddUserModal({ clients, onClose, onAdded }: { clients: Client[]; onClose: () => void; onAdded: () => void }) {
   const { show } = useToast();
   const [form, setForm] = useState({
@@ -644,6 +681,7 @@ function AddUserModal({ clients, onClose, onAdded }: { clients: Client[]; onClos
     client_id: "",
   });
   const [emailVerified, setEmailVerified] = useState(true);
+  const [teamIds, setTeamIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -667,6 +705,7 @@ function AddUserModal({ clients, onClose, onAdded }: { clients: Client[]; onClos
         confirm_password: form.confirm,
         client_id: form.client_id,
         email_verified: emailVerified,
+        team_ids: teamIds,
       });
       show(`${form.email} was added`);
       onAdded();
@@ -736,6 +775,12 @@ function AddUserModal({ clients, onClose, onAdded }: { clients: Client[]; onClos
             Treat their email as already verified
           </label>
           <span className="field__hint">Off: they get a verification email, like someone who signed up themselves.</span>
+        </div>
+        <div className="field">
+          <label htmlFor="add-teams">
+            Teams <span className="field__hint">(optional)</span>
+          </label>
+          <TeamPicker id="add-teams" value={teamIds} onChange={setTeamIds} />
         </div>
         <button type="submit" className="btn btn--primary btn--block" disabled={submitting}>
           Add user

@@ -16,6 +16,7 @@ import {
   AuthIcon,
   SignOutIcon,
   SunIcon,
+  TeamsIcon,
   UsersIcon,
   WarningIcon,
 } from "./Icons";
@@ -29,6 +30,7 @@ const NAV_GROUPS = [
       { to: "/admin/resources", label: "APIs & MCP servers", icon: ResourcesIcon },
       { to: "/admin/users", label: "Users", icon: UsersIcon },
       { to: "/admin/pools", label: "Login groups", icon: GroupsIcon },
+      { to: "/admin/teams", label: "Teams", icon: TeamsIcon },
     ],
   },
   {

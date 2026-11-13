@@ -3041,9 +3041,437 @@ button.breakdown__row.is-selected {
   margin-top: 14px;
 }
 
+.group-card__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.group-card__option-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
 .group-standalone {
   margin-top: 8px;
   padding: 0 4px;
+}
+
+/* ==========================================================================
+   Teams
+   ========================================================================== */
+
+/* Sub-teams sit under their parent, stepped in, with a line back to it. */
+.team-card--sub {
+  margin-left: calc(var(--depth) * 28px);
+  position: relative;
+}
+
+.team-card--sub::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: -12px;
+  bottom: 50%;
+  width: 12px;
+  border-left: 1.5px solid var(--border-strong);
+  border-bottom: 1.5px solid var(--border-strong);
+  border-bottom-left-radius: 8px;
+}
+
+.team-card__path {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-subtle);
+}
+
+.team-card__people {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.team-gives {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.team-gives > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.team-gives dt {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.team-gives dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.tag strong {
+  font-weight: 600;
+  color: var(--brand-700);
+}
+
+.app-chip__note {
+  font-weight: 400;
+  color: var(--text-subtle);
+}
+
+.team-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.team-add select {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-members,
+.team-person-search__results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.team-members li,
+.team-person-search__results li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+}
+
+.team-members li + li,
+.team-person-search__results li + li {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.team-members__name {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-members__meta {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-members__badge {
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.team-members__more {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.team-members__more > summary {
+  list-style: none;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.team-members__more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.team-members__more > summary:hover,
+.team-members__more[open] > summary {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.team-members__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  display: grid;
+  gap: 12px;
+  width: 260px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+}
+
+.team-members__check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.team-members__check span {
+  grid-column: 2;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.team-members__date {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.team-members__remove {
+  justify-self: start;
+  color: var(--danger-fg);
+}
+
+.team-person-search input {
+  width: 100%;
+}
+
+.team-person-search__results {
+  margin-bottom: 4px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+}
+
+/* Pick-several chips (create a team: apps and roles in one step). */
+.choice-chips {
+  border: none;
+  margin: 0 0 16px;
+  padding: 0;
+  min-width: 0;
+}
+
+.choice-chips legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.choice-chips > div,
+.choice-chips__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.choice-chips__group + .choice-chips__group {
+  margin-top: 8px;
+}
+
+.choice-chips__app {
+  min-width: 96px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.choice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.choice-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.choice-chip::before {
+  content: "+";
+  font-weight: 600;
+  color: var(--text-subtle);
+}
+
+.choice-chip.is-on {
+  border-color: var(--brand-400);
+  background: var(--brand-soft);
+  color: var(--brand-700);
+}
+
+.choice-chip.is-on::before {
+  content: "\2713";
+  color: var(--brand-600);
+}
+
+.choice-chip:has(input:focus-visible) {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+}
+
+.team-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-picker select {
+  flex: 1;
+  min-width: 180px;
+}
+
+/* Composite roles on the Roles tab. */
+.role-includes {
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.role-includes__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.role-includes__row + .role-includes__row {
+  border-top: 1px solid var(--border);
+}
+
+.role-includes__role {
+  min-width: 90px;
+  font-size: 13.5px;
+}
+
+.role-includes__arrow {
+  font-size: 12px;
+  color: var(--text-subtle);
+  margin-right: 4px;
+}
+
+.role-includes select {
+  width: auto;
+  min-width: 140px;
+  height: 28px;
+  font-size: 13px;
+}
+
+.until-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.until-field input {
+  width: 140px;
+}
+
+.team-access {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 10px;
+}
+
+.team-access__label {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.account-card__teams {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.account-card__teams-label {
+  flex-shrink: 0;
+  width: 52px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+@media (max-width: 640px) {
+  .team-card--sub {
+    margin-left: calc(var(--depth) * 14px);
+  }
+
+  .team-card--sub::before {
+    display: none;
+  }
+
+  .team-gives > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
 }
 
 /* ==========================================================================
@@ -3281,5 +3709,68 @@ button.breakdown__row.is-selected {
   .held-card__detail {
     padding: 0 10px 10px;
     font-size: 12px;
+  }
+}
+
+/* ==========================================================================
+   Integration guide
+   ========================================================================== */
+
+.guide-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.guide-lead {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+.guide-note {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.guide-settings {
+  display: grid;
+  margin: 0 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.guide-settings > div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.guide-settings > div + div {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.guide-settings dt {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.guide-settings dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .guide-settings > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
   }
 }

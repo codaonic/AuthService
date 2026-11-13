@@ -8,6 +8,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Applications } from "./pages/Applications";
 import { Resources } from "./pages/Resources";
 import { Users } from "./pages/Users";
+import { Teams } from "./pages/Teams";
 import { LoginGroups } from "./pages/LoginGroups";
 import { AuditLog } from "./pages/AuditLog";
 import { Analytics } from "./pages/Analytics";
@@ -90,6 +91,16 @@ function AppRoutes() {
           <RequireAdmin>
             <Layout>
               <LoginGroups />
+            </Layout>
+          </RequireAdmin>
+        }
+      />
+      <Route
+        path="/admin/teams"
+        element={
+          <RequireAdmin>
+            <Layout>
+              <Teams />
             </Layout>
           </RequireAdmin>
         }

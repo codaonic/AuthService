@@ -65,6 +65,17 @@ export function GroupsIcon(props: IconProps) {
   );
 }
 
+export function TeamsIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="7" r="2.6" />
+      <circle cx="5.5" cy="16" r="2.3" />
+      <circle cx="18.5" cy="16" r="2.3" />
+      <path d="M12 9.6v2.9M12 12.5l-4.8 2M12 12.5l4.8 2" />
+    </svg>
+  );
+}
+
 export function ActivityIcon(props: IconProps) {
   return (
     <svg {...base(props)}>

@@ -10,7 +10,8 @@ import { CloseIcon } from "../components/Icons";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { useFocusTrap } from "../components/useFocusTrap";
-import { AccessGrant, api, ApiError, AppUser, Client, Pool, UserPage, UserRoleRow } from "../api";
+import { teamSummary, useTeams } from "../components/TeamPicker";
+import { AccessGrant, AccessReview, api, ApiError, AppUser, Client, Pool, Team, UserPage, UserRoleRow } from "../api";
 import {
   appendLine,
   CLIENT_TYPE_LABELS,
@@ -57,6 +58,9 @@ interface Draft {
   embedOrigins: string;
   scope: string;
   thumbprint: string;
+  backchannelUri: string;
+  signupTeamId: string;
+  rolesClaim: string;
 }
 
 function draftFrom(client: Client): Draft {
@@ -74,6 +78,9 @@ function draftFrom(client: Client): Draft {
     embedOrigins: client.embed_origins.join("\n"),
     scope: client.allowed_scope,
     thumbprint: client.mtls_cert_thumbprint ?? "",
+    backchannelUri: client.backchannel_logout_uri ?? "",
+    signupTeamId: client.signup_team_id ?? "",
+    rolesClaim: client.roles_claim || "roles",
   };
 }
 
@@ -88,9 +95,12 @@ function changedSections(draft: Draft, client: Client): Set<Section> {
   if (
     draft.redirectUris !== saved.redirectUris ||
     ttlSeconds(draft) !== client.session_ttl_seconds ||
-    draft.postLogoutUris !== saved.postLogoutUris
+    draft.postLogoutUris !== saved.postLogoutUris ||
+    draft.backchannelUri !== saved.backchannelUri ||
+    draft.signupTeamId !== saved.signupTeamId
   )
     changed.add("signin");
+  if (draft.rolesClaim !== saved.rolesClaim) changed.add("roles");
   if (draft.logoUrl !== saved.logoUrl || draft.brandColor !== saved.brandColor) changed.add("appearance");
   if (draft.scope !== saved.scope || draft.thumbprint !== saved.thumbprint || draft.embedOrigins !== saved.embedOrigins)
     changed.add("advanced");
@@ -186,6 +196,9 @@ export function ManageApplication({
         logo_url: draft.logoUrl,
         brand_color: draft.brandColor,
         mtls_thumbprint: draft.thumbprint,
+        backchannel_logout_uri: draft.backchannelUri,
+        signup_team_id: draft.signupTeamId,
+        roles_claim: draft.rolesClaim,
         ...(sameSet(draft.grants, saved.grants) ? {} : { grant_types: draft.grants }),
       });
       resetAfterReload.current = true;
@@ -268,7 +281,7 @@ export function ManageApplication({
               {current === "people" && (
                 <PeopleSection client={client} allClients={allClients} flip={flip} flipping={flipping} onChanged={onChanged} confirm={confirm} />
               )}
-              {current === "roles" && <RolesSection client={client} flip={flip} flipping={flipping} />}
+              {current === "roles" && <RolesSection client={client} draft={draft} set={set} flip={flip} flipping={flipping} />}
               {current === "appearance" && <AppearanceSection draft={draft} set={set} />}
               {current === "advanced" && (
                 <AdvancedSection
@@ -604,8 +617,44 @@ function SignInSection({
           }}
         />
         <PostLogoutUrisField value={draft.postLogoutUris} onChange={(v) => set("postLogoutUris", v)} />
+        {client.allow_signup && <SignupTeamField value={draft.signupTeamId} onChange={(v) => set("signupTeamId", v)} />}
+        <div className="field">
+          <label htmlFor="manage-backchannel">
+            Back-channel logout URL <span className="field__hint">(optional)</span>
+          </label>
+          <input
+            id="manage-backchannel"
+            type="url"
+            inputMode="url"
+            placeholder="https://yourapp.com/auth/backchannel-logout"
+            value={draft.backchannelUri}
+            onChange={(e) => set("backchannelUri", e.target.value)}
+          />
+          <span className="field__hint">Your server is told when someone is signed out of this app. Other apps aren't affected.</span>
+        </div>
       </div>
     </>
+  );
+}
+
+function SignupTeamField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const teams = useTeams();
+  if (!teams || teams.length === 0) return null;
+  return (
+    <div className="field">
+      <label htmlFor="manage-signup-team">
+        New signups join a team <span className="field__hint">(optional)</span>
+      </label>
+      <select id="manage-signup-team" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">No team</option>
+        {teams.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+            {teamSummary(t) ? ` (${teamSummary(t)})` : ""}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 
@@ -631,8 +680,15 @@ function PeopleSection({
   const [pools, setPools] = useState<Pool[]>([]);
   const [groupChoice, setGroupChoice] = useState(client.pool_name ?? OWN_ACCOUNTS);
   const [grants, setGrants] = useState<AccessGrant[] | null>(null);
+  // Teams that let their members in here, as well as the people listed one by one.
+  const [teamsWithAccess, setTeamsWithAccess] = useState<Team[]>([]);
+  const [otherTeams, setOtherTeams] = useState<Team[]>([]);
+  const [grantTeamId, setGrantTeamId] = useState("");
   const [poolUsers, setPoolUsers] = useState<AppUser[]>([]);
   const [grantUserId, setGrantUserId] = useState("");
+  // Optional: the day their access ends by itself (e.g. a contractor).
+  const [grantUntil, setGrantUntil] = useState("");
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [addUserOpen, setAddUserOpen] = useState(false);
 
@@ -642,8 +698,31 @@ function PeopleSection({
 
   useEffect(() => setGroupChoice(client.pool_name ?? OWN_ACCOUNTS), [client.pool_name]);
 
+  const teamAccess = async (team: Team, on: boolean) => {
+    setBusy(true);
+    try {
+      if (on) await api.post(`/teams/${team.id}/apps`, { client_id: client.client_id });
+      else await api.delete(`/teams/${team.id}/apps/${encodeURIComponent(client.client_id)}`);
+      show(on ? `Everyone in ${team.name} can log in now` : `${team.name} is no longer let in`);
+      setGrantTeamId("");
+      loadAccess();
+    } catch (err) {
+      show(err instanceof ApiError ? err.message : "Something went wrong", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const loadAccess = () => {
-    if (client.restrict_access) api.get<AccessGrant[]>(`/clients/${client.client_id}/access`).then(setGrants);
+    if (!client.restrict_access) return;
+    api.get<AccessGrant[]>(`/clients/${client.client_id}/access`).then(setGrants);
+    api
+      .get<Team[]>("/teams")
+      .then((all) => {
+        const has = (t: Team) => t.apps.some((a) => a.client_id === client.client_id);
+        setTeamsWithAccess(all.filter(has));
+        setOtherTeams(all.filter((t) => !has(t)));
+      });
   };
 
   useEffect(() => {
@@ -690,9 +769,16 @@ function PeopleSection({
     if (!grantUserId) return;
     setBusy(true);
     try {
-      await api.post(`/clients/${client.client_id}/access`, { user_id: grantUserId });
+      await api.post(`/clients/${client.client_id}/access`, {
+        user_id: grantUserId,
+        // The end of that day, in the admin's own time zone.
+        expires_at: grantUntil ? new Date(`${grantUntil}T23:59:59`).toISOString() : null,
+      });
       setGrantUserId("");
+      setGrantUntil("");
       loadAccess();
+    } catch (err) {
+      show(err instanceof ApiError ? err.message : "Couldn't let them in", "error");
     } finally {
       setBusy(false);
     }
@@ -773,12 +859,10 @@ function PeopleSection({
         title="Only let people you choose log in"
         hint={
           client.restrict_access
-            ? client.pool_name
-              ? `On: only the people listed below can log in, even though the rest of ${client.pool_name} shares accounts with this app.`
-              : "On: only the people listed below can log in."
+            ? "Only the people and teams below can log in."
             : client.pool_name
-              ? `Off: everyone with an account in ${client.pool_name} can log in here.`
-              : "Off: every user of this app can log in."
+              ? `Everyone in ${client.pool_name} can log in.`
+              : "Every user of this app can log in."
         }
         control={
           <Switch
@@ -793,21 +877,41 @@ function PeopleSection({
           <>
             {grants === null ? (
               <p className="field__hint">Loading…</p>
-            ) : grants.length === 0 ? (
+            ) : grants.length === 0 && teamsWithAccess.length === 0 ? (
               <div className="alert" style={{ marginBottom: 10 }}>
-                No one can log in yet. Choose the first person below.
+                No one can log in yet. Add a person or a team below.
               </div>
-            ) : (
+            ) : grants.length === 0 ? null : (
               <ul className="person-list">
                 {grants.map((g) => (
                   <li key={g.user_id}>
-                    <span>{g.email}</span>
+                    <span>
+                      {g.email}
+                      {g.expires_at && <span className="app-chip__note"> · until {formatDay(g.expires_at)}</span>}
+                    </span>
                     <button type="button" className="btn btn--ghost" onClick={() => revokeAccess(g.user_id)}>
                       Remove access
                     </button>
                   </li>
                 ))}
               </ul>
+            )}
+            {teamsWithAccess.length > 0 && (
+              <div className="team-access">
+                <span className="team-access__label">Teams</span>
+                <ul className="app-chips" style={{ margin: 0 }}>
+                  {teamsWithAccess.map((t) => (
+                    <li key={t.id} className="app-chip" title="Its sub-teams' people get in too">
+                      <span>
+                        {t.name} <span className="app-chip__note">· {t.member_count} {t.member_count === 1 ? "person" : "people"}</span>
+                      </span>
+                      <button type="button" aria-label={`Stop letting ${t.name} in`} onClick={() => teamAccess(t, false)}>
+                        <CloseIcon width={12} height={12} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>
               <select aria-label="Person to let in" value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} style={{ flex: 1 }}>
@@ -820,13 +924,60 @@ function PeopleSection({
                     </option>
                   ))}
               </select>
+              <label className="until-field">
+                Until
+                <input
+                  type="date"
+                  aria-label="Access ends on (optional)"
+                  min={new Date().toISOString().slice(0, 10)}
+                  value={grantUntil}
+                  onChange={(e) => setGrantUntil(e.target.value)}
+                />
+              </label>
               <button type="button" className="btn btn--secondary" disabled={!grantUserId || busy} onClick={grantAccess}>
                 Let in
               </button>
             </div>
+
+            {otherTeams.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <select aria-label="Team to let in" value={grantTeamId} onChange={(e) => setGrantTeamId(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">Or a team…</option>
+                  {otherTeams.map((t) => (
+                    <option value={t.id} key={t.id}>
+                      {t.name} ({t.member_count} {t.member_count === 1 ? "person" : "people"})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  disabled={!grantTeamId || busy}
+                  onClick={() => {
+                    const t = otherTeams.find((x) => x.id === grantTeamId);
+                    if (t) teamAccess(t, true);
+                  }}
+                >
+                  Let in
+                </button>
+              </div>
+            )}
           </>
         )}
       </SettingRow>
+
+      <SettingRow
+        title="Who can log in"
+        hint="See everyone with access and how they got it."
+        control={
+          <button type="button" className="btn btn--secondary" onClick={() => setReviewOpen(true)}>
+            Review access
+          </button>
+        }
+      />
+
+      {reviewOpen &&
+        createPortal(<AccessReviewModal client={client} onClose={() => setReviewOpen(false)} />, document.body)}
 
       {/* Outside the panel, so its Escape and focus trap don't also act on the panel. */}
       {addUserOpen &&
@@ -919,8 +1070,22 @@ function AddUserModal({ client, onClose, onAdded }: { client: Client; onClose: (
   );
 }
 
-function RolesSection({ client, flip, flipping }: { client: Client; flip: Flip; flipping: string | null }) {
+function RolesSection({
+  client,
+  draft,
+  set,
+  flip,
+  flipping,
+}: {
+  client: Client;
+  draft: Draft;
+  set: SetDraft;
+  flip: Flip;
+  flipping: string | null;
+}) {
+  const { show } = useToast();
   const [roleNames, setRoleNames] = useState<string[]>([]);
+  const [includes, setIncludes] = useState<Record<string, string[]>>({});
   const [userRoles, setUserRoles] = useState<UserRoleRow[] | null>(null);
   const [newRoleName, setNewRoleName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -929,6 +1094,16 @@ function RolesSection({ client, flip, flipping }: { client: Client; flip: Flip; 
     if (!client.roles_enabled) return;
     api.get<string[]>(`/clients/${client.client_id}/roles`).then(setRoleNames);
     api.get<UserRoleRow[]>(`/clients/${client.client_id}/user-roles`).then(setUserRoles);
+    api.get<Record<string, string[]>>(`/clients/${client.client_id}/role-includes`).then(setIncludes);
+  };
+
+  const setRoleIncludes = async (role: string, next: string[]) => {
+    try {
+      await api.put(`/clients/${client.client_id}/roles/${encodeURIComponent(role)}/includes`, { includes: next });
+      setIncludes((all) => ({ ...all, [role]: next }));
+    } catch (err) {
+      show(err instanceof ApiError ? err.message : "Couldn't change that role", "error");
+    }
   };
 
   useEffect(() => {
@@ -965,7 +1140,7 @@ function RolesSection({ client, flip, flipping }: { client: Client; flip: Flip; 
     <>
       <SectionHeading
         title="Roles"
-        lead="Role names you give people in this app, such as editor or billing. Your app gets them from /userinfo and decides what each role may do."
+        lead="Names like editor or billing. Your app reads them from the token and decides what each allows."
       />
       <SettingRow
         title="Use roles in this app"
@@ -993,6 +1168,54 @@ function RolesSection({ client, flip, flipping }: { client: Client; flip: Flip; 
               Add role
             </button>
           </form>
+
+          {roleNames.length > 1 && (
+            <div className="role-includes">
+              <h3 className="sheet__section-title" style={{ margin: "0 0 10px" }}>
+                Roles that include others
+              </h3>
+              {roleNames.map((r) => {
+                const mine = includes[r] ?? [];
+                const options = roleNames.filter((o) => o !== r && !mine.includes(o));
+                return (
+                  <div key={r} className="role-includes__row">
+                    <strong className="role-includes__role">{r}</strong>
+                    <span className="role-includes__arrow" aria-hidden="true">
+                      includes
+                    </span>
+                    {mine.map((inc) => (
+                      <span key={inc} className="app-chip">
+                        <span>{inc}</span>
+                        <button type="button" aria-label={`${r} no longer includes ${inc}`} onClick={() => setRoleIncludes(r, mine.filter((x) => x !== inc))}>
+                          <CloseIcon width={12} height={12} />
+                        </button>
+                      </span>
+                    ))}
+                    {options.length > 0 && (
+                      <select
+                        aria-label={`Add a role that ${r} includes`}
+                        value=""
+                        onChange={(e) => e.target.value && setRoleIncludes(r, [...mine, e.target.value])}
+                      >
+                        <option value="">{mine.length ? "+ add" : "nothing"}</option>
+                        {options.map((o) => (
+                          <option key={o} value={o}>
+                            {o}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="field" style={{ maxWidth: 360 }}>
+            <label htmlFor="manage-roles-claim">Claim name in tokens</label>
+            <input id="manage-roles-claim" value={draft.rolesClaim} onChange={(e) => set("rolesClaim", e.target.value)} />
+            <span className="field__hint">Usually <code>roles</code>.</span>
+          </div>
 
           {roleNames.length === 0 ? (
             <p className="field__hint">No roles yet. Add the first one above.</p>
@@ -1149,5 +1372,106 @@ function AdvancedSection({
         />
       </div>
     </>
+  );
+}
+
+function formatDay(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function AccessReviewModal({ client, onClose }: { client: Client; onClose: () => void }) {
+  const [review, setReview] = useState<AccessReview | null>(null);
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    api.get<AccessReview>(`/clients/${client.client_id}/access-review`).then(setReview);
+  }, [client.client_id]);
+
+  const people = (review?.people ?? []).filter(
+    (p) => !query || `${p.email} ${p.name}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+
+  const download = () => {
+    const cell = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const lines = [
+      ["email", "name", "status", "how they get in", "ends"].map(cell).join(","),
+      ...(review?.people ?? []).flatMap((p) =>
+        p.reasons.map((r) =>
+          [p.email, p.name, p.active ? "active" : "stopped", r.label, r.expires_at ?? ""].map(cell).join(","),
+        ),
+      ),
+    ];
+    const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `access-${client.client_id}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Modal title={`Who can log in to ${displayName(client)}`} wide onClose={onClose}>
+      {review === null ? (
+        <p className="field__hint">Loading…</p>
+      ) : (
+        <>
+          <p className="modal__lead">
+            {review.restricted
+              ? "Only these people can log in."
+              : `Open to everyone with an account${client.pool_name ? ` in ${client.pool_name}` : ""}.`}
+          </p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <input
+              type="search"
+              aria-label="Filter people"
+              placeholder="Search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button type="button" className="btn btn--secondary" onClick={download} disabled={review.people.length === 0}>
+              Download CSV
+            </button>
+          </div>
+          {people.length === 0 ? (
+            <p className="chart-empty">{review.people.length ? "No one matches." : "No one can log in yet."}</p>
+          ) : (
+            <div className="table-wrap" style={{ maxHeight: 420, overflow: "auto" }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th>Access</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {people.map((p) => (
+                    <tr key={p.user_id}>
+                      <td>
+                        <strong style={{ display: "block", fontSize: 13.5 }}>{p.name || p.email}</strong>
+                        {p.name && <span className="field__hint">{p.email}</span>}
+                        {!p.active && <Badge variant="neutral">Stopped</Badge>}
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {p.reasons.map((r, i) => (
+                            <span key={i} className="tag">
+                              {r.label}
+                              {r.expires_at ? ` · until ${formatDay(r.expires_at)}` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="field__hint" style={{ marginTop: 10 }}>
+            {review.people.length} {review.people.length === 1 ? "person" : "people"} in total.
+          </p>
+        </>
+      )}
+    </Modal>
   );
 }

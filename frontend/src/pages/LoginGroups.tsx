@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Modal } from "../components/Modal";
+import { Switch } from "../components/Switch";
 import { EmptyState } from "../components/EmptyState";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
@@ -133,6 +134,30 @@ export function LoginGroups() {
                     ))}
                   </ul>
                 )}
+
+                <div className="group-card__option">
+                  <Switch
+                    label={`New apps in ${pool.name} start with access limited to people you choose`}
+                    checked={!!pool.restrict_new_apps}
+                    onChange={async () => {
+                      try {
+                        const updated = await api.post<Pool>(`/pools/${encodeURIComponent(pool.name)}/toggle-restrict-new-apps`);
+                        setPools((all) => all && all.map((p) => (p.id === pool.id ? { ...p, ...updated } : p)));
+                        show(
+                          updated.restrict_new_apps
+                            ? `New apps in ${pool.name} let no one in until you choose`
+                            : `New apps in ${pool.name} are open to the whole group`,
+                        );
+                      } catch (err) {
+                        show(err instanceof ApiError ? err.message : "Couldn't change that", "error");
+                      }
+                    }}
+                  />
+                  <span>
+                    <strong>New apps start locked</strong>
+                    <span className="group-card__option-hint">No one can log in until you choose people or teams.</span>
+                  </span>
+                </div>
 
                 <div className="group-card__actions">
                   <button type="button" className="btn btn--secondary" onClick={() => setAssignPool(pool)} disabled={standalone.length === 0}>

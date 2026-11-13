@@ -34,6 +34,8 @@ export const api = {
     request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body === undefined ? undefined : JSON.stringify(body) }),
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
@@ -46,6 +48,8 @@ export interface Admin {
 export interface Pool {
   id: string;
   name: string;
+  /** New apps added to this group start with access restricted. */
+  restrict_new_apps?: boolean;
   /** Only in the /pools listing. */
   user_count?: number;
 }
@@ -104,13 +108,54 @@ export interface Client {
   embed_origins: string[];
   /** Every site that may embed its sign-in (redirect URI sites + embed_origins). */
   embed_allowed_origins: string[];
+  /** Claim that carries this app's roles in its tokens. */
+  roles_claim: string;
+  /** OIDC back-channel logout URL for this app's server. */
+  backchannel_logout_uri: string | null;
+  /** New signups through this app join this team. */
+  signup_team_id: string | null;
   pool_name: string | null;
   client_secret?: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  description: string;
+  parent_id: string | null;
+  member_count: number;
+  apps: { client_id: string; client_name: string | null }[];
+  roles: { client_id: string; role: string }[];
+}
+
+export interface TeamMember {
+  user_id: string;
+  email: string;
+  name: string;
+  client_id: string;
+  client_name: string | null;
+  pool_name: string | null;
+  expires_at: string | null;
+  is_manager: boolean;
 }
 
 export interface AccessGrant {
   user_id: string;
   email: string;
+  /** Access ends by itself then. */
+  expires_at: string | null;
+}
+
+export interface AccessReview {
+  client_id: string;
+  restricted: boolean;
+  people: {
+    user_id: string;
+    email: string;
+    name: string;
+    active: boolean;
+    reasons: { kind: "open" | "direct" | "team"; label: string; expires_at?: string | null }[];
+  }[];
 }
 
 export interface UserRoleRow {
