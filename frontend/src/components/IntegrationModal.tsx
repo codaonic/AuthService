@@ -62,28 +62,11 @@ export function IntegrationModal({
 
   // Set default tab
   useEffect(() => {
-    if (resource) {
-      setTab("fastmcp");
-    } else if (appOnly) {
-      setTab(
-        activeClient?.application_type === "service"
-          ? "curl"
-          : activeClient?.embed_allowed_origins?.length
-          ? "embed"
-          : "widget",
-      );
-    } else if (activeClient) {
-      if (activeClient.application_type === "native") {
-        setTab("claude");
-      } else if (activeClient.application_type === "service") {
-        setTab("curl");
-      } else {
-        setTab("claude");
-      }
-    } else {
-      setTab("claude");
-    }
-  }, [resource, activeClient, appOnly]);
+    if (resource) setTab("python");
+    else if (activeClient?.application_type === "service") setTab("service");
+    else if (activeClient?.application_type === "native") setTab("mobile");
+    else setTab("website");
+  }, [resource, activeClient]);
 
   if (!endpoints) {
     return (
@@ -103,6 +86,7 @@ export function IntegrationModal({
     : selectedResourceId || "https://mcp.yourdomain.com";
 
   const prmUrl = `${endpoints.prm_endpoint}?resource=${encodeURIComponent(activeResourceId)}`;
+  const issuerBase = endpoints.issuer.replace(/\/$/, "");
 
   const currentClientId = activeClient?.client_id || "YOUR_CLIENT_ID";
   const currentRedirectUri = activeClient?.redirect_uris?.[0] || "https://yourapp.com/callback";
@@ -164,7 +148,7 @@ export function IntegrationModal({
       {!resource && availableClients.length > 0 && (
         <div className="field" style={{ marginBottom: 14 }}>
           <label htmlFor="active-app-picker" style={{ fontWeight: 600 }}>
-            Application to Configure
+            Application
           </label>
           <select
             id="active-app-picker"
@@ -176,18 +160,15 @@ export function IntegrationModal({
                 {c.client_name || c.client_id} ({c.client_type}, {c.pool_name ?? "standalone"})
               </option>
             ))}
-            <option value="">Generic Reference (Placeholder values)</option>
+            <option value="">Example values</option>
           </select>
-          <span className="field__hint">
-            Selecting an application pre-fills its Client ID, redirect URIs, and credentials in the snippets below.
-          </span>
         </div>
       )}
 
       {/* Target Resource selector if configuring an Application (hidden in app-only mode) */}
       {!resource && !appOnly && allResources.length > 0 && (
         <div className="field" style={{ marginBottom: 14 }}>
-          <label htmlFor="target-resource-select">Target MCP Server / API (Resource Indicator)</label>
+          <label htmlFor="target-resource-select">API or MCP server</label>
           <select
             id="target-resource-select"
             value={selectedResourceId}
@@ -199,10 +180,6 @@ export function IntegrationModal({
               </option>
             ))}
           </select>
-          <span className="field__hint">
-            Under RFC 8707, access tokens are audience-bound to this resource. Selecting it ensures
-            the snippets below generate the matching audience parameter.
-          </span>
         </div>
       )}
 
@@ -215,75 +192,41 @@ export function IntegrationModal({
           ) : (
             <input
               id="guide-secret"
-              placeholder="Paste the secret you saved when this app was created to fill snippets"
+              placeholder="Paste it to fill in the examples"
               value={pastedSecret}
               onChange={(e) => setPastedSecret(e.target.value)}
             />
           )}
           <span className="field__hint">
-            {clientSecret
-              ? "Shown once, right after creation — already filled in below."
-              : "Client secrets are hashed and cannot be retrieved after creation. Paste it here to fill in the snippets for copying — it is never sent back to the server."}
+            {clientSecret ? "Shown only once. Save it now." : "Stays in your browser."}
           </span>
         </div>
       )}
 
       {/* Tab Navigation */}
-      <div
-        style={{
-          display: "flex",
-          gap: 6,
-          borderBottom: "1px solid var(--border)",
-          marginBottom: 16,
-          overflowX: "auto",
-        }}
-      >
+      <div className="guide-tabs" role="tablist">
         {resource ? (
           <>
-            <TabButton active={tab === "fastmcp"} onClick={() => setTab("fastmcp")}>
-              FastMCP / Python
-            </TabButton>
-            <TabButton active={tab === "typescript"} onClick={() => setTab("typescript")}>
-              TypeScript / Node
-            </TabButton>
-            <TabButton active={tab === "prm"} onClick={() => setTab("prm")}>
-              Protected Resource Metadata (PRM)
-            </TabButton>
+            <TabButton active={tab === "python"} onClick={() => setTab("python")}>Python</TabButton>
+            <TabButton active={tab === "node"} onClick={() => setTab("node")}>Node</TabButton>
+            <TabButton active={tab === "live"} onClick={() => setTab("live")}>Live check</TabButton>
+            <TabButton active={tab === "prm"} onClick={() => setTab("prm")}>401 & discovery</TabButton>
           </>
         ) : (
           <>
+            <TabButton active={tab === "website"} onClick={() => setTab("website")}>Website</TabButton>
+            <TabButton active={tab === "spa"} onClick={() => setTab("spa")}>Single-page app</TabButton>
+            <TabButton active={tab === "mobile"} onClick={() => setTab("mobile")}>Mobile</TabButton>
+            <TabButton active={tab === "embed"} onClick={() => setTab("embed")}>Embedded</TabButton>
+            <TabButton active={tab === "popup"} onClick={() => setTab("popup")}>Popup</TabButton>
             {!appOnly && (
-              <>
-                <TabButton active={tab === "claude"} onClick={() => setTab("claude")}>
-                  Claude Desktop
-                </TabButton>
-                <TabButton active={tab === "cursor"} onClick={() => setTab("cursor")}>
-                  Cursor MCP
-                </TabButton>
-                <TabButton active={tab === "python_agent"} onClick={() => setTab("python_agent")}>
-                  Python AI Agent
-                </TabButton>
-              </>
+              <TabButton active={tab === "assistants"} onClick={() => setTab("assistants")}>AI assistants</TabButton>
             )}
-            <TabButton active={tab === "curl"} onClick={() => setTab("curl")}>
-              cURL (Token Request)
-            </TabButton>
-            <TabButton active={tab === "widget"} onClick={() => setTab("widget")}>
-              Popup Widget (HTML)
-            </TabButton>
-            <TabButton active={tab === "embed"} onClick={() => setTab("embed")}>
-              Embedded Sign-in
-            </TabButton>
-            <TabButton active={tab === "bff"} onClick={() => setTab("bff")}>
-              BFF Backend (Python)
-            </TabButton>
-            <TabButton active={tab === "pkce"} onClick={() => setTab("pkce")}>
-              OAuth Endpoints & PKCE
-            </TabButton>
+            <TabButton active={tab === "service"} onClick={() => setTab("service")}>Server to server</TabButton>
+            <TabButton active={tab === "logout"} onClick={() => setTab("logout")}>Logout</TabButton>
+            <TabButton active={tab === "oauth"} onClick={() => setTab("oauth")}>Raw OAuth</TabButton>
             {activeClient?.application_type === "service" && (
-              <TabButton active={tab === "mtls"} onClick={() => setTab("mtls")}>
-                Mutual TLS (mTLS)
-              </TabButton>
+              <TabButton active={tab === "mtls"} onClick={() => setTab("mtls")}>mTLS</TabButton>
             )}
           </>
         )}
@@ -292,96 +235,104 @@ export function IntegrationModal({
       {/* Tab Contents: Resource Mode */}
       {resource && (
         <div>
-          {tab === "fastmcp" && (
+          {tab === "python" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Integrate your Python MCP server using <code>authservice-client</code>. It validates
-                JWTs against the cached JWKS and serves RFC 9728 Protected Resource Metadata at{" "}
-                <code>/.well-known/oauth-protected-resource</code>.
-              </p>
+              <p className="guide-lead">Check each request's token with the <code>auth-client</code> SDK.</p>
               <CodeBlock
                 language="bash"
-                title="1. Install Client SDK"
-                code={`uv add "authservice-client @ git+https://github.com/codaonic/AuthService_Client.git@main"`}
+                title="Install"
+                code={`pip install "auth-client[fastapi] @ https://github.com/codaonic/auth-client/releases/download/v0.3.1/auth_client-0.3.1-py3-none-any.whl"`}
               />
               <CodeBlock
                 language="python"
-                title="2. Server Integration Code"
-                code={`from fastapi import FastAPI, Depends
-from authservice_client import TokenValidator
-from authservice_client.fastapi import make_auth_dependency
-from authservice_client.protected_resource import protected_resource_router
+                title="FastAPI"
+                code={`from fastapi import Depends, FastAPI
+from auth_client import TokenValidator
+from auth_client.fastapi import make_auth_dependency
+from auth_client.protected_resource import protected_resource_router
 
 ISSUER = "${endpoints.issuer}"
 RESOURCE_ID = "${resource.resource_id}"
 
-# Validates RS256 JWTs locally against cached JWKS with aud=RESOURCE_ID
 validator = TokenValidator(issuer=ISSUER, resource_id=RESOURCE_ID)
 require_auth = make_auth_dependency(validator)
 
-app = FastAPI(title="${resource.name}")
-
-# Mounts /.well-known/oauth-protected-resource so MCP clients discover the auth server
+app = FastAPI()
 app.include_router(protected_resource_router(RESOURCE_ID, ISSUER, resource_name="${resource.name}"))
 
-@app.post("/mcp/tools/call")
-async def call_tool(claims: dict = Depends(require_auth)):
-    # claims contains verified sub, email, and scopes
-    return {"status": "ok", "caller_id": claims["sub"]}`}
+@app.get("/me")
+async def me(claims: dict = Depends(require_auth)):
+    return {"sub": claims["sub"], "roles": claims.get("roles", [])}`}
               />
             </div>
           )}
 
-          {tab === "typescript" && (
+          {tab === "node" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                In TypeScript / Node, verify tokens locally with the standard <code>jose</code>{" "}
-                library against the public JWKS.
-              </p>
+              <p className="guide-lead">Check each request's token with the <code>auth-client</code> SDK.</p>
               <CodeBlock
                 language="bash"
-                title="1. Install jose"
-                code={`npm install jose`}
+                title="Install"
+                code={`npm install "https://github.com/codaonic/auth-client/releases/download/v0.3.1/auth-client-0.3.1.tgz"`}
               />
               <CodeBlock
                 language="typescript"
-                title="2. Token Verification Middleware"
-                code={`import { createRemoteJWKSet, jwtVerify } from "jose";
+                title="Express"
+                code={`import express from "express";
+import { TokenValidator, protectedResourceRouter } from "auth-client";
+import { makeAuthMiddleware } from "auth-client/express";
 
 const ISSUER = "${endpoints.issuer}";
 const RESOURCE_ID = "${resource.resource_id}";
-const JWKS = createRemoteJWKSet(new URL("${endpoints.jwks_uri}"));
 
-export async function verifyMcpToken(authHeader?: string) {
-  if (!authHeader?.startsWith("Bearer ")) {
-    throw new Error("Missing or invalid authorization header");
-  }
-  const token = authHeader.slice(7);
-  const { payload } = await jwtVerify(token, JWKS, {
-    issuer: ISSUER,
-    audience: RESOURCE_ID,
-  });
-  return payload; // { sub, email, ... }
-}`}
+const validator = new TokenValidator(ISSUER, RESOURCE_ID);
+const app = express();
+app.use(protectedResourceRouter(RESOURCE_ID, ISSUER, "${resource.name}"));
+
+app.get("/me", makeAuthMiddleware(validator), (req, res) => {
+  res.json({ sub: req.claims?.sub });
+});`}
+              />
+              <p className="guide-note">
+                Without the SDK, any JWT library works: verify against <code>{endpoints.jwks_uri}</code> with issuer{" "}
+                <code>{endpoints.issuer}</code> and audience <code>{resource.resource_id}</code>.
+              </p>
+            </div>
+          )}
+
+          {tab === "live" && (
+            <div>
+              <p className="guide-lead">
+                Optional. Ask whether a token is still good, so sign-outs and removed access apply at once.
+              </p>
+              <CodeBlock
+                language="bash"
+                title="Token introspection (RFC 7662)"
+                description="Use the ID and secret of a confidential application."
+                code={`curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \\
+  -d "token=$ACCESS_TOKEN" \\
+  ${issuerBase}/introspect
+
+# {"active": true, "sub": "...", "aud": "${resource.resource_id}", "scope": "..."}
+# {"active": false}`}
               />
             </div>
           )}
 
           {tab === "prm" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Under RFC 9728, when an MCP client calls your server without authentication, return{" "}
-                <code>401 Unauthorized</code> pointing to this metadata document.
+              <p className="guide-lead">
+                Answer requests without a token like this. MCP clients then find this service on their own.
               </p>
               <CodeBlock
                 language="http"
-                title="401 Challenge Header"
+                title="401 response"
                 code={`HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
+WWW-Authenticate: Bearer resource_metadata="${prmUrl}"`}
               />
               <CodeBlock
                 language="json"
-                title="Published PRM Document"
+                title="Protected resource metadata (RFC 9728)"
                 code={`{
   "resource": "${resource.resource_id}",
   "authorization_servers": ["${endpoints.issuer}"],
@@ -397,173 +348,112 @@ WWW-Authenticate: Bearer error="invalid_token", resource_metadata="${prmUrl}"`}
       {/* Tab Contents: Application Mode */}
       {!resource && (
         <div>
-          {tab === "claude" && (
+          {tab === "website" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Add this to your <code>claude_desktop_config.json</code> to connect Claude Desktop to
-                your MCP server through this Auth Service:
-              </p>
-              <CodeBlock
-                language="json"
-                title="claude_desktop_config.json"
-                code={`{
-  "mcpServers": {
-    "${currentClientId}": {
-      "url": "${activeResourceId}/sse",
-      "auth": {
-        "type": "oauth2",
-        "issuer": "${endpoints.issuer}",
-        "client_id": "${currentClientId}",
-        "resource": "${activeResourceId}",
-        "scopes": ["openid", "profile"]
-      }
-    }
-  }
-}`}
+              <p className="guide-lead">Any OpenID Connect library works. Give it these settings:</p>
+              <SettingsTable
+                rows={[
+                  ["Discovery URL", endpoints.openid_configuration],
+                  ["Client ID", currentClientId],
+                  ...(isPublicClient ? [] : ([["Client secret", effectiveSecret || "your client secret"]] as [string, string][])),
+                  ["Redirect URI", currentRedirectUri],
+                  ["Scopes", "openid email profile"],
+                  ["Extra parameter", `resource=${activeResourceId}`],
+                ]}
               />
-              <div
-                style={{
-                  padding: 12,
-                  background: "var(--info-bg)",
-                  color: "var(--info-fg)",
-                  borderRadius: "var(--radius-sm)",
-                  fontSize: 12.5,
-                }}
-              >
-                <strong>Security Protocol Note:</strong> Claude Desktop executes the PKCE (S256) flow
-                automatically. Under OAuth 2.1, native desktop clients do not use client secrets.
-              </div>
-            </div>
-          )}
-
-          {tab === "cursor" && (
-            <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Add this to your Cursor MCP settings (in Settings → Features → MCP):
-              </p>
-              <CodeBlock
-                language="json"
-                title="Cursor MCP Settings"
-                code={`{
-  "mcp": {
-    "servers": {
-      "${currentClientId}": {
-        "transport": "sse",
-        "url": "${activeResourceId}/sse",
-        "oauth": {
-          "clientId": "${currentClientId}",
-          "issuer": "${endpoints.issuer}",
-          "resource": "${activeResourceId}"
-        }
-      }
-    }
-  }
-}`}
-              />
-            </div>
-          )}
-
-          {tab === "python_agent" && (
-            <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Python AI Agent / Backend client calling an MCP Server using tokens minted for{" "}
-                <strong>{currentClientId}</strong>:
-              </p>
               <CodeBlock
                 language="python"
-                title="Python AI Agent Token & Tool Call"
-                code={`import httpx
+                title="Python (Authlib + FastAPI)"
+                code={`from authlib.integrations.starlette_client import OAuth
+from fastapi import FastAPI, Request
+from starlette.middleware.sessions import SessionMiddleware
 
-ISSUER = "${endpoints.issuer}"
-CLIENT_ID = "${currentClientId}"
-CLIENT_SECRET = "${effectiveSecret || "<paste-your-client-secret>"}"
-RESOURCE_ID = "${activeResourceId}"
+app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key="change-me")
 
-async def get_access_token():
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{ISSUER}/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": CLIENT_ID,${
-                  isPublicClient
-                    ? ""
-                    : `\n                "client_secret": CLIENT_SECRET,`
-                }
-                "resource": RESOURCE_ID,
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
+oauth = OAuth()
+oauth.register(
+    "auth",
+    server_metadata_url="${endpoints.openid_configuration}",
+    client_id="${currentClientId}",${
+      isPublicClient ? "" : `\n    client_secret="${effectiveSecret || "<your-client-secret>"}",`
+    }
+    client_kwargs={"scope": "openid email profile", "code_challenge_method": "S256"},
+)
 
-async def call_mcp_tool(tool_name: str, arguments: dict):
-    token = await get_access_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{RESOURCE_ID}/mcp/tools/call",
-            headers=headers,
-            json={"name": tool_name, "arguments": arguments},
-        )
-        resp.raise_for_status()
-        return resp.json()`}
+@app.get("/login")
+async def login(request: Request):
+    return await oauth.auth.authorize_redirect(
+        request, "${currentRedirectUri}", resource="${activeResourceId}"
+    )
+
+@app.get("/callback")
+async def callback(request: Request):
+    token = await oauth.auth.authorize_access_token(request)  # checks the ID token
+    request.session["user"] = token["userinfo"]  # sub, email, name, roles
+    return {"signed_in_as": token["userinfo"]["email"]}`}
               />
             </div>
           )}
 
-          {tab === "curl" && (
+          {tab === "spa" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Direct token exchange request via cURL:
-              </p>
+              <p className="guide-lead">For React, Vue or plain JavaScript. No secret is needed.</p>
+              <CodeBlock language="bash" title="Install" code={`npm install oidc-client-ts`} />
               <CodeBlock
-                language="bash"
-                title="Token Request cURL"
-                code={`curl -X POST "${endpoints.token_endpoint}" \\
-  -H "Content-Type: application/x-www-form-urlencoded" \\
-  -d "grant_type=client_credentials" \\
-  -d "client_id=${currentClientId}" \\${
-    isPublicClient
-      ? ""
-      : `\n  -d "client_secret=${effectiveSecret || "<paste-your-client-secret>"}" \\`
-  }
-  -d "resource=${activeResourceId}"`}
+                language="typescript"
+                title="oidc-client-ts"
+                code={`import { UserManager } from "oidc-client-ts";
+
+const auth = new UserManager({
+  authority: "${endpoints.issuer}",
+  client_id: "${currentClientId}",
+  redirect_uri: "${currentRedirectUri}",
+  post_logout_redirect_uri: "${activeClient?.post_logout_redirect_uris?.[0] ?? "https://yourapp.com/"}",
+  scope: "openid email profile",
+  extraQueryParams: { resource: "${activeResourceId}" },
+});
+
+// Sign in button
+await auth.signinRedirect();
+
+// On your callback page
+const user = await auth.signinRedirectCallback();
+user.access_token;   // send to your API
+user.profile.email;
+
+// Sign out (this app only)
+await auth.signoutRedirect();`}
               />
             </div>
           )}
 
-          {tab === "widget" && (
+          {tab === "mobile" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Embed the popup login widget directly into your website. The password and login form
-                run in this service's hosted popup, keeping credentials isolated from your site:
+              <p className="guide-lead">
+                Use the system browser with AppAuth (iOS and Android) or <code>expo-auth-session</code>. Never a WebView.
               </p>
-              <CodeBlock
-                language="html"
-                title="Embedded Popup Widget"
-                code={`<script src="${endpoints.auth_widget_js}"></script>
-<button id="sign-in-btn">Sign in with ${clientDisplayName}</button>
-
-<script>
-  document.getElementById("sign-in-btn").addEventListener("click", () => {
-    AuthWidget.openPopup("/login?popup=1")
-      .then(() => location.reload())
-      .catch((err) => {
-        if (err.message !== "cancelled") alert(err.message);
-      });
-  });
-</script>`}
+              <SettingsTable
+                rows={[
+                  ["Issuer", endpoints.issuer],
+                  ["Client ID", currentClientId],
+                  ["Redirect URI", currentRedirectUri],
+                  ["Scopes", "openid email profile offline_access"],
+                  ["Extra parameter", `resource=${activeResourceId}`],
+                  ["PKCE", "S256 (on by default in AppAuth)"],
+                ]}
               />
+              <p className="guide-note">
+                Use your app's scheme (<code>com.yourcompany.app:/callback</code>) or an App Link / Universal Link as
+                the redirect URI, and add it to this app first.
+              </p>
             </div>
           )}
 
           {tab === "embed" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Show sign-in and signup <strong>inside your own page</strong>, styled with your colors,
-                font and corner radius. No redirect and no popup. The form runs in a frame served by
-                this service, so the password never reaches your page or its scripts. Your page gets a
-                one-time code, which your backend exchanges for tokens.
+              <p className="guide-lead">
+                Sign-in inside your own page, in your colors. The password never reaches your page.
               </p>
 
               {activeClient && activeClient.embed_allowed_origins.length > 0 ? (
@@ -578,10 +468,7 @@ async def call_mcp_tool(tool_name: str, arguments: dict):
                 </div>
               ) : (
                 <div className="alert alert--error">
-                  No website can embed this application yet: it has no web address under{" "}
-                  <strong>Where people are sent back to after login</strong> (Applications → Manage →
-                  Sign-in &amp; signup). Add your site's callback there, for example{" "}
-                  <code>https://yourapp.com/auth/callback</code>, and its pages can show the sign-in.
+                  Add your site's callback URL to this app first (Manage → Sign-in &amp; signup).
                 </div>
               )}
 
@@ -624,7 +511,7 @@ async def call_mcp_tool(tool_name: str, arguments: dict):
               <CodeBlock
                 language="python"
                 title="2. Exchange the code on your backend"
-                description="No redirect_uri is needed for an embedded sign-in. Keep the tokens server-side and give the browser your own session cookie."
+                description="Keep the tokens on your server."
                 code={`import httpx
 
 async def complete_sign_in(code: str, code_verifier: str):
@@ -647,120 +534,152 @@ async def complete_sign_in(code: str, code_verifier: str):
         return resp.json()  # access_token, refresh_token, expires_in`}
               />
 
-              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                <strong>Appearance options:</strong> <code>colorPrimary</code>,{" "}
-                <code>colorPrimaryText</code>, <code>colorBackground</code>,{" "}
-                <code>colorInputBackground</code>, <code>colorText</code>,{" "}
-                <code>colorTextSecondary</code>, <code>colorBorder</code>, <code>colorDanger</code>,{" "}
-                <code>fontFamily</code> (unquoted names), <code>borderRadius</code> (px, rem or em)
-                and <code>theme</code> (<code>"light"</code> or <code>"dark"</code>). Anything else is
-                ignored.
-              </p>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 0 }}>
-                Wrong passwords, 2FA, signup, forgot password and passkeys all stay inside the frame,
-                and it resizes to fit. To keep the PKCE verifier on your server instead, pass{" "}
-                <code>{"auth.create(\"login\", { codeChallenge })"}</code>; <code>success</code> then
-                carries only the code. Browsers don't share sign-ins with embedded frames, so single
-                sign-on across your apps needs the redirect or popup.
+              <p className="guide-note">
+                Appearance: <code>colorPrimary</code>, <code>colorBackground</code>, <code>colorText</code>,{" "}
+                <code>colorBorder</code>, <code>colorDanger</code>, <code>fontFamily</code>, <code>borderRadius</code>,{" "}
+                <code>theme</code>.
               </p>
             </div>
           )}
 
-          {tab === "bff" && (
+          {tab === "popup" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Website Backend-for-Frontend (BFF) pattern: your server exchanges the authorization
-                code for tokens and stores them in an HttpOnly session cookie:
+              <p className="guide-lead">Open sign-in in a popup. Your page stays where it is.</p>
+              <CodeBlock
+                language="html"
+                title="Popup"
+                description="The URL is your own route that starts the sign-in (like /login in the Website tab)."
+                code={`<script src="${endpoints.auth_widget_js}"></script>
+<button id="sign-in">Sign in</button>
+<script>
+  document.getElementById("sign-in").onclick = () =>
+    AuthWidget.openPopup("/login")
+      .then(() => location.reload())
+      .catch((err) => err.message !== "cancelled" && alert(err.message));
+</script>`}
+              />
+            </div>
+          )}
+
+          {tab === "assistants" && (
+            <div>
+              <p className="guide-lead">
+                Claude, Cursor and other MCP clients only need your MCP server's address. They find this service and
+                register themselves.
               </p>
               <CodeBlock
-                language="python"
-                title="BFF Authorization Code Exchange (Python)"
-                code={`import httpx
-
-async def handle_callback(code: str, code_verifier: str):
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "${endpoints.token_endpoint}",
-            data={
-                "grant_type": "authorization_code",
-                "client_id": "${currentClientId}",
-                "client_secret": "${effectiveSecret || "<paste-your-client-secret>"}",
-                "code": code,
-                "code_verifier": code_verifier,
-                "redirect_uri": "${currentRedirectUri}",
-                "resource": "${activeResourceId}",
-            },
-        )
-        tokens = resp.json()
-        return tokens  # Store tokens server-side in user session`}
+                language="bash"
+                title="Claude Code"
+                code={`claude mcp add --transport http my-server ${activeResourceId}`}
               />
-              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                Logout signs the person out of <strong>this application only</strong> — other
-                applications stay signed in, including ones in the same login group. Call it from
-                your own logout button; it has no page of its own. Use either form:
+              <CodeBlock
+                language="json"
+                title="Cursor (.cursor/mcp.json)"
+                code={`{
+  "mcpServers": {
+    "my-server": { "url": "${activeResourceId}" }
+  }
+}`}
+              />
+              <p className="guide-note">
+                Claude desktop and claude.ai: Settings → Connectors → Add custom connector, then paste{" "}
+                <code>{activeResourceId}</code>.
               </p>
+            </div>
+          )}
+
+          {tab === "service" && (
+            <div>
+              <p className="guide-lead">For a backend or script calling your API with no person signed in.</p>
+              <CodeBlock
+                language="bash"
+                title="Get a token"
+                code={`curl -s -u "${currentClientId}:${effectiveSecret || "<your-client-secret>"}" \\
+  -d "grant_type=client_credentials" \\
+  -d "resource=${activeResourceId}" \\
+  ${endpoints.token_endpoint}`}
+              />
               <CodeBlock
                 language="python"
-                title="Logout from your server (returns JSON)"
+                title="Python"
                 code={`import httpx
 
-async def handle_logout(refresh_token: str):
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "${endpoints.end_session_endpoint}",
-            data={
-                "client_id": "${currentClientId}",${
-                  isPublicClient
-                    ? ""
-                    : `
-                "client_secret": "${effectiveSecret || "<paste-your-client-secret>"}",`
-                }
-                "refresh_token": refresh_token,
-            },
-        )
-        resp.raise_for_status()  # {"status": "signed_out", ...}
-    # then clear your own session cookie`}
+resp = httpx.post(
+    "${endpoints.token_endpoint}",
+    auth=("${currentClientId}", "${effectiveSecret || "<your-client-secret>"}"),
+    data={"grant_type": "client_credentials", "resource": "${activeResourceId}"},
+)
+token = resp.json()["access_token"]`}
               />
+            </div>
+          )}
+
+          {tab === "logout" && (
+            <div>
+              <p className="guide-lead">Logging out ends the sign-in to this app only. Other apps stay signed in.</p>
               <CodeBlock
                 language="text"
-                title="Logout by redirecting the browser"
-                code={`${endpoints.end_session_endpoint}?client_id=${encodeURIComponent(currentClientId)}&post_logout_redirect_uri=${encodeURIComponent(
-                  activeClient?.post_logout_redirect_uris?.[0] ?? "https://yourapp.com/signed-out",
-                )}&state=<optional>`}
-                description="The return URL must be listed under After-logout URLs for this application."
+                title="Send the browser to"
+                description="The return URL must be listed under After-logout URLs."
+                code={`${endpoints.end_session_endpoint}?id_token_hint=<the ID token>
+  &post_logout_redirect_uri=${encodeURIComponent(
+    activeClient?.post_logout_redirect_uris?.[0] ?? "https://yourapp.com/signed-out",
+  )}`}
+              />
+              <CodeBlock
+                language="python"
+                title="Optional: back-channel logout endpoint"
+                description="Set its URL under Sign-in & signup. We POST a signed logout_token when someone is signed out of this app."
+                code={`from fastapi import Form, Response
+from auth_client import TokenValidator
+
+# The logout token's audience is this app's client ID.
+logout_tokens = TokenValidator(issuer="${endpoints.issuer}", resource_id="${currentClientId}")
+
+@app.post("/auth/backchannel-logout")
+async def backchannel_logout(logout_token: str = Form(...)):
+    claims = logout_tokens.validate(logout_token)
+    end_sessions(user_id=claims["sub"], sid=claims.get("sid"))  # your code
+    return Response(status_code=200)`}
               />
             </div>
           )}
 
-          {tab === "pkce" && (
+          {tab === "oauth" && (
             <div>
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
-                Full OAuth 2.1 Authorization Code + PKCE (S256) Flow:
-              </p>
+              <p className="guide-lead">The requests, for when you're not using a library.</p>
               <CodeBlock
                 language="http"
-                title="1. Authorization Request"
-                code={`GET ${endpoints.authorization_endpoint}?
-  response_type=code
+                title="1. Send the browser to"
+                code={`GET ${endpoints.authorization_endpoint}
+  ?response_type=code
   &client_id=${currentClientId}
   &redirect_uri=${encodeURIComponent(currentRedirectUri)}
-  &scope=openid%20profile
+  &scope=openid%20email%20profile
   &resource=${encodeURIComponent(activeResourceId)}
-  &code_challenge=BASE64URL_SHA256_VERIFIER
-  &code_challenge_method=S256`}
+  &code_challenge=<BASE64URL(SHA256(verifier))>
+  &code_challenge_method=S256
+  &state=<random>
+  &nonce=<random>`}
               />
               <CodeBlock
                 language="http"
-                title="2. Token Exchange (POST /token)"
+                title="2. Exchange the code"
                 code={`POST ${endpoints.token_endpoint}
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=authorization_code
 &client_id=${currentClientId}
-&code=AUTHORIZATION_CODE
-&code_verifier=RAW_CODE_VERIFIER
-&redirect_uri=${currentRedirectUri}`}
+&code=<code>
+&code_verifier=<verifier>
+&redirect_uri=${currentRedirectUri}
+
+→ { "access_token", "id_token", "refresh_token", "expires_in" }`}
               />
+              <p className="guide-note">
+                Also supported: <code>prompt=none</code> (silent check), <code>prompt=login</code>, <code>max_age</code>
+                , <code>login_hint</code>, and <code>/introspect</code> and <code>/revoke</code>.
+              </p>
             </div>
           )}
 
@@ -796,15 +715,31 @@ grant_type=authorization_code
         }}
       >
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>
-          Protocols Enforced:
+          Standards:
         </span>
-        <Badge variant="success">OAuth 2.1 (RFC 6749)</Badge>
-        <Badge variant="success">PKCE Mandatory (S256)</Badge>
-        <Badge variant="success">RFC 8707 Resource Scoped</Badge>
-        <Badge variant="success">RFC 9728 PRM</Badge>
-        <Badge variant="success">One-time Refresh Token Rotation</Badge>
+        <Badge variant="success">OAuth 2.1</Badge>
+        <Badge variant="success">OpenID Connect</Badge>
+        <Badge variant="success">PKCE (S256)</Badge>
+        <Badge variant="success">RFC 8707 resources</Badge>
+        <Badge variant="success">RFC 9728 discovery</Badge>
+        <Badge variant="success">Back-channel logout</Badge>
       </div>
     </Modal>
+  );
+}
+
+function SettingsTable({ rows }: { rows: [string, string][] }) {
+  return (
+    <dl className="guide-settings">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>
+            <CopyableId value={value} max={60} />
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
