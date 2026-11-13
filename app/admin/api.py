@@ -1,3 +1,4 @@
+import re
 import json
 import logging
 import secrets
@@ -15,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.auth import get_current_admin
 from app.admin.analytics import analytics, outcome
 from app.audit import LIVE_CHANNEL, client_ip, log_event, record_failed_login, recent_events
+from app.auth.identity import email_taken, emails_clashing_on_join, normalize_email
+from app.auth.teams import has_app_access
+from app.oidc.backchannel import check_logout_uri
+from app.oidc.id_token import RESERVED_CLAIMS
 from app.auth.lockout import clear_failures, is_locked, record_failure
 from app.auth.password_reset import create_email_verification_token, create_password_reset_token
 from app.auth.passwords import hash_password_async, verify_password_async
@@ -27,10 +32,15 @@ from app.db.models import (
     Client,
     ClientAccessGrant,
     ClientRole,
+    ClientRoleInclude,
     Contact,
     Consent,
     RefreshToken,
     Resource,
+    Team,
+    TeamAppAccess,
+    TeamMember,
+    TeamRole,
     User,
     UserPool,
     UserRoleAssignment,
@@ -40,6 +50,7 @@ from app.db.contacts import upsert_contact
 from app.db.pools import get_or_create_pool
 from app.db.redis_client import get_redis
 from app.db.session import get_db
+from app.db.tenant import bypass_tenant_rls
 from app.email import (
     dismiss_held_link,
     held_links,
@@ -112,8 +123,35 @@ def _client_json(client: Client, pool_name: str) -> dict:
         "embed_origins": client.embed_origins or [],
         # What actually may embed: its redirect URIs' sites plus embed_origins.
         "embed_allowed_origins": allowed_embed_origins(client),
+        "roles_claim": client.roles_claim or "roles",
+        "backchannel_logout_uri": client.backchannel_logout_uri,
+        "signup_team_id": str(client.signup_team_id) if client.signup_team_id else None,
         "pool_name": pool_name or None,
     }
+
+
+ROLES_CLAIM_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_:./\-]{0,99}$")
+
+
+def _validated_roles_claim(name: str) -> str:
+    name = name.strip() or "roles"
+    if not ROLES_CLAIM_PATTERN.match(name) or name in RESERVED_CLAIMS:
+        raise HTTPException(
+            400, f"'{name}' can't be used as the roles claim: use letters, digits, _ : . / - and not a standard claim name"
+        )
+    return name
+
+
+async def _validated_signup_team(db: AsyncSession, team_id: str) -> uuid.UUID | None:
+    if not team_id:
+        return None
+    try:
+        team = await db.get(Team, uuid.UUID(team_id))
+    except ValueError:
+        team = None
+    if team is None:
+        raise HTTPException(400, "That team no longer exists")
+    return team.id
 
 
 def _validated_session_ttl(seconds: int) -> int:
@@ -178,7 +216,7 @@ def _user_json(user: User, client_name: str | None, pool_name: str | None) -> di
 
 
 def _pool_json(pool: UserPool) -> dict:
-    return {"id": str(pool.id), "name": pool.name}
+    return {"id": str(pool.id), "name": pool.name, "restrict_new_apps": pool.restrict_new_apps}
 
 
 def _resource_json(resource: Resource) -> dict:
@@ -394,7 +432,10 @@ async def api_create_pool(
 
 @router.delete("/pools/{name}", status_code=204)
 async def api_delete_pool(
-    name: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    name: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     result = await db.execute(select(UserPool).where(UserPool.name == name))
     pool = result.scalar_one_or_none()
@@ -402,11 +443,16 @@ async def api_delete_pool(
         raise HTTPException(404)
     # Detach all clients from this pool (make them standalone) rather than
     # deleting them -- the pool is just a grouping, not a container.
-    for client in (await db.execute(select(Client).where(Client.user_pool_id == pool.id))).scalars().all():
+    detached = (await db.execute(select(Client).where(Client.user_pool_id == pool.id))).scalars().all()
+    for client in detached:
         client.user_pool_id = None
     await db.delete(pool)
     await db.commit()
     log_event("pool_deleted", pool_name=name, admin_id=str(admin.id))
+    from app.auth.enforce import enforce_app
+
+    for client in detached:
+        await enforce_app(db, redis, client.client_id)
 
 
 @router.post("/pools/{name}/assign-client", status_code=200)
@@ -426,6 +472,16 @@ async def api_pool_assign_client(
     client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
     if client is None:
         raise HTTPException(404, "unknown_client")
+    if client.user_pool_id != pool.id:
+        clashes = await emails_clashing_on_join(db, client, pool.id)
+        if clashes:
+            shown = ", ".join(clashes[:5]) + (f" and {len(clashes) - 5} more" if len(clashes) > 5 else "")
+            raise HTTPException(
+                409,
+                f"{len(clashes)} {'person has' if len(clashes) == 1 else 'people have'} an account in both "
+                f"'{client.client_id}' and this login group ({shown}). Remove or rename one of each pair first, "
+                "so each person has a single account in the group.",
+            )
     client.user_pool_id = pool.id
     await db.commit()
     log_event("client_assigned_to_pool", client_id=client_id, pool_name=name, admin_id=str(admin.id))
@@ -438,6 +494,7 @@ async def api_pool_remove_client(
     body: dict,
     admin: AdminUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     """Remove an application from this login group (makes it standalone)."""
     pool = (await db.execute(select(UserPool).where(UserPool.name == name))).scalar_one_or_none()
@@ -450,6 +507,10 @@ async def api_pool_remove_client(
     client.user_pool_id = None
     await db.commit()
     log_event("client_removed_from_pool", client_id=client_id, pool_name=name, admin_id=str(admin.id))
+    # People from the group's other apps can't use it any more: signed out now.
+    from app.auth.enforce import enforce_app
+
+    await enforce_app(db, redis, client_id)
     return {"ok": True}
 
 
@@ -726,6 +787,8 @@ async def api_create_client(
         session_ttl_seconds=session_ttl,
         post_logout_redirect_uris=_split_lines(body.post_logout_redirect_uris),
         embed_origins=_embed_origins(body.embed_origins),
+        # The group says nobody gets into its new apps until chosen.
+        restrict_access=bool(pool and pool.restrict_new_apps),
     )
     db.add(client)
     await db.commit()
@@ -750,6 +813,9 @@ class EditClientBody(BaseModel):
     logo_url: str | None = None
     brand_color: str | None = None
     mtls_thumbprint: str | None = None
+    roles_claim: str | None = None
+    backchannel_logout_uri: str | None = None
+    signup_team_id: str | None = None  # "" = no team
 
 
 @router.patch("/clients/{client_id}")
@@ -774,6 +840,12 @@ async def api_edit_client(
         client.brand_color = body.brand_color.strip() or None
     if body.mtls_thumbprint is not None:
         client.mtls_cert_thumbprint = body.mtls_thumbprint.strip().upper() or None
+    if body.roles_claim is not None:
+        client.roles_claim = _validated_roles_claim(body.roles_claim)
+    if body.backchannel_logout_uri is not None:
+        client.backchannel_logout_uri = check_logout_uri(body.backchannel_logout_uri)
+    if body.signup_team_id is not None:
+        client.signup_team_id = await _validated_signup_team(db, body.signup_team_id)
     await db.commit()
     return _client_json(client, pool_name)
 
@@ -791,7 +863,7 @@ async def api_delete_client(
     # client_id first, since none of those foreign keys cascade at the DB
     # level. Order matters: user_role_assignments references client_roles,
     # so it has to go before client_roles does.
-    for model in (UserRoleAssignment, ClientRole, ClientAccessGrant, Consent, RefreshToken):
+    for model in (UserRoleAssignment, TeamRole, ClientRoleInclude, ClientRole, ClientAccessGrant, TeamAppAccess, Consent, RefreshToken):
         await db.execute(delete(model).where(model.client_id == client_id))
 
     # Delete all users who registered through this client.
@@ -877,7 +949,10 @@ async def api_toggle_client_enabled(
 
 @router.post("/clients/{client_id}/toggle-restrict-access")
 async def api_toggle_client_restrict_access(
-    client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    client_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     client, pool_name = await _client_with_pool(db, client_id)
     client.restrict_access = not client.restrict_access
@@ -887,6 +962,12 @@ async def api_toggle_client_restrict_access(
         client_id=client_id,
         admin_id=str(admin.id),
     )
+    if client.restrict_access:
+        # Anyone signed in who isn't on the list is signed out of it now.
+        from app.auth.enforce import enforce_app
+
+        await enforce_app(db, redis, client_id)
+        client, pool_name = await _client_with_pool(db, client_id)
     return _client_json(client, pool_name)
 
 
@@ -895,16 +976,21 @@ async def api_list_client_access(
     client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(User.id, User.email)
+        select(User.id, User.email, ClientAccessGrant.expires_at)
         .join(ClientAccessGrant, ClientAccessGrant.user_id == User.id)
         .where(ClientAccessGrant.client_id == client_id)
         .order_by(User.email)
     )
-    return [{"user_id": str(user_id), "email": email} for user_id, email in result.all()]
+    return [
+        {"user_id": str(user_id), "email": email, "expires_at": expires.isoformat() if expires else None}
+        for user_id, email, expires in result.all()
+    ]
 
 
 class ClientAccessBody(BaseModel):
     user_id: str
+    # Access ends by itself then (e.g. a contractor); None = no end.
+    expires_at: datetime | None = None
 
 
 @router.post("/clients/{client_id}/access", status_code=201)
@@ -931,16 +1017,30 @@ async def api_grant_client_access(
             ClientAccessGrant.client_id == client_id, ClientAccessGrant.user_id == user.id
         )
     )
-    if existing.scalar_one_or_none() is None:
-        db.add(ClientAccessGrant(client_id=client_id, user_id=user.id))
-        await db.commit()
-        log_event("client_access_granted", client_id=client_id, user_id=str(user.id), admin_id=str(admin.id))
+    expires = _future(body.expires_at)
+    grant = existing.scalar_one_or_none()
+    if grant is None:
+        db.add(ClientAccessGrant(client_id=client_id, user_id=user.id, expires_at=expires))
+    elif grant.expires_at != expires:
+        grant.expires_at = expires
+    await db.commit()
+    log_event(
+        "client_access_granted",
+        client_id=client_id,
+        user_id=str(user.id),
+        expires_at=expires.isoformat() if expires else None,
+        admin_id=str(admin.id),
+    )
     return {"user_id": str(user.id), "email": user.email}
 
 
 @router.delete("/clients/{client_id}/access/{user_id}", status_code=204)
 async def api_revoke_client_access(
-    client_id: str, user_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    client_id: str,
+    user_id: str,
+    admin: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     result = await db.execute(
         select(ClientAccessGrant).where(
@@ -952,6 +1052,10 @@ async def api_revoke_client_access(
         raise HTTPException(404, "not_granted")
     await db.delete(grant)
     await db.commit()
+    # Their signed-in app stops renewing right away, not after 30 days --
+    # unless a team still gives them access.
+    if not await has_app_access(db, client_id, user_id):
+        await revoke_all_refresh_tokens_for_user(db, redis, user_id, client_id)
     log_event("client_access_revoked", client_id=client_id, user_id=user_id, admin_id=str(admin.id))
 
 
@@ -1067,6 +1171,13 @@ async def api_delete_client_role(
     )
     for assignment in assignments.scalars().all():
         await db.delete(assignment)
+    await db.execute(delete(TeamRole).where(TeamRole.client_id == client_id, TeamRole.role == name))
+    await db.execute(
+        delete(ClientRoleInclude).where(
+            ClientRoleInclude.client_id == client_id,
+            (ClientRoleInclude.role == name) | (ClientRoleInclude.includes == name),
+        )
+    )
     await db.delete(role)
     await db.commit()
     log_event("client_role_deleted", client_id=client_id, role=name, admin_id=str(admin.id))
@@ -1239,6 +1350,7 @@ class CreateUserBody(BaseModel):
     confirm_password: str
     client_id: str  # the application to add this user to
     email_verified: bool = True
+    team_ids: list[str] = []  # put them straight into these teams
 
 
 @router.post("/users", status_code=201)
@@ -1253,13 +1365,14 @@ async def api_create_user(
     if len(body.password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
+    body.email = normalize_email(body.email)
     app_client = (await db.execute(select(Client).where(Client.client_id == body.client_id))).scalar_one_or_none()
     if app_client is None:
         raise HTTPException(400, f"Application '{body.client_id}' not found")
 
-    existing = await db.execute(select(User).where(User.email == body.email, User.client_id == body.client_id))
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(400, f"'{body.email}' already exists in this application")
+    # Across the app's whole login group: one person, one account there.
+    if await email_taken(db, body.email, app_client):
+        raise HTTPException(400, f"'{body.email}' already has an account in this application's login group")
 
     user = User(
         client_id=body.client_id,
@@ -1272,6 +1385,18 @@ async def api_create_user(
         email_verified=body.email_verified,
     )
     db.add(user)
+    await db.flush()
+    if app_client.restrict_access:
+        # Same as someone signing up there: they can use the app they were added to.
+        db.add(ClientAccessGrant(client_id=app_client.client_id, user_id=user.id))
+    for team_id in set(body.team_ids):
+        try:
+            team = await db.get(Team, uuid.UUID(team_id))
+        except ValueError:
+            team = None
+        if team is None:
+            raise HTTPException(400, "One of the chosen teams no longer exists")
+        db.add(TeamMember(team_id=team.id, user_id=user.id))
     pool = await db.get(UserPool, app_client.user_pool_id) if app_client.user_pool_id else None
     await upsert_contact(
         db,
@@ -1354,13 +1479,12 @@ async def api_edit_user(
             await db.execute(select(Client).where(Client.client_id == user.client_id))
         ).scalar_one_or_none()
 
-    existing = await db.execute(
-        select(User).where(
-            User.email == body.email, User.client_id == target_client_id, User.id != user.id
-        )
-    )
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(400, f"'{body.email}' already exists in that application")
+    body.email = normalize_email(body.email)
+    # Their app's row can be missing (an app deleted from under them); then
+    # compare against that app_id alone.
+    scope = target_client or Client(client_id=target_client_id, user_pool_id=None)
+    if await email_taken(db, body.email, scope, except_user=user.id):
+        raise HTTPException(400, f"'{body.email}' already has an account in that application's login group")
 
     client_changed = target_client_id != user.client_id
     if body.email != user.email:
@@ -1391,6 +1515,7 @@ async def _hard_delete_user(db: AsyncSession, redis: Redis, user: User) -> None:
     for model, col in [
         (UserRoleAssignment, UserRoleAssignment.user_id),
         (ClientAccessGrant, ClientAccessGrant.user_id),
+        (TeamMember, TeamMember.user_id),
         (Consent, Consent.user_id),
         (WebAuthnCredential, WebAuthnCredential.user_id),
     ]:
@@ -1611,3 +1736,164 @@ async def api_change_password(
     admin.must_change_password = False
     await db.commit()
     return _admin_json(admin)
+
+
+
+def _future(when: datetime | None) -> datetime | None:
+    """An end time for access: must be in the future; read as UTC if no zone."""
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if when <= datetime.now(timezone.utc):
+        raise HTTPException(400, "The end date must be in the future")
+    return when
+
+
+# --- Composite roles ---
+
+
+@router.get("/clients/{client_id}/role-includes")
+async def api_role_includes(client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """{role: [roles it includes]} for every role of this app that includes others."""
+    rows = await db.execute(
+        select(ClientRoleInclude.role, ClientRoleInclude.includes)
+        .where(ClientRoleInclude.client_id == client_id)
+        .order_by(ClientRoleInclude.role, ClientRoleInclude.includes)
+    )
+    result: dict[str, list[str]] = {}
+    for role, inc in rows.all():
+        result.setdefault(role, []).append(inc)
+    return result
+
+
+class RoleIncludesBody(BaseModel):
+    includes: list[str]
+
+
+@router.put("/clients/{client_id}/roles/{name}/includes")
+async def api_set_role_includes(
+    client_id: str, name: str, body: RoleIncludesBody, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)
+):
+    """Holding `name` also gives each of `includes` (and whatever they include)."""
+    defined = {
+        r for (r,) in (await db.execute(select(ClientRole.name).where(ClientRole.client_id == client_id))).all()
+    }
+    if name not in defined:
+        raise HTTPException(404, "unknown_role")
+    wanted = set(body.includes) - {name}
+    unknown = wanted - defined
+    if unknown:
+        raise HTTPException(400, f"This app has no role called '{sorted(unknown)[0]}'")
+    # Refuse a loop (admin includes editor includes admin): it would make
+    # every role in it the same thing, which is never what was meant.
+    graph: dict[str, set[str]] = {}
+    for role, inc in (
+        await db.execute(select(ClientRoleInclude.role, ClientRoleInclude.includes).where(ClientRoleInclude.client_id == client_id))
+    ).all():
+        graph.setdefault(role, set()).add(inc)
+    graph[name] = wanted
+    seen, todo = set(), list(wanted)
+    while todo:
+        role = todo.pop()
+        if role == name:
+            raise HTTPException(400, f"That would make '{name}' include itself")
+        if role not in seen:
+            seen.add(role)
+            todo.extend(graph.get(role, ()))
+    await db.execute(delete(ClientRoleInclude).where(ClientRoleInclude.client_id == client_id, ClientRoleInclude.role == name))
+    db.add_all(ClientRoleInclude(client_id=client_id, role=name, includes=inc) for inc in sorted(wanted))
+    await db.commit()
+    log_event("client_role_includes_changed", client_id=client_id, role=name, includes=sorted(wanted), admin_id=str(admin.id))
+    return {"role": name, "includes": sorted(wanted)}
+
+
+# --- Login group options ---
+
+
+@router.post("/pools/{name}/toggle-restrict-new-apps")
+async def api_toggle_restrict_new_apps(name: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    pool = (await db.execute(select(UserPool).where(UserPool.name == name))).scalar_one_or_none()
+    if pool is None:
+        raise HTTPException(404, "unknown_pool")
+    pool.restrict_new_apps = not pool.restrict_new_apps
+    await db.commit()
+    log_event("pool_restrict_new_apps_" + ("on" if pool.restrict_new_apps else "off"), pool_name=name, admin_id=str(admin.id))
+    return _pool_json(pool)
+
+
+# --- Access review ---
+
+
+@router.get("/clients/{client_id}/access-review")
+async def api_access_review(client_id: str, admin: AdminUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Everyone who can sign in to this app right now, and why -- for an
+    audit, or to answer "how did they get in?"."""
+    from app.auth.teams import parent_map
+
+    client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(404, "unknown_client")
+    await bypass_tenant_rls(db)
+    apps = (
+        select(Client.client_id).where(Client.user_pool_id == client.user_pool_id)
+        if client.user_pool_id
+        else select(Client.client_id).where(Client.client_id == client.client_id)
+    )
+    people = (
+        await db.execute(select(User).where(User.client_id.in_(apps)).order_by(User.email))
+    ).scalars().all()
+    now = datetime.now(timezone.utc)
+
+    def live(expires):
+        if expires is None:
+            return True
+        return (expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)) > now
+
+    grants = {
+        uid: exp
+        for uid, exp in (
+            await db.execute(
+                select(ClientAccessGrant.user_id, ClientAccessGrant.expires_at).where(ClientAccessGrant.client_id == client_id)
+            )
+        ).all()
+        if live(exp)
+    }
+    teams = dict((await db.execute(select(Team.id, Team.name))).all())
+    parents = await parent_map(db)
+    giving = {t for (t,) in (await db.execute(select(TeamAppAccess.team_id).where(TeamAppAccess.client_id == client_id))).all()}
+    memberships: dict[uuid.UUID, list[tuple[uuid.UUID, datetime | None]]] = {}
+    for team_id, user_id, exp in (await db.execute(select(TeamMember.team_id, TeamMember.user_id, TeamMember.expires_at))).all():
+        if live(exp):
+            memberships.setdefault(user_id, []).append((team_id, exp))
+
+    rows = []
+    for u in people:
+        reasons: list[dict] = []
+        if not client.restrict_access:
+            reasons.append({"kind": "open", "label": "Everyone in the login group" if client.user_pool_id else "Own account"})
+        else:
+            if u.id in grants:
+                exp = grants[u.id]
+                reasons.append({"kind": "direct", "label": "Let in directly", "expires_at": exp.isoformat() if exp else None})
+            for team_id, exp in memberships.get(u.id, []):
+                chain, cur = [], team_id
+                while cur is not None and cur not in chain:
+                    chain.append(cur)
+                    cur = parents.get(cur)
+                hit = next((t for t in chain if t in giving), None)
+                if hit is not None:
+                    label = teams[hit] if hit == team_id else f"{teams[team_id]} (inside {teams[hit]})"
+                    reasons.append({"kind": "team", "label": label, "expires_at": exp.isoformat() if exp else None})
+        if not reasons:
+            continue
+        rows.append(
+            {
+                "user_id": str(u.id),
+                "email": u.email,
+                "name": " ".join(p for p in (u.first_name, u.last_name) if p),
+                "active": u.status == "active",
+                "reasons": reasons,
+            }
+        )
+    return {"client_id": client_id, "restricted": client.restrict_access, "people": rows}

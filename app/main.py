@@ -9,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.admin import api as admin_api
+from app.admin import teams_api
 from app.admin.seed import ensure_default_admin
 from app.audit import start_audit_writer, stop_audit_writer
 from app.config import get_settings
@@ -16,8 +17,10 @@ from app.db.session import init_db_schema, wait_for_database
 from app.middleware.rate_limit import limiter
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.oidc import (
+    account_apps,
     authorize,
     discovery,
+    introspect,
     jwks,
     logout,
     password_reset,
@@ -65,11 +68,14 @@ app.include_router(webauthn.router)
 app.include_router(token.router)
 app.include_router(register.router)
 app.include_router(revoke.router)
+app.include_router(introspect.router)
+app.include_router(account_apps.router)
 app.include_router(logout.router)
 app.include_router(userinfo.router)
 
 # JSON API for the admin console (React SPA, served below).
 app.include_router(admin_api.router)
+app.include_router(teams_api.router)
 
 # Operator-facing admin console -- a React SPA built by `frontend/` (see its
 # README) into `frontend/dist`. Registered after admin_api.router so
