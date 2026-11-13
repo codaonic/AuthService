@@ -39,6 +39,9 @@ class UserPool(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String)
+    # On: an app added to this group from the console starts with "Only let
+    # people you choose log in" turned on, so nobody gets in by default.
+    restrict_new_apps: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -154,6 +157,16 @@ class Client(Base):
     # sign-in inside their own pages (Auth Elements, see app/oidc/embed.py).
     # Empty = embedding is off; only an admin can set it.
     embed_origins: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    # Name of the claim that carries this app's roles in its access and ID
+    # tokens -- "roles" unless the app's framework expects another name.
+    roles_claim: Mapped[str] = mapped_column(String, default="roles", server_default="roles")
+    # OIDC Back-Channel Logout: where this app's server is told, directly,
+    # that one of its users has been signed out of it (by themselves, by an
+    # admin, or by losing access). Only this app is told -- the others in
+    # its login group stay signed in.
+    backchannel_logout_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    # New signups through this app join this team automatically.
+    signup_team_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -216,6 +229,8 @@ class ClientAccessGrant(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    # Access ends by itself at this time (e.g. a contractor); None = no end.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -234,6 +249,22 @@ class ClientRole(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ClientRoleInclude(Base):
+    """A composite role: holding `role` also gives `includes` (on the same
+    app). Followed through several levels, so "admin" can include "editor",
+    which includes "viewer"."""
+
+    __tablename__ = "client_role_includes"
+    __table_args__ = (
+        ForeignKeyConstraint(["client_id", "role"], ["client_roles.client_id", "client_roles.name"]),
+        ForeignKeyConstraint(["client_id", "includes"], ["client_roles.client_id", "client_roles.name"]),
+    )
+
+    client_id: Mapped[str] = mapped_column(String, primary_key=True)
+    role: Mapped[str] = mapped_column(String, primary_key=True)
+    includes: Mapped[str] = mapped_column(String, primary_key=True)
+
+
 class UserRoleAssignment(Base):
     """One user holding one role (by name) on one client -- a user can hold
     several roles on the same client at once. (client_id, role) must be a
@@ -248,6 +279,70 @@ class UserRoleAssignment(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    client_id: Mapped[str] = mapped_column(String, index=True)
+    role: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Team(Base):
+    """A named set of people that carries access and roles, so an admin
+    manages "Support staff" once instead of person by person (Keycloak's
+    groups). Teams nest: members of a sub-team also get everything its
+    parent teams give.
+
+    A team never widens the login group boundary: membership only counts
+    for apps a person can already sign in to through their login group.
+    """
+
+    __tablename__ = "teams"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeamMember(Base):
+    __tablename__ = "team_members"
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_members"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    # Membership ends by itself at this time; None = no end.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A manager can add and remove the team's people from their own account
+    # page, without access to the admin console.
+    is_manager: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeamAppAccess(Base):
+    """Members of the team may sign in to this app when it restricts access
+    (the team-wide form of ClientAccessGrant)."""
+
+    __tablename__ = "team_app_access"
+    __table_args__ = (UniqueConstraint("team_id", "client_id", name="uq_team_app_access"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), index=True)
+    client_id: Mapped[str] = mapped_column(String, ForeignKey("clients.client_id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeamRole(Base):
+    """Members of the team hold this role on this app (the team-wide form of
+    UserRoleAssignment)."""
+
+    __tablename__ = "team_roles"
+    __table_args__ = (
+        UniqueConstraint("team_id", "client_id", "role", name="uq_team_roles"),
+        ForeignKeyConstraint(["client_id", "role"], ["client_roles.client_id", "client_roles.name"]),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), index=True)
     client_id: Mapped[str] = mapped_column(String, index=True)
     role: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
