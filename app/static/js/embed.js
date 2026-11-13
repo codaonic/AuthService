@@ -6,6 +6,7 @@
  *   auth-elements:ready    the form is showing
  *   auth-elements:resize   { height } -- so the iframe can fit its content
  *   auth-elements:success  { code, state } -- the one-time authorization code
+ *   auth-elements:error    { error, state } -- e.g. login_required for prompt=none
  */
 (function () {
   var body = document.body;
@@ -19,6 +20,10 @@
     window.parent.postMessage(message, origin);
   }
 
+  if (body.dataset.result === "error") {
+    send("error", { error: body.dataset.error, state: body.dataset.state || null });
+    return;
+  }
   if (body.dataset.result === "success") {
     send("success", { code: body.dataset.code, state: body.dataset.state || null });
     return;

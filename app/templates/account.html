@@ -46,6 +46,53 @@
 </div>
 {% endif %}
 
+<div class="account-section" id="apps">
+  <h2 class="account-section__title">Apps you're signed in to</h2>
+  {% if apps %}
+  <div class="account-card-list">
+    {% for app in apps %}
+    <div class="account-row">
+      <div class="account-row__meta">
+        <span class="account-row__title">{{ app.name }}</span>
+      </div>
+      <form method="post" action="/account/apps/{{ app.client_id | urlencode }}/sign-out" style="margin:0;">
+        <button type="submit" class="btn btn--secondary" style="height:32px; padding:0 12px; font-size:13px;">Sign out</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  <p style="color:var(--color-text-secondary); font-size:12.5px; margin:8px 0 0;">Signing out of one app leaves the others signed in.</p>
+  {% else %}
+  <p style="color:var(--color-text-secondary); font-size:13.5px; margin:0 0 16px;">No apps are signed in right now.</p>
+  {% endif %}
+</div>
+
+{% for team in teams %}
+<div class="account-section" id="teams">
+  <h2 class="account-section__title">Team: {{ team.name }}</h2>
+  <p style="color:var(--color-text-secondary); font-size:13px; margin:0 0 10px;">You manage this team. People you add get the apps and roles it gives straight away.</p>
+  <div class="account-card-list">
+    {% for m in team.members %}
+    <div class="account-row">
+      <div class="account-row__meta">
+        <span class="account-row__title">{{ m.name or m.email }}{% if m.is_manager %} <span class="badge badge--on" style="margin-left:6px;">Manager</span>{% endif %}</span>
+        {% if m.name %}<span class="account-row__subtitle">{{ m.email }}</span>{% endif %}
+      </div>
+      {% if not m.is_manager %}
+      <form method="post" action="/account/teams/{{ team.id }}/members/{{ m.id }}/remove" style="margin:0;">
+        <button type="submit" class="btn btn--secondary" style="height:32px; padding:0 12px; font-size:13px;">Remove</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <form method="post" action="/account/teams/{{ team.id }}/members" class="form" style="flex-direction:row; gap:8px; margin-top:10px;">
+    <input type="email" name="email" required placeholder="Their email" aria-label="Email of the person to add to {{ team.name }}" style="flex:1;">
+    <button type="submit" class="btn btn--primary" style="width:auto; padding:0 16px;">Add</button>
+  </form>
+</div>
+{% endfor %}
+
 <div class="account-section">
   <h2 class="account-section__title">Password</h2>
   <form method="post" action="/account/password" class="form" style="gap:12px;">

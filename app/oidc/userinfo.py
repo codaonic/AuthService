@@ -1,17 +1,17 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from joserfc import jwt
-from joserfc.errors import JoseError
-from joserfc.jwt import JWTClaimsRegistry
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
-from app.db.models import Client, User, UserRoleAssignment
+from app.auth.teams import roles_for
+from app.db.models import Client, User
+from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
-from app.oidc.keys import get_key_manager
+from app.oidc.access_tokens import decode_access_token, still_valid
+from app.oidc.id_token import profile_claims
 
 router = APIRouter()
 
@@ -24,50 +24,29 @@ def _get_bearer_token(request: Request) -> str:
 
 
 @router.get("/userinfo")
-async def userinfo(request: Request, db: AsyncSession = Depends(get_db)):
-    settings = get_settings()
-    token = _get_bearer_token(request)
-
-    try:
-        verified = jwt.decode(
-            token,
-            get_key_manager().public_key_set(),
-            algorithms=[settings.signing_key_algorithm],
-        )
-        JWTClaimsRegistry(
-            iss={"essential": True, "value": settings.issuer_url},
-            exp={"essential": True},
-        ).validate(verified.claims)
-        claims = verified.claims
-    except (JoseError, ValueError) as exc:
-        raise HTTPException(401, "invalid_token") from exc
-
+@router.post("/userinfo")
+async def userinfo(request: Request, db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)):
+    claims = decode_access_token(_get_bearer_token(request))
+    if claims is None:
+        raise HTTPException(401, "invalid_token")
     try:
         user_id = uuid.UUID(claims["sub"])
     except (ValueError, KeyError) as exc:
         raise HTTPException(400, "invalid_token: not a user token") from exc
-
-    # Authorized by the verified JWT signature, not pool membership -- there's
-    # no client/pool in scope on this bearer-token-only endpoint.
-    await bypass_tenant_rls(db)
-    user = await db.get(User, user_id)
-    if user is None or user.status != "active":
+    # Signed out, lost access, or the token was revoked: not just expired.
+    if not await still_valid(db, redis, claims):
         raise HTTPException(401, "invalid_token")
 
+    await bypass_tenant_rls(db)
+    user = await db.get(User, user_id)
+    scope = set(claims.get("scope", "").split())
+    # email and email_verified were always returned here; kept for existing apps.
     response = {"sub": str(user.id), "email": user.email, "email_verified": user.email_verified}
+    response.update(profile_claims(user, scope))
 
-    # Only when this specific client opted into roles at all -- most
-    # clients never define any, and shouldn't see an empty "roles": []
-    # cluttering a response they never asked for.
-    client_id = claims.get("client_id")
-    if client_id:
-        client = (await db.execute(select(Client).where(Client.client_id == client_id))).scalar_one_or_none()
-        if client is not None and client.roles_enabled:
-            role_names = await db.execute(
-                select(UserRoleAssignment.role).where(
-                    UserRoleAssignment.user_id == user.id, UserRoleAssignment.client_id == client_id
-                )
-            )
-            response["roles"] = [name for (name,) in role_names.all()]
-
+    # Only for apps that turned roles on -- most never define any.
+    client = (await db.execute(select(Client).where(Client.client_id == claims.get("client_id")))).scalar_one_or_none()
+    if client is not None and client.roles_enabled:
+        # Their own roles, their teams' roles, and everything those include.
+        response[client.roles_claim or "roles"] = await roles_for(db, client.client_id, user.id)
     return response

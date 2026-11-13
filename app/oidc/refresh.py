@@ -28,6 +28,7 @@ async def issue_refresh_token(
     rotated_from: str | None = None,
     auth_time: int | None = None,
     max_age: int | None = None,
+    sid: str | None = None,
 ) -> str:
     """`auth_time` + `max_age` cap the token at the application's sign-in
     timeout: it expires `max_age` seconds after the user authenticated, no
@@ -64,11 +65,31 @@ async def issue_refresh_token(
                 "scope": scope,
                 "row_id": str(row.id),
                 "auth_time": str(auth_time or ""),
+                "sid": sid or "",
             },
         )
         pipe.expire(f"{REFRESH_KEY_PREFIX}{token_hash}", ttl)
         await pipe.execute()
     return token
+
+
+REPLAY_GRACE_SECONDS = 10
+
+
+async def _treat_replay_as_theft(db: AsyncSession, redis: Redis, token_hash: str, client_id: str) -> None:
+    """A refresh token that was already used (or revoked) is being presented
+    again: either a thief or the real app is holding a stale copy. End that
+    app's sign-in for the person so the stolen copy stops working. A retry
+    within a few seconds is let through as an honest network repeat."""
+    from app.audit import log_event
+
+    row = (await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))).scalar_one_or_none()
+    if row is None or row.client_id != client_id or row.revoked_at is None:
+        return
+    if (datetime.now(timezone.utc) - row.revoked_at.replace(tzinfo=row.revoked_at.tzinfo or timezone.utc)).total_seconds() < REPLAY_GRACE_SECONDS:
+        return
+    await revoke_all_refresh_tokens_for_user(db, redis, row.user_id, client_id)
+    log_event("refresh_token_reuse", level=30, client_id=client_id, user_id=row.user_id)
 
 
 async def validate_and_rotate_refresh_token(
@@ -80,7 +101,10 @@ async def validate_and_rotate_refresh_token(
     # two requests race with it.
     async with redis.pipeline(transaction=True) as pipe:
         data, _ = await pipe.hgetall(key).delete(key).execute()
-    if not data or data["client_id"] != client_id:
+    if not data:
+        await _treat_replay_as_theft(db, redis, token_hash, client_id)
+        raise HTTPException(400, "invalid_grant")
+    if data["client_id"] != client_id:
         raise HTTPException(400, "invalid_grant")
 
     row = await db.get(RefreshToken, uuid.UUID(data["row_id"]))
@@ -94,6 +118,7 @@ async def validate_and_rotate_refresh_token(
         "scope": data.get("scope", ""),
         "row_id": data["row_id"],
         "auth_time": int(data["auth_time"]) if data.get("auth_time") else None,
+        "sid": data.get("sid") or None,
     }
 
 
@@ -105,10 +130,14 @@ async def refresh_token_owner(redis: Redis, refresh_token: str, client_id: str) 
     return data["user_id"]
 
 
-async def revoke_refresh_token(db: AsyncSession, redis: Redis, refresh_token: str) -> None:
+async def revoke_refresh_token(db: AsyncSession, redis: Redis, refresh_token: str, client_id: str | None = None) -> None:
+    """With `client_id`, only a token issued to that app is revoked (RFC 7009:
+    an app may revoke only its own tokens)."""
     token_hash = _hash_token(refresh_token)
     key = f"{REFRESH_KEY_PREFIX}{token_hash}"
     data = await redis.hgetall(key)
+    if data and client_id is not None and data.get("client_id") != client_id:
+        return
     await redis.delete(key)
 
     if data:
@@ -119,23 +148,39 @@ async def revoke_refresh_token(db: AsyncSession, redis: Redis, refresh_token: st
 
 
 async def revoke_all_refresh_tokens_for_user(
-    db: AsyncSession, redis: Redis, user_id: str, client_id: str | None = None
+    db: AsyncSession,
+    redis: Redis,
+    user_id: str,
+    client_id: str | None = None,
+    *,
+    sid: str | None = None,
+    notify_apps: bool = True,
 ) -> None:
-    """Kill every outstanding refresh token for a user -- used after a
-    password reset. With `client_id`, only the ones issued to that
-    application (a per-application logout).
+    """End a person's sign-in to one app (`client_id`) or to every app: their
+    refresh tokens stop working, access tokens already handed out stop
+    passing /introspect and /userinfo, and each affected app that has a
+    back-channel logout URL is told so it can end its own session.
+
+    Used for logout, an admin signing someone out, disabling an account, a
+    password reset, losing access, and a stolen refresh token being reused.
     """
-    query = select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+    from app.oidc import backchannel
+    from app.oidc.access_tokens import cut_off_tokens
+
+    await cut_off_tokens(redis, str(user_id), client_id)
+    query = select(RefreshToken).where(RefreshToken.user_id == str(user_id), RefreshToken.revoked_at.is_(None))
     if client_id is not None:
         query = query.where(RefreshToken.client_id == client_id)
-    result = await db.execute(query)
-    rows = result.scalars().all()
-    if not rows:
-        return
+    rows = (await db.execute(query)).scalars().all()
 
-    now = datetime.now(timezone.utc)
-    for row in rows:
-        row.revoked_at = now
-    await db.commit()
+    if rows:
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            row.revoked_at = now
+        await db.commit()
+        await redis.delete(*(f"{REFRESH_KEY_PREFIX}{row.token_hash}" for row in rows))
 
-    await redis.delete(*(f"{REFRESH_KEY_PREFIX}{row.token_hash}" for row in rows))
+    if notify_apps:
+        # The apps they were actually signed in to (or the one named).
+        apps = {row.client_id for row in rows} | ({client_id} if client_id else set())
+        await backchannel.notify(db, str(user_id), apps, sid=sid)

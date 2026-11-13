@@ -1,3 +1,6 @@
+import base64
+from urllib.parse import unquote
+
 from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,3 +69,24 @@ async def get_and_validate_client(
         raise HTTPException(401, "invalid_client")
 
     return client
+
+
+def client_auth(request: Request, client_id: str | None, client_secret: str | None) -> tuple[str, str | None]:
+    """The client's id and secret, from the form body (client_secret_post) or
+    an `Authorization: Basic` header (client_secret_basic, the default in
+    most OAuth libraries). Using both at once, or two different ids, is refused.
+    """
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("basic "):
+        if not client_id:
+            raise HTTPException(401, "invalid_client")
+        return client_id, client_secret
+    try:
+        decoded = base64.b64decode(header[6:].strip(), validate=True).decode()
+        basic_id, _, basic_secret = decoded.partition(":")
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(401, "invalid_client")
+    basic_id, basic_secret = unquote(basic_id), unquote(basic_secret)
+    if client_secret or (client_id and client_id != basic_id) or not basic_id:
+        raise HTTPException(401, "invalid_client")
+    return basic_id, basic_secret or None

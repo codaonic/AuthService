@@ -18,7 +18,7 @@ from webauthn import (
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
 from app.audit import client_ip, log_event
-from app.auth.lockout import is_locked, record_failure
+from app.auth.lockout import login_locked, record_login_failure
 from app.auth.passwords import hash_password_async, verify_password_async
 from app.auth.sessions import (
     get_session_user,
@@ -163,7 +163,7 @@ async def webauthn_login_verify(
         ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-    response = await _continue_flow(request, db, redis, flow_id, str(user.id))
+    response = await _continue_flow(request, db, redis, flow_id, str(user.id), session_id=session_id)
     response.set_cookie(
         settings.session_cookie_name,
         session_id,
@@ -193,13 +193,20 @@ async def _account_context(request: Request, db: AsyncSession, redis: Redis, use
     credentials = result.scalars().all()
     sessions = await list_sessions_for_user(redis, str(user.id))
     current_session_id = request.cookies.get(settings.session_cookie_name)
+    from app.oidc.account_apps import MESSAGES, managed_teams, signed_in_apps
+
+    kind, text = MESSAGES.get(request.query_params.get("msg", ""), (None, None))
+
     return {
         "user": user,
         "credentials": credentials,
         "sessions": sessions,
         "current_session_id": current_session_id,
-        "error": None,
-        "success": None,
+        "apps": await signed_in_apps(db, user),
+        "teams": await managed_teams(db, user),
+        # A fixed message from the team and app forms, which redirect here.
+        "error": text if kind == "error" else None,
+        "success": text if kind == "success" else None,
         **extra,
     }
 
@@ -313,10 +320,10 @@ async def webauthn_register_options(
     # keep access after the password is changed. Wrong guesses count toward
     # the same lockout as the login form. The registration challenge (needed
     # by /verify) is only issued after this check.
-    if await is_locked(redis, "user", user.email):
+    if await login_locked(redis, user.email, client_ip(request)):
         raise HTTPException(429, "Too many attempts. Try again in a few minutes.")
     if not current_password or not await verify_password_async(current_password, user.password_hash):
-        await record_failure(redis, "user", user.email)
+        await record_login_failure(redis, user.email, client_ip(request))
         log_event("passkey_add_failed", user_id=str(user.id), email=user.email, reason="wrong_password", ip=client_ip(request))
         raise HTTPException(403, "Your current password is incorrect.")
 

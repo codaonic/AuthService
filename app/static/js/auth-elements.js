@@ -100,6 +100,10 @@ window.AuthElements = (function () {
           var result = { code: data.code, state: state };
           if (verifier) result.codeVerifier = verifier;
           emit("success", result);
+        } else if (data.type === "auth-elements:error" && data.state === state) {
+          var err = new Error("AuthElements: " + data.error);
+          err.code = data.error;
+          emit("error", err);
         }
       }
 
@@ -127,6 +131,9 @@ window.AuthElements = (function () {
             screen: screen,
             appearance: JSON.stringify(options.appearance || {}),
           });
+          if (elementOptions.nonce || options.nonce) params.set("nonce", elementOptions.nonce || options.nonce);
+          if (elementOptions.prompt) params.set("prompt", elementOptions.prompt);
+          if (elementOptions.loginHint) params.set("login_hint", elementOptions.loginHint);
 
           iframe = document.createElement("iframe");
           iframe.src = issuer + "/authorize?" + params.toString();

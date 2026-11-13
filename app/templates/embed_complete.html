@@ -7,7 +7,7 @@
 </head>
 {# Hands the one-time code to the embedding page (static/js/embed.js posts it
    to exactly embed.origin), then has nothing more to show. #}
-<body data-embed-origin="{{ embed.origin }}" data-frame-id="{{ embed.frame_id }}" data-result="success" data-code="{{ code }}" data-state="{{ state }}">
+<body data-embed-origin="{{ embed.origin }}" data-frame-id="{{ embed.frame_id }}" data-result="{{ 'error' if error else 'success' }}" data-code="{{ code }}" data-error="{{ error or '' }}" data-state="{{ state }}">
   <script src="{{ url_for('static', path='js/embed.js') }}?v={{ asset_version() }}"></script>
 </body>
 </html>

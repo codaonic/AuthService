@@ -8,7 +8,9 @@ from app.oidc.keys import get_key_manager
 
 
 def mint_access_token(
-    sub: str, aud: str, client_id: str, scope: str, email_verified: bool | None = None
+    sub: str, aud: str, client_id: str, scope: str, email_verified: bool | None = None,
+    roles: list[str] | None = None,
+    roles_claim: str = "roles",
 ) -> tuple[str, int]:
     """`email_verified` is set for tokens issued to a person, left out for
     client_credentials tokens, which have no person behind them."""
@@ -28,8 +30,12 @@ def mint_access_token(
     }
     if email_verified is not None:
         payload["email_verified"] = email_verified
+    if roles is not None:
+        # Only for apps that turned roles on: an API can then decide from the
+        # token alone. Never roles from other apps.
+        payload[roles_claim] = roles
     token = jwt.encode(
-        {"alg": settings.signing_key_algorithm, "kid": kid},
+        {"alg": settings.signing_key_algorithm, "kid": kid, "typ": "at+jwt"},
         payload,
         key,
         algorithms=[settings.signing_key_algorithm],

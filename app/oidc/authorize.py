@@ -16,12 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import client_ip, log_event, record_failed_login
 from app.auth.mfa import verify_totp
 from app.auth.password_reset import create_email_verification_token
-from app.auth.lockout import clear_failures, is_locked, record_failure
+from app.auth.identity import accounts_for_email, normalize_email
+from app.auth.teams import has_app_access
+from app.auth.lockout import clear_login_failures, login_locked, record_login_failure
 from app.auth.passwords import burn_password_check, hash_password_async, verify_password_async
 from app.auth.sessions import app_auth_time, get_session_user, sign_in
 from app.config import get_settings
 from app.db.contacts import upsert_contact
-from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, Resource, User, UserRoleAssignment
+from app.db.models import Client, ClientAccessGrant, ClientRole, Consent, Resource, TeamMember, User, UserRoleAssignment
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
@@ -29,6 +31,7 @@ from app.email import send_verification_email
 from app.middleware.rate_limit import limiter
 from app.oidc import embed as embedding
 from app.oidc.cimd import is_cimd_client_id, resolve_cimd_client
+from app.oidc.id_token import public_sid
 from app.oidc.scope import resolve_scope
 
 router = APIRouter()
@@ -107,16 +110,23 @@ async def _find_user_for_client(db: AsyncSession, email: str, client: Client) ->
     Checks: user registered directly with this client, OR registered with any
     other client in the same pool (shared identity across pooled apps).
     """
-    if client.user_pool_id is not None:
-        pool_client_ids = select(Client.client_id).where(Client.user_pool_id == client.user_pool_id)
-        result = await db.execute(
-            select(User).where(User.email == email, User.client_id.in_(pool_client_ids))
-        )
-    else:
-        result = await db.execute(
-            select(User).where(User.email == email, User.client_id == client.client_id)
-        )
-    return result.scalar_one_or_none()
+    matches = await accounts_for_email(db, email, client)
+    if len(matches) <= 1:
+        return matches[0] if matches else None
+    # Two accounts for one person in one login group (made before this was
+    # prevented). Only the one registered with this very app is
+    # unambiguous; otherwise refuse rather than guess whose account it is.
+    own = [u for u in matches if u.client_id == client.client_id]
+    if len(own) == 1:
+        return own[0]
+    log_event(
+        "duplicate_account_in_login_group",
+        level=logging.WARNING,
+        client_id=client.client_id,
+        email=normalize_email(email),
+        count=len(matches),
+    )
+    return None
 
 
 async def _user_can_access_client(db: AsyncSession, user: "User", client: Client) -> bool:
@@ -132,12 +142,8 @@ async def _user_can_access_client(db: AsyncSession, user: "User", client: Client
 
 
 async def _has_client_access(db: AsyncSession, client_id: str, user_id: str) -> bool:
-    result = await db.execute(
-        select(ClientAccessGrant).where(
-            ClientAccessGrant.client_id == client_id, ClientAccessGrant.user_id == uuid.UUID(user_id)
-        )
-    )
-    return result.scalar_one_or_none() is not None
+    """On a restricted app's list, personally or through a team."""
+    return await has_app_access(db, client_id, user_id)
 
 
 def _branding(client: Client) -> dict:
@@ -165,6 +171,42 @@ async def _get_flow_client(db: AsyncSession, redis: Redis, flow_id: str) -> Clie
     return await _load_client(db, client_id)
 
 
+SUPPORTED_PROMPTS = {"none", "login", "consent", "select_account"}
+
+
+def _resolve_requested_scope(requested: str, client: Client) -> str:
+    """`openid` is always allowed: it only asks for an ID token, which says
+    who signed in. Everything else must be in the app's allowed scope."""
+    words = requested.split()
+    rest = " ".join(w for w in words if w != "openid")
+    if "openid" not in words:
+        return resolve_scope(requested, client.allowed_scope)
+    if not rest:
+        return "openid"
+    return " ".join(["openid", resolve_scope(rest, client.allowed_scope)])
+
+
+async def _flow_error(request: Request, redis: Redis, flow_id: str, error: str):
+    """End a sign-in by telling the app why, without showing anything --
+    what prompt=none needs (login_required, consent_required, ...)."""
+    settings = get_settings()
+    flow = await redis.hgetall(f"{FLOW_KEY_PREFIX}{flow_id}")
+    await redis.delete(f"{FLOW_KEY_PREFIX}{flow_id}")
+    embed = embedding.decode(flow.get("embed"))
+    if embed:
+        response = templates.TemplateResponse(
+            request, "embed_complete.html", {"embed": embed, "code": "", "error": error, "state": flow.get("state", "")}
+        )
+        response.headers["Content-Security-Policy"] = embedding.frame_ancestors(embed["origin"])
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    params = {"error": error, "iss": settings.issuer_url}
+    if flow.get("state"):
+        params["state"] = flow["state"]
+    separator = "&" if "?" in flow["redirect_uri"] else "?"
+    return RedirectResponse(f"{flow['redirect_uri']}{separator}{urlencode(params)}", status_code=303)
+
+
 @router.get("/authorize")
 @limiter.limit(get_settings().rate_limit_authorize)
 async def authorize(
@@ -184,10 +226,25 @@ async def authorize(
     frame_id: str | None = None,
     appearance: str | None = None,
     screen: str = "login",
+    # OpenID Connect: nonce goes back in the ID token; prompt=none checks for
+    # an existing sign-in without showing anything; prompt=login and max_age
+    # ask for the password again; login_hint fills in the email.
+    nonce: str | None = None,
+    prompt: str = "",
+    max_age: int | None = None,
+    login_hint: str | None = None,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
     settings = get_settings()
+
+    prompts = set(prompt.split())
+    if prompts - SUPPORTED_PROMPTS or ("none" in prompts and len(prompts) > 1):
+        raise HTTPException(400, "invalid_request: unsupported prompt value")
+    if max_age is not None and max_age < 0:
+        raise HTTPException(400, "invalid_request: max_age must not be negative")
+    if nonce is not None and len(nonce) > 512:
+        raise HTTPException(400, "invalid_request: nonce is too long")
 
     if response_type != "code":
         raise HTTPException(400, "unsupported_response_type")
@@ -205,7 +262,7 @@ async def authorize(
         raise HTTPException(400, "unsupported_response_mode")
     elif redirect_uri is None or redirect_uri not in client.redirect_uris:
         raise HTTPException(400, "invalid_redirect_uri")
-    scope = resolve_scope(scope, client.allowed_scope)
+    scope = _resolve_requested_scope(scope, client)
 
     flow_id = secrets.token_urlsafe(16)
     flow = {
@@ -217,6 +274,9 @@ async def authorize(
         "scope": scope,
         "state": state or "",
         "embed": embed,
+        "nonce": nonce or "",
+        "prompt": " ".join(sorted(prompts)),
+        "login_hint": (login_hint or "")[:320],
     }
     async with redis.pipeline(transaction=True) as pipe:
         await pipe.hset(f"{FLOW_KEY_PREFIX}{flow_id}", mapping=flow).expire(f"{FLOW_KEY_PREFIX}{flow_id}", 600).execute()
@@ -239,6 +299,17 @@ async def authorize(
         limit = client.session_ttl_seconds  # 0 = no per-application limit
         if auth_time is None or (limit and time.time() - auth_time > limit):
             user_id = None
+        # The app asked for a fresh password: prompt=login, or a sign-in no
+        # older than max_age seconds.
+        elif "login" in prompts or (max_age is not None and (max_age == 0 or time.time() - auth_time > max_age)):
+            user_id = None
+
+    if "none" in prompts:
+        # Nothing may be shown: either an existing sign-in carries straight
+        # on, or the app is told why it can't.
+        if user_id is None:
+            return await _flow_error(request, redis, flow_id, "login_required")
+        return await _continue_flow(request, db, redis, flow_id, user_id, auth_time=auth_time, session_id=session_id)
 
     if user_id is None and screen == "signup" and client.allow_signup:
         return await _page(
@@ -265,11 +336,12 @@ async def authorize(
                 **_branding(client),
                 "allow_signup": client.allow_signup,
                 "show_totp": False,
+                "email": flow["login_hint"],
                 "error": None,
             },
         )
 
-    return await _continue_flow(request, db, redis, flow_id, user_id, auth_time=auth_time)
+    return await _continue_flow(request, db, redis, flow_id, user_id, auth_time=auth_time, session_id=session_id)
 
 
 @router.get("/login")
@@ -310,7 +382,7 @@ async def login(
     client = await _get_flow_client(db, redis, flow_id)
     await bypass_tenant_rls(db)
 
-    if await is_locked(redis, "user", email):
+    if await login_locked(redis, email, client_ip(request)):
         await _record_login_failure(redis, email, request, client.client_id, "locked_out")
         return await _page(
             redis,
@@ -332,7 +404,7 @@ async def login(
         await burn_password_check(password)
 
     if user is None or user.status != "active" or not await verify_password_async(password, user.password_hash):
-        await record_failure(redis, "user", email)
+        await record_login_failure(redis, email, client_ip(request))
         await _record_login_failure(redis, email, request, client.client_id, "invalid_credentials")
         return await _page(
             redis,
@@ -352,7 +424,7 @@ async def login(
 
     if user.mfa_secret and not verify_totp(user.mfa_secret, totp_code):
         if totp_code:  # a blank code is just the prompt for one, not a guess
-            await record_failure(redis, "user", email)
+            await record_login_failure(redis, email, client_ip(request))
         await _record_login_failure(redis, email, request, client.client_id, "invalid_mfa_code")
         return await _page(
             redis,
@@ -370,7 +442,7 @@ async def login(
             status_code=401,
         )
 
-    await clear_failures(redis, "user", email)
+    await clear_login_failures(redis, email, client_ip(request))
     log_event("login_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
     session_id = await sign_in(
         redis,
@@ -380,7 +452,7 @@ async def login(
         ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-    response = await _continue_flow(request, db, redis, flow_id, str(user.id))
+    response = await _continue_flow(request, db, redis, flow_id, str(user.id), session_id=session_id)
     response.set_cookie(
         settings.session_cookie_name,
         session_id,
@@ -450,6 +522,7 @@ async def signup(
             status_code=status_code,
         )
 
+    email = normalize_email(email)
     if not first_name.strip():
         return await error("First name is required")
     if not last_name.strip():
@@ -482,6 +555,9 @@ async def signup(
         db.add(ClientAccessGrant(client_id=client.client_id, user_id=user.id))
     if role and role in roles:
         db.add(UserRoleAssignment(user_id=user.id, client_id=client.client_id, role=role))
+    if client.signup_team_id:
+        # The app's signup team: its access and roles from the first sign-in.
+        db.add(TeamMember(team_id=client.signup_team_id, user_id=user.id))
     await db.commit()
     await db.refresh(user)
     log_event("signup_success", client_id=client.client_id, user_id=str(user.id), ip=client_ip(request))
@@ -499,7 +575,7 @@ async def signup(
         ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-    response = await _continue_flow(request, db, redis, flow_id, str(user.id))
+    response = await _continue_flow(request, db, redis, flow_id, str(user.id), session_id=session_id)
     response.set_cookie(
         settings.session_cookie_name,
         session_id,
@@ -555,8 +631,10 @@ async def _continue_flow(
     flow_id: str,
     user_id: str,
     auth_time: int | None = None,
+    session_id: str | None = None,
 ):
-    """`auth_time` is when the user actually authenticated -- now, unless an
+    """`session_id` is the browser session this sign-in belongs to (its
+    hashed form becomes the ID token's `sid`). `auth_time` is when the user actually authenticated -- now, unless an
     existing session is being reused. It rides along on the flow so the
     tokens issued at the end can't outlive the application's sign-in timeout.
     """
@@ -565,6 +643,10 @@ async def _continue_flow(
         raise HTTPException(400, "invalid_request: expired or unknown flow")
     flow["auth_time"] = str(auth_time or round(time.time()))
     await redis.hset(f"{FLOW_KEY_PREFIX}{flow_id}", "auth_time", flow["auth_time"])
+    if session_id:
+        flow["sid"] = public_sid(session_id)
+        await redis.hset(f"{FLOW_KEY_PREFIX}{flow_id}", "sid", flow["sid"])
+    silent = "none" in flow.get("prompt", "").split()
 
     client = await _load_client(db, flow["client_id"])
     requested_scopes = set(flow["scope"].split()) if flow["scope"] else set()
@@ -576,6 +658,8 @@ async def _continue_flow(
             client_id=client.client_id,
             user_id=user_id,
         )
+        if silent:
+            return await _flow_error(request, redis, flow_id, "access_denied")
         return await _page(
             redis,
             request,
@@ -594,6 +678,8 @@ async def _continue_flow(
     if await _verified_email_required(db, client, flow.get("resource")):
         await bypass_tenant_rls(db)
         user = await db.get(User, uuid.UUID(user_id))
+        if user is not None and not user.email_verified and silent:
+            return await _flow_error(request, redis, flow_id, "interaction_required")
         if user is not None and not user.email_verified:
             # Every way in (signup, password, passkey, an existing session)
             # comes through here, so none of them skips this. The flow waits
@@ -611,7 +697,10 @@ async def _continue_flow(
         )
     )
     consent = result.scalar_one_or_none()
-    if consent is None or not requested_scopes.issubset(set(consent.scopes)):
+    force_consent = "consent" in flow.get("prompt", "").split() and not flow.get("embed")
+    if force_consent or consent is None or not requested_scopes.issubset(set(consent.scopes)):
+        if silent and not flow.get("embed"):
+            return await _flow_error(request, redis, flow_id, "consent_required")
         if flow.get("embed"):
             # Embedding is something only an admin can turn on, for the
             # organisation's own applications -- and a consent screen inside
@@ -697,6 +786,8 @@ async def _issue_code(
                 "redirect_uri": flow["redirect_uri"],
                 "scope": flow["scope"],
                 "auth_time": flow.get("auth_time") or str(round(time.time())),
+                "nonce": flow.get("nonce", ""),
+                "sid": flow.get("sid") or public_sid(request.cookies.get(settings.session_cookie_name)) or "",
             },
         )
         pipe.expire(f"{CODE_KEY_PREFIX}{code}", settings.authorization_code_ttl_seconds)

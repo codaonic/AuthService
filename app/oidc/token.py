@@ -8,12 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import client_ip, log_event
 from app.config import get_settings
+from app.auth.teams import roles_for
 from app.db.models import Resource, User
 from app.db.redis_client import get_redis
 from app.db.session import get_db
 from app.db.tenant import bypass_tenant_rls
 from app.middleware.rate_limit import limiter
-from app.oidc.clients import get_and_validate_client
+from app.oidc.clients import client_auth, get_and_validate_client
+from app.oidc.id_token import mint_id_token
 from app.oidc.pkce import verify_pkce
 from app.oidc.refresh import issue_refresh_token, validate_and_rotate_refresh_token
 from app.oidc.scope import resolve_scope
@@ -33,13 +35,14 @@ async def token_endpoint(
     code_verifier: str | None = Form(None),
     redirect_uri: str | None = Form(None),
     refresh_token: str | None = Form(None),
-    client_id: str = Form(...),
+    client_id: str | None = Form(None),
     client_secret: str | None = Form(None),
     resource: str | None = Form(None),
     scope: str = Form(""),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
+    client_id, client_secret = client_auth(request, client_id, client_secret)
     client = await get_and_validate_client(db, client_id, client_secret, request)
     if grant_type not in client.grant_types:
         raise HTTPException(400, "unauthorized_client")
@@ -48,6 +51,8 @@ async def token_endpoint(
         raise HTTPException(400, "unauthorized_client")
     session_ttl = client.session_ttl_seconds
     auth_time: int | None = None
+    nonce: str | None = None
+    sid: str | None = None
 
     if grant_type == "authorization_code":
         if not code:
@@ -69,6 +74,8 @@ async def token_endpoint(
         resource = auth_code["resource"]
         scope = auth_code["scope"]
         auth_time = int(auth_code["auth_time"]) if auth_code.get("auth_time") else None
+        nonce = auth_code.get("nonce") or None
+        sid = auth_code.get("sid") or None
 
     elif grant_type == "client_credentials":
         if not resource:
@@ -88,6 +95,7 @@ async def token_endpoint(
         resource = rt["resource"]
         scope = resolve_scope(scope, rt["scope"])
         auth_time = rt["auth_time"]
+        sid = rt.get("sid")
         # The application's sign-in timeout has passed (it may have been
         # shortened since this token was issued) -- the user has to log in.
         if auth_time and session_ttl and time.time() > auth_time + session_ttl:
@@ -107,6 +115,15 @@ async def token_endpoint(
         user = await db.get(User, uuid.UUID(subject))
         if user is None or user.status != "active":
             raise HTTPException(400, "invalid_grant")
+        # Access taken away after sign-in (moved out of the login group, or
+        # removed from a restricted app's allow-list) stops new tokens too,
+        # not just new sign-ins.
+        from app.oidc.authorize import _has_client_access, _user_can_access_client
+
+        if not await _user_can_access_client(db, user, client) or (
+            client.restrict_access and not await _has_client_access(db, client_id, subject)
+        ):
+            raise HTTPException(400, "invalid_grant")
 
     if resource:
         # Only gates a resource an admin explicitly catalogued and then
@@ -119,12 +136,17 @@ async def token_endpoint(
 
     # Re-read on every refresh, so an app sees a newly verified email at the
     # next token refresh.
+    roles = None
+    if user is not None and client.roles_enabled:
+        roles = await roles_for(db, client_id, user.id)
     access_token, expires_in = mint_access_token(
         sub=subject,
         aud=resource,
         client_id=client_id,
         scope=scope,
         email_verified=user.email_verified if user is not None else None,
+        roles=roles,
+        roles_claim=client.roles_claim or "roles",
     )
     log_event(
         "token_issued",
@@ -142,10 +164,22 @@ async def token_endpoint(
         "expires_in": expires_in,
         "scope": scope,
     }
+    if user is not None and "openid" in scope.split():
+        response["id_token"] = mint_id_token(
+            user=user,
+            client_id=client_id,
+            scope=scope,
+            access_token=access_token,
+            auth_time=auth_time,
+            nonce=nonce,
+            sid=sid,
+            roles=roles,
+            roles_claim=client.roles_claim or "roles",
+        )
 
     if grant_type != "client_credentials":
         response["refresh_token"] = await issue_refresh_token(
-            db, redis, subject, client_id, resource, scope=scope, auth_time=auth_time, max_age=session_ttl
+            db, redis, subject, client_id, resource, scope=scope, auth_time=auth_time, max_age=session_ttl, sid=sid
         )
 
     return response
