@@ -241,7 +241,7 @@ export function IntegrationModal({
               <CodeBlock
                 language="bash"
                 title="Install"
-                code={`pip install "auth-client[fastapi] @ https://github.com/codaonic/auth-client/releases/download/v0.3.1/auth_client-0.3.1-py3-none-any.whl"`}
+                code={`pip install "auth-client[fastapi] @ https://github.com/codaonic/auth-client/releases/download/v0.4.0/auth_client-0.4.0-py3-none-any.whl"`}
               />
               <CodeBlock
                 language="python"
@@ -273,7 +273,7 @@ async def me(claims: dict = Depends(require_auth)):
               <CodeBlock
                 language="bash"
                 title="Install"
-                code={`npm install "https://github.com/codaonic/auth-client/releases/download/v0.3.1/auth-client-0.3.1.tgz"`}
+                code={`npm install "https://github.com/codaonic/auth-client/releases/download/v0.4.0/auth-client-0.4.0.tgz"`}
               />
               <CodeBlock
                 language="typescript"
