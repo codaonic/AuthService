@@ -84,11 +84,11 @@ async def create_user(args: argparse.Namespace) -> None:
             print(f"error: client '{args.client_id}' not found", file=sys.stderr)
             raise SystemExit(1)
 
-        existing = await db.execute(
-            select(User).where(User.email == args.email, User.client_id == args.client_id)
-        )
-        if existing.scalar_one_or_none() is not None:
-            print(f"error: user '{args.email}' already exists in app '{args.client_id}'", file=sys.stderr)
+        from app.auth.identity import email_taken, normalize_email
+
+        args.email = normalize_email(args.email)
+        if await email_taken(db, args.email, client):
+            print(f"error: '{args.email}' already has an account in app '{args.client_id}' or its login group", file=sys.stderr)
             raise SystemExit(1)
 
         db.add(
